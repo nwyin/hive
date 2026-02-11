@@ -389,3 +389,63 @@ class Database:
             cursor = self.conn.execute("SELECT * FROM events ORDER BY created_at DESC LIMIT 100")
 
         return [dict(row) for row in cursor.fetchall()]
+
+    def get_next_ready_step(self, parent_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the next ready step within a molecule.
+
+        Args:
+            parent_id: Parent molecule issue ID
+
+        Returns:
+            Next ready step issue dict, or None if no steps are ready
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT i.*
+            FROM issues i
+            WHERE i.parent_id = ?
+              AND i.status = 'open'
+              AND NOT EXISTS (
+                SELECT 1 FROM dependencies d
+                JOIN issues blocker ON d.depends_on = blocker.id
+                WHERE d.issue_id = i.id
+                  AND d.type = 'blocks'
+                  AND blocker.status NOT IN ('done', 'finalized', 'canceled')
+              )
+            ORDER BY i.created_at ASC
+            LIMIT 1
+            """,
+            (parent_id,),
+        )
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def count_active_agents(self) -> int:
+        """
+        Count currently active agents.
+
+        Returns:
+            Number of agents with status 'working'
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM agents WHERE status = 'working'"
+        )
+        return cursor.fetchone()[0]
+
+    def get_active_agents(self) -> List[Dict[str, Any]]:
+        """
+        Get all currently active agents.
+
+        Returns:
+            List of active agent dicts
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM agents
+            WHERE status = 'working'
+            ORDER BY created_at ASC
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]

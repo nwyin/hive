@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .config import Config
 from .db import Database
@@ -563,6 +563,23 @@ Ready for the next request.""",
                         "artifacts": result.artifacts,
                     },
                 )
+
+                # Check if this was a step in a molecule
+                issue = self.db.get_issue(agent.issue_id)
+                if issue and issue.get("parent_id"):
+                    # This is a molecule step - check for next step
+                    next_step = self.db.get_next_ready_step(issue["parent_id"])
+
+                    if next_step:
+                        # Session-cycle to next step
+                        await self.cycle_agent_to_next_step(agent, next_step)
+                        return  # Don't remove from active agents yet
+
+                # No more steps or not a molecule - release agent
+                # Remove from active agents
+                if agent.agent_id in self.active_agents:
+                    del self.active_agents[agent.agent_id]
+
             else:
                 # Mark as failed
                 self.db.update_issue_status(agent.issue_id, "failed")
@@ -574,6 +591,10 @@ Ready for the next request.""",
                     {"reason": result.reason, "summary": result.summary},
                 )
 
+                # Remove from active agents
+                if agent.agent_id in self.active_agents:
+                    del self.active_agents[agent.agent_id]
+
         except Exception as e:
             self.db.log_event(
                 agent.issue_id,
@@ -581,8 +602,107 @@ Ready for the next request.""",
                 "completion_error",
                 {"error": str(e)},
             )
-        finally:
             # Remove from active agents
+            if agent.agent_id in self.active_agents:
+                del self.active_agents[agent.agent_id]
+
+    async def cycle_agent_to_next_step(self, agent: AgentIdentity, next_step: Dict[str, Any]):
+        """
+        Cycle an agent to the next step in a molecule.
+
+        Args:
+            agent: Current agent identity
+            next_step: Next step issue dict
+        """
+        # Abort current session
+        await self.opencode.abort_session(agent.session_id, directory=agent.worktree)
+
+        # Claim the next step
+        claimed = self.db.claim_issue(next_step["id"], agent.agent_id)
+        if not claimed:
+            # Someone else claimed it, release agent
+            if agent.agent_id in self.active_agents:
+                del self.active_agents[agent.agent_id]
+            return
+
+        # Create new session (same worktree)
+        try:
+            session = await self.opencode.create_session(
+                directory=agent.worktree,
+                title=f"{agent.name}: {next_step['title']}",
+                permissions=[
+                    {"permission": "*", "pattern": "*", "action": "allow"},
+                    {"permission": "question", "pattern": "*", "action": "deny"},
+                    {"permission": "plan_enter", "pattern": "*", "action": "deny"},
+                    {"permission": "external_directory", "pattern": "*", "action": "deny"},
+                ],
+            )
+            new_session_id = session["id"]
+
+            # Update agent
+            self.db.conn.execute(
+                """
+                UPDATE agents
+                SET session_id = ?,
+                    current_issue = ?,
+                    lease_expires_at = datetime('now', '+{} seconds'),
+                    last_progress_at = datetime('now')
+                WHERE id = ?
+                """.format(
+                    Config.LEASE_DURATION
+                ),
+                (new_session_id, next_step["id"], agent.agent_id),
+            )
+            self.db.conn.commit()
+
+            # Update agent identity
+            agent.session_id = new_session_id
+            agent.issue_id = next_step["id"]
+
+            # Build and send prompt
+            branch_name = f"agent/{agent.name}"
+            prompt = build_worker_prompt(
+                agent_name=agent.name,
+                issue=next_step,
+                worktree_path=agent.worktree,
+                branch_name=branch_name,
+                project=self.project_name,
+            )
+
+            system_prompt = build_system_prompt(
+                project=self.project_name,
+                agent_name=agent.name,
+                worktree_path=agent.worktree,
+            )
+
+            # Create event for waiting on completion
+            self.session_status_events[new_session_id] = asyncio.Event()
+
+            # Send prompt asynchronously
+            await self.opencode.send_message_async(
+                new_session_id,
+                parts=[{"type": "text", "text": prompt}],
+                directory=agent.worktree,
+            )
+
+            self.db.log_event(
+                next_step["id"],
+                agent.agent_id,
+                "session_cycled",
+                {"new_session_id": new_session_id, "step_title": next_step["title"]},
+            )
+
+            # Start monitoring task
+            asyncio.create_task(self.monitor_agent(agent))
+
+        except Exception as e:
+            self.db.log_event(
+                next_step["id"],
+                agent.agent_id,
+                "session_cycle_error",
+                {"error": str(e)},
+            )
+            # Release agent
             if agent.agent_id in self.active_agents:
                 del self.active_agents[agent.agent_id]
 
