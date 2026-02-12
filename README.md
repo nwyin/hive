@@ -354,10 +354,21 @@ The Mayor is a persistent LLM session that:
 
 ## Development
 
+### Setup
+
+```bash
+# Create and activate a virtual environment
+uv venv --python 3.12
+source .venv/bin/activate
+
+# Install the package in editable mode with dev dependencies
+uv pip install -e ".[dev]"
+```
+
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run all unit tests
 pytest
 
 # Run specific test file
@@ -366,14 +377,30 @@ pytest tests/test_orchestrator.py
 # Run with verbose output
 pytest -v
 
-# Run integration tests (requires OpenCode server)
+# Run only integration tests (requires a running OpenCode server)
 pytest -m integration
+
+# Run everything except integration tests
+pytest -m "not integration"
+```
+
+### Linting & Formatting
+
+```bash
+# Check for lint errors
+uvx ruff check src/ tests/
+
+# Auto-fix lint errors
+uvx ruff check --fix src/ tests/
+
+# Format code
+uvx ruff format --line-length 144 src/ tests/
 ```
 
 ### Test Coverage
 
-- **78 unit tests** across 11 test files
-- Database operations, git worktrees, prompts, orchestrator, CLI
+- **79 unit tests** across 11 test files
+- Database operations, git worktrees, prompts, orchestrator, CLI, SSE
 - Mock-based unit tests + integration tests with live OpenCode server
 
 ### Project Structure

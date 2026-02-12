@@ -1699,11 +1699,11 @@ No special infrastructure. The CV is an emergent property of the event log.
 
 ## 15. Implementation Results
 
-### What Was Built (Phases 1-2)
+### What Was Built (Phases 1-2d)
 
-**Implementation completed**: 2026-02-11
+**Implementation completed**: 2026-02-12
 **Code location**: `hive/` directory
-**Status**: Fully functional with 78 passing tests
+**Status**: Fully functional with 79 passing tests
 
 #### Delivered Features
 
@@ -1733,13 +1733,14 @@ No special infrastructure. The CV is an emergent property of the event log.
 
 **Human Interface** ✅
 
-- CLI: 7 commands (create, list, ready, show, close, status, start)
+- CLI: 8 commands (create, list, ready, show, close, status, logs, start)
+- `hive logs -f` for live event tailing
 - Real-time status monitoring
 - Event history visualization
 
 **Quality** ✅
 
-- 78 unit tests (100% passing)
+- 79 unit tests (100% passing)
 - 17 integration tests
 - Comprehensive documentation
 
@@ -1750,11 +1751,18 @@ No special infrastructure. The CV is an emergent property of the event log.
 - **8 commits** with [YAY] tags
 - **README** + Implementation Summary
 
-#### Not Yet Implemented (Phases 3-4)
+#### Bugfixes & Observability (Phase 2d, 2026-02-12)
 
-- ⏳ Merge queue processor (Refinery)
-- ⏳ Escalation chain
-- ⏳ Crash recovery
+- Fixed SSE payload envelope parsing (`sse.py`) — OpenCode wraps events in `{"payload": {...}}` but dispatch was reading top-level fields, silently dropping all events
+- Fixed stalled agent infinite loop (`orchestrator.py`) — `handle_stalled_agent` never updated agent status to `failed`, so `check_stalled_agents` re-detected them every poll cycle
+- Fixed model passthrough (`opencode.py`, `orchestrator.py`) — `HIVE_DEFAULT_MODEL` was stored in DB but never sent to OpenCode; added `make_model_config()` and `model` param to `send_message_async`
+- Added `hive logs` command (`cli.py`, `db.py`) — live event tailing with `-f`, filtering by `--issue`/`--agent`
+
+#### Not Yet Implemented
+
+- ⏳ Mayor-as-interface (Phase 3)
+- ⏳ Merge queue processor / Refinery (Phase 4)
+- ⏳ Resilience / crash recovery (Phase 5)
 - ⏳ Degraded mode
 - ⏳ Context cycling (runtime)
 
@@ -1811,61 +1819,75 @@ See `hive/README.md` for usage guide.
 - [x] Worker prompt template with behavioral contract (Section 9.2)
 - [x] Structured completion signal parsing with artifacts (Section 9.5)
 
-**Commits**: Phase 1a, 1b, 1c (3 commits with [YAY] tags)
+### ✅ Phase 2: Multi-Worker + CLI (COMPLETED)
 
-### ✅ Phase 2: Mayor + Multi-Worker (COMPLETED)
-
-- [x] Mayor session: persistent OpenCode session for strategic decisions
-- [x] `:::WORK_PLAN:::` parsing — Mayor decomposes requests into issues
-- [x] Human CLI interface: submit requests, see status, answer questions
 - [x] Worker pool management (spawn, teardown, MAX_AGENTS)
-- [x] SSE event consumer with session dispatch
+- [x] SSE event consumer with session dispatch (+ payload envelope fix)
 - [x] Atomic claim (CAS on issue assignment)
 - [x] Concurrent worker execution
 - [x] Permission unblocker loop — fast-poll auto-resolve (Section 7.5)
 - [x] Session cycling for molecules
 - [x] Auto-advance through molecule steps
+- [x] Human CLI: 8 commands (create, list, ready, show, close, status, logs, start)
+- [x] `hive logs -f` — live event tailing
+- [x] Model passthrough — `HIVE_DEFAULT_MODEL` sent to OpenCode on every request
+- [x] Stalled agent cleanup — agents marked `failed`, worktrees cleaned up
 
-**Commits**: Phase 2a, 2b, 2c (3 commits with [YAY] tags)
+**Note**: Phase 2 originally included an orchestrator-driven Mayor with `:::WORK_PLAN:::` parsing. This is now **deprecated** in favor of the Mayor-as-interface design (Phase 3). The orchestrator-side Mayor code (`create_mayor_session`, `send_to_mayor`, `handle_user_request`, `maybe_cycle_mayor`) still exists but will be removed in Phase 3.
 
-### ⏳ Phase 3: Refinery + Molecules (PLANNED)
+### ⏳ Phase 3: Mayor-as-Interface (NEXT)
 
-- [ ] Refinery session: persistent OpenCode session for merge processing
-- [ ] Two-tier merge from `merge_queue` table: mechanical fast-path + LLM fallback (Section 10.3)
-- [ ] Sequential rebase protocol with verification gate
+The Mayor becomes the **user-facing** interface. The human chats with the Mayor in an OpenCode TUI/web session. The Mayor uses `hive` CLI tools to manage the system. The orchestrator becomes a purely headless worker pool manager.
+
+- [ ] Create Mayor CLAUDE.md / system prompt with `hive` CLI tool documentation
+- [ ] Remove orchestrator's Mayor session management:
+  - `create_mayor_session()`, `send_to_mayor()`, `handle_user_request()`
+  - `maybe_cycle_mayor()`, `build_mayor_prompt()`, `build_mayor_state_summary()`
+  - Mayor-related SSE event handling
+- [ ] Remove `:::WORK_PLAN:::` parsing from orchestrator and prompts
+- [ ] Enhance `hive` CLI for Mayor usage:
+  - `hive create --depends-on <id>` for dependency management
+  - Richer output from `hive show` (worker session status, recent messages)
+- [ ] Verify Mayor can drive full workflow end-to-end:
+  - Create issues → orchestrator picks them up → workers execute → Mayor monitors via `hive logs/status`
+
+**Key insight**: No new infrastructure needed. The Mayor is just an OpenCode session with bash access to the existing `hive` CLI. The DB is the shared contract.
+
+### ⏳ Phase 4: Merge Queue / Refinery
+
+The merge queue consumer closes the loop from `done` → `finalized` → worktree cleanup.
+
+- [ ] Merge queue consumer loop (background task in orchestrator)
+- [ ] Tier 1 — mechanical fast-path: `git rebase main`, run tests, `git merge --ff-only`
+- [ ] Tier 2 — Refinery LLM session for conflict resolution and test failure diagnosis
 - [ ] `:::MERGE_RESULT:::` parsing
 - [ ] `done` → `finalized` status transition on successful merge
-- [ ] Worktree teardown after finalization (not after `done`)
-- [x] Molecule creation from step definitions _(partial: dependency support exists)_
-- [x] Session cycling on step completion _(implemented in Phase 2b)_
-- [x] Auto-advance (next ready step within molecule) _(implemented in Phase 2b)_
+- [ ] Worktree + branch teardown after finalization (not after `done`)
+- [ ] Sequential processing — one merge at a time, each rebased on latest main
 
-**Status**: Molecule infrastructure complete, Refinery merge processor not yet implemented
+### ⏳ Phase 5: Resilience
 
-### ⏳ Phase 4: Escalation + Resilience (PLANNED)
+- [ ] Orchestrator retry logic — re-queue failed issues up to `MAX_RETRIES`
+- [ ] Orchestrator restart recovery — reconcile DB state with OpenCode sessions
+- [ ] Degraded mode — `mode:degraded` label, stop dispatching, recovery loop with backoff
+- [ ] Context cycling for Refinery session (token threshold)
 
-- [ ] Escalation chain: worker → orchestrator retries → Mayor → human (Section 11)
-- [ ] Mayor escalation handling: rephrase, decompose, or ask human
-- [ ] Orchestrator restart recovery (reconcile DB ↔ OpenCode)
-- [ ] Context cycling for Mayor and Refinery sessions (Section 10.5)
-- [ ] Degraded mode: `mode:degraded` label, stop dispatching, recovery loop (Section 13)
+**Note**: Mayor escalation is now conversational (the human is already chatting with the Mayor), so the old structured escalation chain (worker → orchestrator → Mayor → `:::HUMAN_QUESTION:::`) is no longer needed.
 
-**Status**: Designed but not implemented
-
-### Phase 5: Operational Maturity
+### Phase 6: Operational Maturity
 
 - [ ] Capability-based routing (agent CV queries, Section 14)
 - [ ] Labels and metadata on issues
-- [ ] CLI for human interaction (`create`, `list`, `ready`, `show`, `close`, `answer`)
 - [ ] Structured logging and metrics
 - [ ] Cost tracking per agent (OpenCode reports token usage per message)
+- [ ] `hive watch <issue-id>` — stream live OpenCode messages from a worker session
 
-### Phase 6: Extensions
+### Phase 7: Extensions
 
 - [ ] Web dashboard (read-only view of SQLite)
-- [ ] Webhook/Slack notifications on escalation
-- [ ] Multi-model support (route different work to different LLMs)
+- [ ] Webhook/Slack notifications on failures
 - [ ] Formula/template system for reusable molecule definitions
+- [ ] Multi-project support (multiple orchestrator instances sharing one OpenCode server)
 
 ---
 

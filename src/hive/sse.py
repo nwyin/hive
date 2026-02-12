@@ -83,7 +83,8 @@ class SSEClient:
             headers["Authorization"] = f"Basic {encoded}"
 
         self.running = True
-        self.session = aiohttp.ClientSession()
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
+        self.session = aiohttp.ClientSession(timeout=timeout)
 
         try:
             async with self.session.get(url, headers=headers) as resp:
