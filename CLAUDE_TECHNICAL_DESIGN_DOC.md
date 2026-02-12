@@ -8,22 +8,22 @@ _A simplified multi-agent orchestration system inspired by Gas Town, using OpenC
 
 **Last Updated**: 2026-02-12
 
-### ✅ Completed (Phases 1-4)
+### ✅ Completed (Phases 1-4 + Phase 5 partial)
 
 - ✅ **Phase 1**: Database foundation, OpenCode client, SSE consumer, single worker loop
 - ✅ **Phase 2**: Multi-worker pool, Queen Bee TUI, session cycling, permission unblocker, daemon mode
 - ✅ **Phase 3**: Queen Bee as user-facing interface with 20+ CLI commands
 - ✅ **Phase 4**: Merge queue processor with two-tier approach (mechanical + Refinery LLM)
+- ✅ **Phase 5 (partial)**: Session cleanup on cancel/shutdown, triple completion detection (SSE + polling + file-based), stale agent reconciliation, prompt templates (.md files), per-issue model config, CLI enhancements (--json, sort/filter)
 
-**Status**: Fully functional multi-agent orchestrator with 116 passing unit tests
+**Status**: Fully functional multi-agent orchestrator with 128 passing unit tests across 14 modules + 3 prompt templates
 
 See `hive/` directory for implementation.
 
-### ⏳ Planned (Phase 5)
+### ⏳ Planned (Phase 5 remainder + Phase 6)
 
-- ⏳ **Phase 5a**: Escalation chain (retry → agent switch → Queen → human)
-- ⏳ **Phase 5b**: Crash recovery and degraded mode
-- ⏳ **Phase 5c**: Context cycling for long-running sessions
+- ⏳ **Phase 5**: Escalation chain (retry → agent switch → Queen → human), degraded mode, context cycling
+- ⏳ **Phase 6**: Operational maturity (capability routing, cost tracking, structured logging)
 
 ---
 
@@ -168,7 +168,7 @@ In this system, the propulsion loop becomes:
 5. Orchestrator marks issue 'done', enqueues to merge_queue; worktree persists until finalized
 ```
 
-No polling. No idle sessions. No "are you still working?" heartbeats. The SSE event stream replaces Gas Town's Witness patrol cycle.
+No idle sessions. No "are you still working?" heartbeats. The SSE event stream replaces Gas Town's Witness patrol cycle. Polling fallback and file-based signaling (`.hive-result.jsonl`) provide redundancy when SSE events are missed.
 
 ### 3.4 Molecules (Multi-Step Workflows)
 
@@ -684,7 +684,7 @@ def has_new_progress(messages, last_progress_at) -> bool:
     return msg_time and msg_time > last_progress_at
 ```
 
-### 7.4 Agent Teardown
+### 7.4 Agent Teardown and Session Cleanup
 
 Teardown happens **after finalization**, not immediately after a worker marks an issue `done`. The worktree must survive until the merge_queue entry has been processed (rebased, tested, merged). The flow is:
 
@@ -692,6 +692,15 @@ Teardown happens **after finalization**, not immediately after a worker marks an
 2. Refinery/mechanical merge processes the queue entry
 3. On success → issue transitions to `finalized`, **then** teardown runs
 4. On failure → issue may re-open or escalate; worktree stays for retry
+
+**Session cleanup is aggressive**: OpenCode sessions are killed (abort + delete) whenever:
+- An agent completes work (`handle_agent_complete`)
+- An issue is canceled (`cancel_agent_for_issue`)
+- An agent is detected as stalled (`handle_stalled_agent`)
+- The daemon shuts down (`_shutdown_all_sessions` in the `start()` finally block)
+- The daemon starts and finds orphaned sessions from a previous run (`_reconcile_stale_agents`)
+
+This prevents the critical bug where opencode sessions linger and consume tokens after their work is done or canceled.
 
 ```python
 def teardown_agent(agent):
@@ -835,6 +844,8 @@ LIMIT 1;
 
 The orchestrator constructs prompts for agents. The prompt replaces Gas Town's `CLAUDE.md` + `gt prime` system prompt injection.
 
+**Implementation note**: All prompt templates are stored as `.md` files in `src/hive/prompts/` (worker.md, system.md, refinery.md) and loaded at runtime via `string.Template` substitution. This makes prompts easy to hand-edit without touching Python code. The template cache (`_template_cache`) loads each file once on first use.
+
 Gas Town's role prompts reveal that effective agent prompts need much more than just a task description. They encode behavioral contracts, anti-patterns to avoid, and operational procedures. The prompts below incorporate these lessons.
 
 ### 9.1 Lessons from Gas Town Role Prompts
@@ -937,9 +948,22 @@ def build_system_prompt(project, agent):
     return "\n\n".join(parts)
 ```
 
-### 9.4 Completion Detection
+### 9.4 Completion Detection (Triple Detection Strategy)
 
-Completion detection uses a two-tier approach: parse the structured `:::COMPLETION` signal first (Section 9.5), fall back to heuristic assessment if no signal is found. See Section 9.5 for the full `assess_completion()` implementation.
+Completion detection uses a **triple detection strategy** to ensure no worker completion is missed:
+
+1. **SSE events** (real-time): The orchestrator listens for `session.status → idle` events via the global SSE stream. This is the fastest path — sub-second detection.
+
+2. **File-based signaling** (deterministic): Workers write a `.hive-result.jsonl` file to their worktree root before emitting the `:::COMPLETION` text signal. The `monitor_agent` loop polls for this file on every `check_interval` timeout. This is the most reliable path — filesystem-based, no dependency on SSE or session status APIs.
+
+3. **Session polling fallback** (catch-all): On every `check_interval` timeout, the orchestrator also calls `get_session_status()` directly to check if the session went idle. This catches cases where the SSE event was missed due to reconnect gaps.
+
+The `monitor_agent` loop runs all three in parallel. Whichever fires first breaks the loop and triggers `handle_agent_complete()`. File-based results take priority over message-parsing heuristics in `assess_completion()`.
+
+**File-based result format** (`.hive-result.jsonl`):
+```json
+{"status": "success", "summary": "Added auth middleware", "files_changed": ["src/auth.py"], "tests_run": true, "blockers": [], "artifacts": [{"type": "git_commit", "value": "abc1234"}]}
+```
 
 ### 9.5 Structured Completion Signal (Recommended)
 
@@ -1696,17 +1720,17 @@ No special infrastructure. The CV is an emergent property of the event log.
 
 ## 15. Implementation Results
 
-### What Was Built (Phases 1-4)
+### What Was Built (Phases 1-4 + Phase 5 partial)
 
 **Implementation completed**: 2026-02-12
 **Code location**: `hive/` directory
-**Status**: Fully functional with 116 passing unit tests
+**Status**: Fully functional with 128 passing unit tests
 
 #### Delivered Features
 
 **Core Infrastructure** ✅
 
-- SQLite database with WAL mode (6 tables)
+- SQLite database with WAL mode (6 tables + `model` column on issues)
 - Ready queue with dependency resolution
 - OpenCode HTTP client (full API coverage)
 - SSE event stream consumer
@@ -1719,15 +1743,19 @@ No special infrastructure. The CV is an emergent property of the event log.
 - Atomic issue claiming (CAS)
 - Lease-based staleness (15min default)
 - Permission unblocker (500ms polling)
-- Session lifecycle management
+- Session lifecycle management (create, abort, delete, cleanup)
 - Merge queue processor (background task)
+- Triple completion detection: SSE events + file-based `.hive-result.jsonl` + session polling fallback
+- Aggressive session cleanup on cancel, shutdown, stale detection, and daemon restart
+- Stale agent reconciliation on daemon startup (abort orphaned sessions)
+- Per-issue model configuration with three-tier resolution
 
 **Agent Types** ✅
 
 - ✅ Queen Bee: Strategic decomposition (user-facing TUI)
-- ✅ Workers: Autonomous execution in git worktrees
+- ✅ Workers: Autonomous execution in git worktrees (default: Sonnet)
 - ✅ Session cycling for molecules
-- ✅ Refinery: LLM merge processor for conflicts and test failures
+- ✅ Refinery: LLM merge processor for conflicts and test failures (default: Sonnet)
 
 **Merge Pipeline** ✅
 
@@ -1735,31 +1763,43 @@ No special infrastructure. The CV is an emergent property of the event log.
 - Tier 1: Mechanical rebase + test + ff-merge (no LLM)
 - Tier 2: Refinery LLM for conflict resolution and test failure diagnosis
 - `:::MERGE_RESULT:::` structured signal parsing
-- Post-finalization worktree + branch teardown
+- Post-finalization worktree + branch + session teardown
 - Configurable test gate (`HIVE_TEST_COMMAND`)
 - Feature flag (`HIVE_MERGE_QUEUE_ENABLED`)
+
+**Prompt System** ✅
+
+- Prompts stored as `.md` template files in `src/hive/prompts/`
+- `string.Template` substitution (no Jinja2 dependency)
+- Templates: `worker.md`, `system.md`, `refinery.md`
+- Cached on first load for performance
+- Anti-stall behavioral conditioning ("NEVER STOP MID-WORKFLOW")
+- File-based completion signal instructions embedded in worker prompt
 
 **Human Interface** ✅
 
 - CLI: 20+ commands (create, list, ready, show, update, cancel, finalize, retry, escalate, molecule, dep, agents, agent, events, close, logs, status, merges, start, daemon, queen)
-- `hive logs -f` for live event tailing
+- `hive logs -f` for live event tailing (JSONL in `--json` mode)
+- `hive logs --json` for machine-readable output
+- `hive list --sort --reverse --type --assignee --limit` for flexible filtering
+- `hive create --model` / `hive update --model` for per-issue model config
+- `hive start/stop/daemon status --json` for scripting
 - `hive merges` for merge queue visibility
 - `hive status` with merge queue stats
 - Real-time status monitoring
 
 **Quality** ✅
 
-- 116 unit tests (100% passing)
+- 128 unit tests (100% passing)
 - 14 integration tests (require OpenCode server)
-- 14 modules, ~4,800 lines production code
+- 14 modules + 3 prompt templates, ~5,500 lines production code
 - 12 test files, ~3,000 lines test code
 
 #### Not Yet Implemented
 
-- ⏳ Resilience / crash recovery (Phase 5)
 - ⏳ Retry escalation chain (MAX_RETRIES enforcement, agent switching)
-- ⏳ Degraded mode
-- ⏳ Context cycling (runtime)
+- ⏳ Degraded mode (stop dispatching on OpenCode failure, recovery loop)
+- ⏳ Context cycling at runtime (token threshold → session cycle)
 
 See `IMPLEMENTATION_SUMMARY.md` for overview.
 
@@ -1856,10 +1896,16 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 - [x] `HIVE_MERGE_QUEUE_ENABLED` feature flag
 - [x] Lazy refinery session creation (only when needed)
 
-### ⏳ Phase 5: Resilience
+### 🔶 Phase 5: Resilience (Partial)
 
+- [x] Session cleanup on cancel/abort/shutdown — sessions are killed (abort + delete) in all exit paths
+- [x] Stale agent reconciliation on daemon restart — orphaned sessions aborted, agents reset
+- [x] Triple completion detection — SSE events + file-based `.hive-result.jsonl` + session polling fallback
+- [x] Anti-stall worker prompt — "NEVER STOP MID-WORKFLOW" behavioral conditioning
+- [x] Per-issue model configuration — `HIVE_WORKER_MODEL`, `HIVE_REFINERY_MODEL`, `--model` flag
+- [x] Prompt templates — `.md` files in `src/hive/prompts/` for easy hand-editing
+- [x] CLI enhancements — `--json` for logs/daemon, `--sort`/`--reverse`/`--type`/`--assignee`/`--limit` for list
 - [ ] Orchestrator retry logic — re-queue failed issues up to `MAX_RETRIES`
-- [ ] Orchestrator restart recovery — reconcile DB state with OpenCode sessions
 - [ ] Degraded mode — `mode:degraded` label, stop dispatching, recovery loop with backoff
 - [ ] Context cycling for Refinery session (token threshold)
 
@@ -1888,7 +1934,12 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 
 2. **Agent-to-agent knowledge transfer**: Gas Town's mail protocol lets agents share findings. Our workers are more isolated — they only communicate through the orchestrator. How does worker B learn what worker A discovered? Options: shared notes in issue metadata, Mayor-mediated context injection into worker prompts, shared scratch files in the repo.
 
-3. **Mayor model selection**: ~~The Mayor reasons about architecture and decomposition — should it use a stronger model (e.g., Opus) while workers use a cheaper model (e.g., Sonnet)?~~ **Resolved**: The Mayor is a user-facing OpenCode session — model selection is configured at session level by the user. Workers use `HIVE_DEFAULT_MODEL` (configurable per-worker via the orchestrator). Using a stronger model for the Mayor and cheaper for workers is the recommended configuration.
+3. **Mayor model selection**: ~~The Mayor reasons about architecture and decomposition — should it use a stronger model (e.g., Opus) while workers use a cheaper model (e.g., Sonnet)?~~ **Resolved**: Three-tier model configuration implemented:
+   - `HIVE_DEFAULT_MODEL` (default: `claude-opus-4-6`) — used by the Queen/Mayor
+   - `HIVE_WORKER_MODEL` (default: `claude-sonnet-4-20250514`) — used by workers (cheaper for coding tasks)
+   - `HIVE_REFINERY_MODEL` (default: `claude-sonnet-4-20250514`) — used by the merge refinery
+   - Per-issue model override via `--model` flag on `hive create` / `hive update` (stored in `issues.model` column)
+   - Resolution order: `issue.model > Config.WORKER_MODEL > Config.DEFAULT_MODEL`
 
 4. **Scale ceiling**: SQLite WAL mode is good for ~30 concurrent readers. If we need 100+ agents, when and how do we migrate to Postgres? The thin-server architecture makes this swap straightforward.
 
