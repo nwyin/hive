@@ -11,19 +11,22 @@ Hive coordinates multiple AI coding agents working concurrently on a codebase. I
 - **Dependency management**: Issues are queued and dispatched based on dependency resolution
 - **Multi-step workflows**: Molecules enable sequential workflows where one agent handles multiple related steps
 - **Autonomous operation**: Permission unblocker keeps workers running without human intervention
+- **Merge pipeline**: Two-tier done→finalized pipeline (mechanical fast-path + Refinery LLM for conflicts)
+- **Triple completion detection**: SSE events + file-based `.hive-result.jsonl` + session polling fallback
+- **Three-tier model config**: Queen (Opus), Workers (Sonnet), Refinery (Sonnet), with per-issue overrides
 
 ## Architecture
 
 ```
-Human ←→ Queen Bee TUI (opencode @queen agent)
+Human ←→ Queen Bee TUI (opencode @queen agent, Opus)
               ↓ (hive CLI commands)
-         SQLite DB ←── Issues, deps, events
+         SQLite DB ←── Issues, deps, events, model config
               ↓
          Daemon (orchestrator loop)
+              ↓ triple detection: SSE + .hive-result.jsonl + polling
+         Worker Sessions (opencode, Sonnet) → git worktrees
               ↓
-         Worker Sessions (opencode) → git worktrees
-              ↓
-         Merge Queue → main branch
+         Merge Queue → Mechanical rebase/merge OR Refinery LLM (Sonnet) → main branch
 ```
 
 ### Key Components
@@ -31,8 +34,9 @@ Human ←→ Queen Bee TUI (opencode @queen agent)
 | Component | Role |
 |-----------|------|
 | **Queen Bee** | OpenCode custom agent that decomposes user requests into issues via `hive` CLI |
-| **Daemon** | Background orchestrator that polls the ready queue and spawns workers |
-| **Workers** | Ephemeral coding agents that implement features, fix bugs, write tests |
+| **Daemon** | Background orchestrator that polls the ready queue, spawns workers, detects completion, processes merges |
+| **Workers** | Ephemeral coding agents (Sonnet by default) that implement features, fix bugs, write tests |
+| **Refinery** | LLM merge processor (Sonnet) for conflict resolution and test failure diagnosis |
 | **SQLite DB** | Single source of truth for issues, dependencies, agents, events |
 | **OpenCode Server** | Headless agent runtime that executes prompts and streams events |
 | **Git Worktrees** | Per-agent sandboxes for isolated development |
@@ -79,7 +83,7 @@ hive daemon start -f
 hive daemon start
 ```
 
-The daemon polls the ready queue, spawns workers, monitors completion, and handles retries.
+The daemon polls the ready queue, spawns workers, monitors completion via triple detection (SSE + file-based + polling), processes the merge queue, and cleans up sessions on completion/cancellation/shutdown.
 
 ### 3. Launch the Queen Bee
 
@@ -122,14 +126,16 @@ The daemon picks up ready issues automatically and assigns them to workers.
 
 | Command | Description |
 |---------|-------------|
-| `hive create <title> [desc] [--priority 0-4] [--type task\|bug\|feature]` | Create a new issue |
-| `hive list [--status STATUS]` | List issues |
+| `hive create <title> [desc] [--priority 0-4] [--type task\|bug\|feature] [--model MODEL]` | Create a new issue |
+| `hive list [--status S] [--sort FIELD] [-r] [--type T] [--assignee A] [--limit N]` | List issues with sorting/filtering |
 | `hive show <id>` | Show issue details, deps, and events |
-| `hive update <id> [--title T] [--description D] [--priority P] [--status S]` | Update an issue |
+| `hive update <id> [--title T] [--description D] [--priority P] [--status S] [--model M]` | Update an issue |
 | `hive cancel <id> [--reason TEXT]` | Cancel an issue |
 | `hive finalize <id> [--resolution TEXT]` | Mark issue as done |
 | `hive retry <id> [--notes TEXT]` | Reset a failed issue to open |
 | `hive escalate <id> --reason TEXT` | Escalate for human attention |
+
+Sort fields for `hive list --sort`: `priority` (default), `created`, `updated`, `status`, `title`.
 
 ### Workflows
 
@@ -157,6 +163,9 @@ Steps JSON format for molecules:
 | `hive agent <id>` | Show agent details |
 | `hive events [--issue ID] [--agent ID] [--type T] [--limit N]` | Query event log |
 | `hive logs [-f] [-n N] [--issue ID] [--agent ID]` | Tail event log |
+| `hive merges` | Show merge queue status |
+
+All commands support `--json` for machine-readable output.
 
 ### Daemon
 
@@ -178,23 +187,33 @@ Steps JSON format for molecules:
 
 ```bash
 # Concurrency
-export HIVE_MAX_AGENTS=3                    # Max concurrent workers (default: 3)
+export HIVE_MAX_AGENTS=10                   # Max concurrent workers (default: 10)
 
 # Timing
 export HIVE_POLL_INTERVAL=5                 # Ready queue poll interval in seconds
-export HIVE_LEASE_DURATION=300              # Worker lease duration in seconds
+export HIVE_LEASE_DURATION=900              # Worker lease duration in seconds (default: 15min)
+export HIVE_LEASE_EXTENSION=600             # Lease extension on activity (default: 10min)
 export HIVE_PERMISSION_POLL_INTERVAL=0.5    # Permission check interval
 
 # OpenCode
 export OPENCODE_URL=http://127.0.0.1:4096  # OpenCode server URL
 export OPENCODE_SERVER_PASSWORD=secret      # Server password (if auth enabled)
-export OPENCODE_CMD=opencode               # Path to opencode binary
 
 # Database
 export HIVE_DB_PATH=hive.db
 
-# Model
-export HIVE_DEFAULT_MODEL=claude-sonnet-4-5-20250929
+# Models (three-tier)
+export HIVE_DEFAULT_MODEL=claude-opus-4-6              # Queen/system (default)
+export HIVE_WORKER_MODEL=claude-sonnet-4-20250514      # Workers (cheaper for coding tasks)
+export HIVE_REFINERY_MODEL=claude-sonnet-4-20250514    # Merge refinery
+
+# Per-issue override (via CLI)
+# hive create "title" "desc" --model claude-opus-4-6   # Use Opus for this specific issue
+
+# Merge queue
+export HIVE_TEST_COMMAND="pytest tests/"    # Test command for merge gate (optional)
+export HIVE_MERGE_QUEUE_ENABLED=true        # Enable/disable merge queue
+export HIVE_MERGE_POLL_INTERVAL=10          # Merge queue poll interval in seconds
 ```
 
 ## How It Works
@@ -211,12 +230,19 @@ export HIVE_DEFAULT_MODEL=claude-sonnet-4-5-20250929
 5. **Worker executes autonomously**:
    - Reads code, makes changes, runs tests
    - Commits work to branch (`agent/<agent-name>`)
+   - Writes `.hive-result.jsonl` file to worktree root
    - Signals completion with `:::COMPLETION:::` block
-6. **Daemon assesses completion**:
-   - Parses structured completion signal (or uses heuristics)
+6. **Daemon detects completion** (triple strategy):
+   - SSE event: `session.status → idle` (sub-second)
+   - File-based: polls for `.hive-result.jsonl` in worktree (deterministic)
+   - Session polling: calls `get_session_status()` as fallback
+7. **Daemon assesses and merges**:
+   - Parses file-based result, structured signal, or heuristics
    - Success: marks issue `done`, enqueues to merge queue
+   - Merge queue: mechanical rebase → test → ff-merge, or Refinery LLM for conflicts
+   - On merge success: issue → `finalized`, worktree cleaned up, session killed
    - Failure: marks `failed`, retries or escalates
-7. **Session cycling for molecules**:
+8. **Session cycling for molecules**:
    - After completing a step, checks for next ready step
    - Auto-advances through sequential workflow
 
@@ -256,7 +282,7 @@ uv pip install -e ".[dev]"
 ### Running Tests
 
 ```bash
-# Unit tests (integration tests auto-skipped without server)
+# Unit tests (128 passing; integration tests auto-skipped without server)
 uv run pytest
 
 # Integration tests (requires running OpenCode server)
@@ -275,21 +301,26 @@ uvx ruff format --line-length 144 src/ tests/
 ```
 hive/
 ├── .opencode/agents/
-│   └── queen.md         # Queen Bee agent definition (system prompt + permissions)
+│   └── queen.md              # Queen Bee agent definition (system prompt + permissions)
 ├── src/hive/
-│   ├── cli.py           # CLI interface (all commands route through ToolExecutor)
-│   ├── config.py        # Configuration
-│   ├── daemon.py        # Background daemon management
-│   ├── db.py            # SQLite database layer
-│   ├── git.py           # Git worktree management
-│   ├── ids.py           # Hash-based ID generation
-│   ├── models.py        # Data models
-│   ├── opencode.py      # OpenCode HTTP client
-│   ├── orchestrator.py  # Main orchestration engine
-│   ├── prompts.py       # Worker prompt templates
-│   ├── sse.py           # SSE event consumer
-│   └── tools.py         # ToolExecutor (shared backend for all CLI commands)
-├── tests/               # Test suite (97 unit tests)
+│   ├── cli.py                # CLI interface (20+ commands, --json support, sort/filter)
+│   ├── config.py             # Configuration (3 model tiers + env vars)
+│   ├── daemon.py             # Background daemon with PID/log management
+│   ├── db.py                 # SQLite database layer (6 tables + model column)
+│   ├── git.py                # Git worktree + merge/rebase operations
+│   ├── ids.py                # Hash-based ID generation
+│   ├── merge.py              # Merge queue processor + Refinery LLM
+│   ├── models.py             # Data models (AgentIdentity, CompletionResult)
+│   ├── opencode.py           # OpenCode HTTP client (sessions, messages, SSE)
+│   ├── orchestrator.py       # Orchestration engine (triple detection, session cleanup)
+│   ├── prompts.py            # Prompt loader + completion assessment logic
+│   ├── prompts/
+│   │   ├── worker.md         # Worker behavioral contract + completion signals
+│   │   ├── system.md         # System prompt template
+│   │   └── refinery.md       # Merge refinery prompt template
+│   ├── sse.py                # SSE event consumer + dispatch
+│   └── tools.py              # ToolExecutor (CLI backend, sort/filter)
+├── tests/                    # 128 unit tests + 14 integration tests
 ├── pyproject.toml
 └── README.md
 ```
