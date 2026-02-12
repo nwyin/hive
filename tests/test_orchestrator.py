@@ -105,9 +105,7 @@ async def test_spawn_worker(temp_db, git_repo):
 
         # Clean up session
         if agent["session_id"]:
-            await opencode.delete_session(
-                agent["session_id"], directory=agent["worktree"]
-            )
+            await opencode.delete_session(agent["session_id"], directory=agent["worktree"])
 
 
 @pytest.mark.asyncio
@@ -151,9 +149,7 @@ async def test_full_worker_lifecycle(temp_db, git_repo):
         if updated_issue["assignee"]:
             agent = temp_db.get_agent(updated_issue["assignee"])
             if agent and agent["session_id"]:
-                await opencode.delete_session(
-                    agent["session_id"], directory=agent["worktree"]
-                )
+                await opencode.delete_session(agent["session_id"], directory=agent["worktree"])
 
 
 @pytest.fixture
@@ -190,8 +186,6 @@ def git_repo(tmp_path):
     )
 
     # Create main branch
-    subprocess.run(
-        ["git", "branch", "-M", "main"], cwd=repo_path, check=True, capture_output=True
-    )
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, check=True, capture_output=True)
 
     return repo_path

@@ -79,9 +79,7 @@ def build_worker_prompt(
     ]
 
     if step_number and total_steps and molecule_title:
-        context_parts.append(
-            f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"'
-        )
+        context_parts.append(f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"')
 
     context = "\n".join(context_parts)
 
@@ -104,9 +102,7 @@ def build_worker_prompt(
     )
 
 
-def build_system_prompt(
-    project: str, agent_name: str, worktree_path: Optional[str] = None
-) -> str:
+def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[str] = None) -> str:
     """
     Build the system prompt for an agent session.
 
@@ -170,9 +166,7 @@ def assess_completion(
 
         reason = ""
         if status != "success" and blockers:
-            reason = (
-                "; ".join(blockers) if isinstance(blockers, list) else str(blockers)
-            )
+            reason = "; ".join(blockers) if isinstance(blockers, list) else str(blockers)
         elif status != "success":
             reason = f"Worker reported status: {status}"
 
@@ -248,15 +242,9 @@ def assess_completion(
         )
 
     # Check for tool errors in the last message
-    tool_errors = [
-        p
-        for p in parts
-        if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"
-    ]
+    tool_errors = [p for p in parts if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"]
     if tool_errors:
-        error_details = "; ".join(
-            p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors
-        )
+        error_details = "; ".join(p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors)
         return CompletionResult(
             success=False,
             reason=f"Tool errors: {error_details}",
@@ -367,11 +355,7 @@ def build_refinery_prompt(
         problem = "Unknown merge issue. Investigate and resolve."
 
     worker_line = f"- **Worker**: {agent_name}" if agent_name else ""
-    test_step = (
-        f"Run tests: `{test_command}`"
-        if test_command
-        else "Verify the code compiles/looks correct"
-    )
+    test_step = f"Run tests: `{test_command}`" if test_command else "Verify the code compiles/looks correct"
 
     template_str = _load_template("refinery")
     return Template(template_str).safe_substitute(
@@ -445,10 +429,7 @@ def parse_merge_result(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
             "conflicts_resolved": 0,
         }
 
-    if any(
-        kw in text_lower
-        for kw in ["rejecting", "rejected", "incompatible", "cannot merge"]
-    ):
+    if any(kw in text_lower for kw in ["rejecting", "rejected", "incompatible", "cannot merge"]):
         return {
             "status": "rejected",
             "summary": text[:200],

@@ -260,9 +260,7 @@ def run_daemon_foreground(db, project_path: str, project_name: str):
     from .orchestrator import Orchestrator
 
     async def main():
-        async with OpenCodeClient(
-            Config.OPENCODE_URL, Config.OPENCODE_PASSWORD
-        ) as opencode:
+        async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
             orchestrator = Orchestrator(
                 db=db,
                 opencode_client=opencode,

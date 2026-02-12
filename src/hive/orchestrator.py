@@ -84,10 +84,7 @@ class Orchestrator:
             self._renew_lease_for_session(session_id)
 
             # If session becomes idle, signal completion
-            if (
-                status.get("type") == "idle"
-                and session_id in self.session_status_events
-            ):
+            if status.get("type") == "idle" and session_id in self.session_status_events:
                 self.session_status_events[session_id].set()
 
         self.sse_client.on("session.status", handle_session_status)
@@ -205,15 +202,11 @@ class Orchestrator:
 
         for agent_id, agent in list(self.active_agents.items()):
             try:
-                await self.opencode.abort_session(
-                    agent.session_id, directory=agent.worktree
-                )
+                await self.opencode.abort_session(agent.session_id, directory=agent.worktree)
             except Exception:
                 pass
             try:
-                await self.opencode.delete_session(
-                    agent.session_id, directory=agent.worktree
-                )
+                await self.opencode.delete_session(agent.session_id, directory=agent.worktree)
             except Exception:
                 pass
 
@@ -269,23 +262,17 @@ class Orchestrator:
         if not agent:
             return  # No active agent for this issue
 
-        print(
-            f"Canceling agent {agent.name} (session {agent.session_id}) for issue {issue_id}"
-        )
+        print(f"Canceling agent {agent.name} (session {agent.session_id}) for issue {issue_id}")
 
         # Abort the opencode session
         try:
-            await self.opencode.abort_session(
-                agent.session_id, directory=agent.worktree
-            )
+            await self.opencode.abort_session(agent.session_id, directory=agent.worktree)
         except Exception:
             pass  # Best-effort
 
         # Delete the session to prevent any restart
         try:
-            await self.opencode.delete_session(
-                agent.session_id, directory=agent.worktree
-            )
+            await self.opencode.delete_session(agent.session_id, directory=agent.worktree)
         except Exception:
             pass
 
@@ -522,9 +509,7 @@ class Orchestrator:
         Returns True if the session is idle, False otherwise.
         """
         try:
-            status = await self.opencode.get_session_status(
-                agent.session_id, directory=agent.worktree
-            )
+            status = await self.opencode.get_session_status(agent.session_id, directory=agent.worktree)
             return status is not None and status.get("type") == "idle"
         except Exception:
             return False
@@ -601,9 +586,7 @@ class Orchestrator:
                         break
 
                     # Check if there's been recent activity
-                    last_activity = self._session_last_activity.get(
-                        agent.session_id, datetime.now()
-                    )
+                    last_activity = self._session_last_activity.get(agent.session_id, datetime.now())
                     elapsed = (datetime.now() - last_activity).total_seconds()
 
                     if elapsed > Config.LEASE_DURATION:
@@ -635,15 +618,11 @@ class Orchestrator:
         does not linger and consume tokens.
         """
         try:
-            await self.opencode.abort_session(
-                agent.session_id, directory=agent.worktree
-            )
+            await self.opencode.abort_session(agent.session_id, directory=agent.worktree)
         except Exception:
             pass
         try:
-            await self.opencode.delete_session(
-                agent.session_id, directory=agent.worktree
-            )
+            await self.opencode.delete_session(agent.session_id, directory=agent.worktree)
         except Exception:
             pass
 
@@ -672,9 +651,7 @@ class Orchestrator:
                 agent.issue_id,
                 agent.agent_id,
                 "agent_complete_skipped",
-                {
-                    "reason": f"issue already {current_issue['status']}, cleaning up session"
-                },
+                {"reason": f"issue already {current_issue['status']}, cleaning up session"},
             )
             await self._cleanup_session(agent)
             if agent.agent_id in self.active_agents:
@@ -683,9 +660,7 @@ class Orchestrator:
 
         # Get messages from session
         try:
-            messages = await self.opencode.get_messages(
-                agent.session_id, directory=agent.worktree
-            )
+            messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
 
             # Assess completion — file_result takes priority over message parsing
             result = assess_completion(messages, file_result=file_result)
@@ -768,9 +743,7 @@ class Orchestrator:
             if agent.agent_id in self.active_agents:
                 del self.active_agents[agent.agent_id]
 
-    async def cycle_agent_to_next_step(
-        self, agent: AgentIdentity, next_step: Dict[str, Any]
-    ):
+    async def cycle_agent_to_next_step(self, agent: AgentIdentity, next_step: Dict[str, Any]):
         """
         Cycle an agent to the next step in a molecule.
 
@@ -1064,9 +1037,7 @@ async def main():
     db = Database(Config.DB_PATH)
     db.connect()
 
-    async with OpenCodeClient(
-        Config.OPENCODE_URL, Config.OPENCODE_PASSWORD
-    ) as opencode:
+    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
         # Get project path from command line or env
         import sys
 

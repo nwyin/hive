@@ -49,9 +49,7 @@ def git_repo(tmp_path):
         check=True,
         capture_output=True,
     )
-    subprocess.run(
-        ["git", "branch", "-M", "main"], cwd=repo_path, check=True, capture_output=True
-    )
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo_path, check=True, capture_output=True)
 
     return repo_path
 
@@ -69,9 +67,7 @@ def merge_entry_with_worktree(git_repo, temp_db):
     # Create worktree with a commit
     worktree_path = create_worktree(str(git_repo), "worker-test")
     (Path(worktree_path) / "feature.py").write_text("# new feature\n")
-    subprocess.run(
-        ["git", "add", "."], cwd=worktree_path, check=True, capture_output=True
-    )
+    subprocess.run(["git", "add", "."], cwd=worktree_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Add feature"],
         cwd=worktree_path,
@@ -131,9 +127,7 @@ async def test_process_queue_once_empty(temp_db, mock_opencode):
 
 
 @pytest.mark.asyncio
-async def test_mechanical_merge_success(
-    merge_entry_with_worktree, temp_db, mock_opencode
-):
+async def test_mechanical_merge_success(merge_entry_with_worktree, temp_db, mock_opencode):
     """Test successful mechanical merge (rebase + ff-merge)."""
     info = merge_entry_with_worktree
     mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
@@ -157,17 +151,13 @@ async def test_mechanical_merge_success(
 
 
 @pytest.mark.asyncio
-async def test_mechanical_merge_rebase_conflict(
-    merge_entry_with_worktree, temp_db, mock_opencode
-):
+async def test_mechanical_merge_rebase_conflict(merge_entry_with_worktree, temp_db, mock_opencode):
     """Test merge with rebase conflict falls through to refinery."""
     info = merge_entry_with_worktree
 
     # Create a conflicting commit on main
     (info["git_repo"] / "feature.py").write_text("# conflicting\n")
-    subprocess.run(
-        ["git", "add", "."], cwd=info["git_repo"], check=True, capture_output=True
-    )
+    subprocess.run(["git", "add", "."], cwd=info["git_repo"], check=True, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Conflict on main"],
         cwd=info["git_repo"],
@@ -211,9 +201,7 @@ conflicts_resolved: 0
 
 
 @pytest.mark.asyncio
-async def test_mechanical_merge_test_failure(
-    merge_entry_with_worktree, temp_db, mock_opencode
-):
+async def test_mechanical_merge_test_failure(merge_entry_with_worktree, temp_db, mock_opencode):
     """Test merge with test failure falls through to refinery."""
     info = merge_entry_with_worktree
 
@@ -287,9 +275,7 @@ async def test_finalize_issue(merge_entry_with_worktree, temp_db, mock_opencode)
 
 
 @pytest.mark.asyncio
-async def test_teardown_after_finalize(
-    merge_entry_with_worktree, temp_db, mock_opencode
-):
+async def test_teardown_after_finalize(merge_entry_with_worktree, temp_db, mock_opencode):
     """Test _teardown_after_finalize cleans up worktree and agent."""
     info = merge_entry_with_worktree
 

@@ -23,3 +23,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hive"]
+
+[tool.ruff]
+line-length = 144

@@ -5,25 +5,17 @@ import os
 
 def test_queen_agent_definition_exists():
     """Test that the queen bee agent definition file exists."""
-    agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
-    )
-    assert os.path.exists(agent_file), (
-        "Queen Bee agent definition missing at .opencode/agents/queen.md"
-    )
+    agent_file = os.path.join(os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md")
+    assert os.path.exists(agent_file), "Queen Bee agent definition missing at .opencode/agents/queen.md"
 
 
 def test_queen_agent_definition_has_frontmatter():
     """Test that the queen bee agent definition has valid frontmatter."""
-    agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
-    )
+    agent_file = os.path.join(os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md")
     with open(agent_file) as f:
         content = f.read()
 
-    assert content.startswith("---"), (
-        "Agent definition must start with YAML frontmatter"
-    )
+    assert content.startswith("---"), "Agent definition must start with YAML frontmatter"
     # Find end of frontmatter
     end_idx = content.index("---", 3)
     frontmatter = content[3:end_idx].strip()
@@ -39,9 +31,7 @@ def test_queen_agent_definition_has_frontmatter():
 
 def test_queen_agent_definition_references_cli():
     """Test that the queen bee agent definition references hive CLI commands."""
-    agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
-    )
+    agent_file = os.path.join(os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md")
     with open(agent_file) as f:
         content = f.read()
 
