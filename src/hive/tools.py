@@ -66,14 +66,26 @@ class ToolExecutor:
             "message": f"Created issue {issue_id}: {title}",
         }
 
+    # Map user-facing sort names to SQL column names
+    _SORT_COLUMNS = {
+        "priority": "priority",
+        "created": "created_at",
+        "updated": "updated_at",
+        "status": "status",
+        "title": "title",
+    }
+
     def handle_hive_list_issues(
         self,
         status: Optional[str] = None,
         assignee: Optional[str] = None,
         priority: Optional[int] = None,
+        issue_type: Optional[str] = None,
+        sort_by: str = "priority",
+        reverse: bool = False,
         limit: int = 50,
     ) -> Dict[str, Any]:
-        """List issues with filtering."""
+        """List issues with filtering and sorting."""
         query = "SELECT * FROM issues WHERE project = ?"
         params: List[Any] = [self.project_name]
 
@@ -86,8 +98,16 @@ class ToolExecutor:
         if priority is not None:
             query += " AND priority = ?"
             params.append(priority)
+        if issue_type:
+            query += " AND type = ?"
+            params.append(issue_type)
 
-        query += " ORDER BY priority, created_at LIMIT ?"
+        # Resolve sort column (default to priority if unknown)
+        sort_col = self._SORT_COLUMNS.get(sort_by, "priority")
+        direction = "DESC" if reverse else "ASC"
+        query += f" ORDER BY {sort_col} {direction}"
+
+        query += " LIMIT ?"
         params.append(str(limit))
 
         cursor = self.db.conn.execute(query, params)

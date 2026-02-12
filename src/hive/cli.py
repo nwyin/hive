@@ -74,22 +74,37 @@ class HiveCLI:
             print(f"  Priority: {priority}")
         return result.get("issue_id") if result else None
 
-    def list_issues(self, status: Optional[str] = None, *, json_mode: bool = False):
+    def list_issues(
+        self,
+        status: Optional[str] = None,
+        sort_by: str = "priority",
+        reverse: bool = False,
+        issue_type: Optional[str] = None,
+        assignee: Optional[str] = None,
+        limit: int = 50,
+        *,
+        json_mode: bool = False,
+    ):
         """List all issues."""
-        params = {}
+        params: dict = {"sort_by": sort_by, "reverse": reverse, "limit": limit}
         if status:
             params["status"] = status
+        if issue_type:
+            params["issue_type"] = issue_type
+        if assignee:
+            params["assignee"] = assignee
         result = self._run_tool("hive_list_issues", params, json_mode=json_mode)
         if not json_mode and result:
             issues = result.get("issues", [])
             if not issues:
                 print("No issues found.")
                 return
-            print(f"\n{'ID':<12} {'Status':<12} {'Pri':<4} {'Title':<40}")
-            print("-" * 70)
+            print(f"\n{'ID':<12} {'Status':<12} {'Pri':<4} {'Type':<10} {'Title':<40}")
+            print("-" * 80)
             for issue in issues:
+                itype = issue.get("type", "")[:10]
                 print(
-                    f"{issue['id']:<12} {issue['status']:<12} {issue['priority']:<4} {issue['title'][:40]}"
+                    f"{issue['id']:<12} {issue['status']:<12} {issue['priority']:<4} {itype:<10} {issue['title'][:40]}"
                 )
             print(f"\nTotal: {len(issues)} issues")
 
@@ -670,6 +685,27 @@ def main():
     # list command
     list_parser = subparsers.add_parser("list", help="List all issues")
     list_parser.add_argument("--status", help="Filter by status")
+    list_parser.add_argument(
+        "--sort",
+        choices=["priority", "created", "updated", "status", "title"],
+        default="priority",
+        help="Sort field (default: priority)",
+    )
+    list_parser.add_argument(
+        "-r",
+        "--reverse",
+        action="store_true",
+        help="Reverse sort order",
+    )
+    list_parser.add_argument(
+        "--type",
+        dest="issue_type",
+        help="Filter by issue type (task, bug, feature, step, molecule)",
+    )
+    list_parser.add_argument("--assignee", help="Filter by agent assignee")
+    list_parser.add_argument(
+        "--limit", type=int, default=50, help="Max issues to show (default: 50)"
+    )
 
     # ready command
     subparsers.add_parser("ready", help="Show ready queue")
@@ -855,7 +891,15 @@ def main():
             )
 
         elif args.command == "list":
-            cli.list_issues(args.status, json_mode=json_mode)
+            cli.list_issues(
+                args.status,
+                sort_by=args.sort,
+                reverse=args.reverse,
+                issue_type=args.issue_type,
+                assignee=args.assignee,
+                limit=args.limit,
+                json_mode=json_mode,
+            )
 
         elif args.command == "ready":
             cli.show_ready(json_mode=json_mode)
