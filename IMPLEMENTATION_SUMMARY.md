@@ -3,7 +3,7 @@
 ## What We Built
 
 A lightweight multi-agent orchestration system with:
-- **Mayor TUI** — primary user interface via OpenCode custom agent
+- **Queen Bee TUI** — primary user interface via OpenCode custom agent
 - **Multi-worker pool** for concurrent execution in git worktrees
 - **Daemon mode** for background orchestration
 - **Event-driven architecture** with SSE
@@ -13,7 +13,7 @@ A lightweight multi-agent orchestration system with:
 ## Architecture
 
 ```
-Human ←→ Mayor TUI (opencode @mayor agent)
+Human ←→ Queen Bee TUI (opencode @queen agent)
               ↓ (hive CLI commands)
          SQLite DB ←── Issues, deps, events
               ↓
@@ -24,9 +24,9 @@ Human ←→ Mayor TUI (opencode @mayor agent)
          Merge Queue → main branch
 ```
 
-### Mayor as TUI
+### Queen Bee as TUI
 
-The Mayor is the primary interface. `hive mayor` attaches to the running OpenCode server with `--dir` scoping so sessions resolve correctly. Inside the TUI, switch to `@mayor` to interact with Hive via natural language. The Mayor has access to 16 tools through the `hive` CLI.
+The Queen Bee is the primary interface. `hive queen` attaches to the running OpenCode server with `--dir` scoping so sessions resolve correctly. Inside the TUI, switch to `@queen` to interact with Hive via natural language. The Queen Bee has access to 16 tools through the `hive` CLI.
 
 ### Daemon
 
@@ -47,14 +47,14 @@ The Mayor is the primary interface. `hive mayor` attaches to the running OpenCod
 
 **Simplified:** single SQLite instead of distributed sync, OpenCode HTTP API instead of tmux, SQL instead of CRDTs.
 
-**Innovations:** session cycling for molecules, permission unblocker (500ms polling), structured completion signals (`:::COMPLETION:::`), Mayor as persistent TUI with tool access, `--dir` scoping for session resolution.
+**Innovations:** session cycling for molecules, permission unblocker (500ms polling), structured completion signals (`:::COMPLETION:::`), Queen Bee as persistent TUI with tool access, `--dir` scoping for session resolution.
 
 ## Phases
 
 ### Completed
 
 - **Phase 1** — Single worker loop: SQLite schema, OpenCode client, SSE consumer, git worktrees, worker prompts, structured completion signals, lease-based staleness detection
-- **Phase 2** — Mayor + multi-worker: Mayor TUI with 16 tools, concurrent worker pool, molecule session cycling, permission unblocker, daemon mode, full CLI
+- **Phase 2** — Queen Bee + multi-worker: Queen Bee TUI with 16 tools, concurrent worker pool, molecule session cycling, permission unblocker, daemon mode, full CLI
 
 ### Planned
 
@@ -65,7 +65,7 @@ The Mayor is the primary interface. `hive mayor` attaches to the running OpenCod
 
 ```
 hive/
-├── .opencode/agents/mayor.md   # Mayor agent definition
+├── .opencode/agents/queen.md   # Queen Bee agent definition
 ├── src/hive/
 │   ├── cli.py                  # CLI interface
 │   ├── config.py               # Configuration

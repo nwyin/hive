@@ -11,8 +11,8 @@ class Config:
 
     # Timing
     POLL_INTERVAL = int(os.environ.get("HIVE_POLL_INTERVAL", "5"))  # seconds
-    LEASE_DURATION = int(os.environ.get("HIVE_LEASE_DURATION", "300"))  # 5 minutes
-    LEASE_EXTENSION = int(os.environ.get("HIVE_LEASE_EXTENSION", "180"))  # 3 minutes
+    LEASE_DURATION = int(os.environ.get("HIVE_LEASE_DURATION", "900"))  # 15 minutes
+    LEASE_EXTENSION = int(os.environ.get("HIVE_LEASE_EXTENSION", "600"))  # 10 minutes
     PERMISSION_POLL_INTERVAL = float(
         os.environ.get("HIVE_PERMISSION_POLL_INTERVAL", "0.5")
     )  # 500ms
@@ -25,7 +25,7 @@ class Config:
     DB_PATH = os.environ.get("HIVE_DB_PATH", "hive.db")
 
     # Context cycling thresholds (token counts)
-    MAYOR_TOKEN_THRESHOLD = int(os.environ.get("HIVE_MAYOR_TOKEN_THRESHOLD", "120000"))
+    QUEEN_TOKEN_THRESHOLD = int(os.environ.get("HIVE_QUEEN_TOKEN_THRESHOLD", "120000"))
     REFINERY_TOKEN_THRESHOLD = int(
         os.environ.get("HIVE_REFINERY_TOKEN_THRESHOLD", "100000")
     )

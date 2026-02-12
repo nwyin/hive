@@ -1,22 +1,22 @@
-"""Tests for Mayor functionality (agent definition and CLI integration)."""
+"""Tests for Queen Bee functionality (agent definition and CLI integration)."""
 
 import os
 
 
-def test_mayor_agent_definition_exists():
-    """Test that the mayor agent definition file exists."""
+def test_queen_agent_definition_exists():
+    """Test that the queen bee agent definition file exists."""
     agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "mayor.md"
+        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
     )
     assert os.path.exists(agent_file), (
-        "Mayor agent definition missing at .opencode/agents/mayor.md"
+        "Queen Bee agent definition missing at .opencode/agents/queen.md"
     )
 
 
-def test_mayor_agent_definition_has_frontmatter():
-    """Test that the mayor agent definition has valid frontmatter."""
+def test_queen_agent_definition_has_frontmatter():
+    """Test that the queen bee agent definition has valid frontmatter."""
     agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "mayor.md"
+        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
     )
     with open(agent_file) as f:
         content = f.read()
@@ -37,10 +37,10 @@ def test_mayor_agent_definition_has_frontmatter():
     assert "permission" in meta
 
 
-def test_mayor_agent_definition_references_cli():
-    """Test that the mayor agent definition references hive CLI commands."""
+def test_queen_agent_definition_references_cli():
+    """Test that the queen bee agent definition references hive CLI commands."""
     agent_file = os.path.join(
-        os.path.dirname(__file__), "..", ".opencode", "agents", "mayor.md"
+        os.path.dirname(__file__), "..", ".opencode", "agents", "queen.md"
     )
     with open(agent_file) as f:
         content = f.read()

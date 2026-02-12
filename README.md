@@ -6,7 +6,7 @@ A simplified multi-agent orchestration system using OpenCode server mode as the 
 
 Hive coordinates multiple AI coding agents working concurrently on a codebase. It handles:
 
-- **Strategic decomposition**: A Mayor agent breaks down user requests into concrete work items
+- **Strategic decomposition**: The Queen Bee agent breaks down user requests into concrete work items
 - **Parallel execution**: Multiple worker agents execute tasks concurrently in isolated git worktrees
 - **Dependency management**: Issues are queued and dispatched based on dependency resolution
 - **Multi-step workflows**: Molecules enable sequential workflows where one agent handles multiple related steps
@@ -15,7 +15,7 @@ Hive coordinates multiple AI coding agents working concurrently on a codebase. I
 ## Architecture
 
 ```
-Human ←→ Mayor TUI (opencode @mayor agent)
+Human ←→ Queen Bee TUI (opencode @queen agent)
               ↓ (hive CLI commands)
          SQLite DB ←── Issues, deps, events
               ↓
@@ -30,7 +30,7 @@ Human ←→ Mayor TUI (opencode @mayor agent)
 
 | Component | Role |
 |-----------|------|
-| **Mayor** | OpenCode custom agent that decomposes user requests into issues via `hive` CLI |
+| **Queen Bee** | OpenCode custom agent that decomposes user requests into issues via `hive` CLI |
 | **Daemon** | Background orchestrator that polls the ready queue and spawns workers |
 | **Workers** | Ephemeral coding agents that implement features, fix bugs, write tests |
 | **SQLite DB** | Single source of truth for issues, dependencies, agents, events |
@@ -81,13 +81,13 @@ hive daemon start
 
 The daemon polls the ready queue, spawns workers, monitors completion, and handles retries.
 
-### 3. Launch the Mayor
+### 3. Launch the Queen Bee
 
 ```bash
-hive mayor
+hive queen
 ```
 
-This attaches to the running OpenCode server and opens a TUI. Switch to the `@mayor` agent to interact with Hive through natural language. The Mayor decomposes your requests into issues, wires dependencies, and monitors progress -- all through `hive` CLI commands.
+This attaches to the running OpenCode server and opens a TUI. Switch to the `@queen` agent to interact with Hive through natural language. The Queen Bee decomposes your requests into issues, wires dependencies, and monitors progress -- all through `hive` CLI commands.
 
 ### 4. Or manage issues directly
 
@@ -168,11 +168,11 @@ Steps JSON format for molecules:
 | `hive daemon status` | Show daemon status |
 | `hive daemon logs [-f] [-n N]` | Show daemon logs |
 
-### Mayor
+### Queen Bee
 
 | Command | Description |
 |---------|-------------|
-| `hive mayor` | Launch Mayor TUI (attaches to OpenCode server) |
+| `hive queen` | Launch Queen Bee TUI (attaches to OpenCode server) |
 
 ## Configuration
 
@@ -201,8 +201,8 @@ export HIVE_DEFAULT_MODEL=claude-sonnet-4-5-20250929
 
 ### Workflow
 
-1. **User talks to the Mayor** (or creates issues directly via CLI)
-2. **Mayor decomposes requests** into issues with dependencies using `hive` CLI commands
+1. **User talks to the Queen Bee** (or creates issues directly via CLI)
+2. **Queen Bee decomposes requests** into issues with dependencies using `hive` CLI commands
 3. **Daemon polls ready queue** for issues with no unresolved dependencies
 4. **Worker spawned** for each ready issue:
    - Creates git worktree (`.worktrees/<agent-name>`)
@@ -275,7 +275,7 @@ uvx ruff format --line-length 144 src/ tests/
 ```
 hive/
 ├── .opencode/agents/
-│   └── mayor.md         # Mayor agent definition (system prompt + permissions)
+│   └── queen.md         # Queen Bee agent definition (system prompt + permissions)
 ├── src/hive/
 │   ├── cli.py           # CLI interface (all commands route through ToolExecutor)
 │   ├── config.py        # Configuration
