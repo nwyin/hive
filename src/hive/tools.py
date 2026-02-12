@@ -238,9 +238,7 @@ class ToolExecutor:
             "message": f"Created molecule {parent_id} with {len(steps)} steps",
         }
 
-    def handle_hive_add_dependency(
-        self, issue_id: str, depends_on: str, type: str = "blocks"
-    ) -> Dict[str, Any]:
+    def handle_hive_add_dependency(self, issue_id: str, depends_on: str, type: str = "blocks") -> Dict[str, Any]:
         """Add a dependency between issues."""
         # Verify both issues exist
         if not self.db.get_issue(issue_id):
@@ -256,9 +254,7 @@ class ToolExecutor:
             "message": f"Added {type} dependency: {issue_id} depends on {depends_on}",
         }
 
-    def handle_hive_remove_dependency(
-        self, issue_id: str, depends_on: str
-    ) -> Dict[str, Any]:
+    def handle_hive_remove_dependency(self, issue_id: str, depends_on: str) -> Dict[str, Any]:
         """Remove a dependency."""
         self.db.conn.execute(
             "DELETE FROM dependencies WHERE issue_id = ? AND depends_on = ?",
@@ -272,9 +268,7 @@ class ToolExecutor:
             "message": f"Removed dependency: {issue_id} no longer depends on {depends_on}",
         }
 
-    def handle_hive_cancel_issue(
-        self, issue_id: str, reason: str = ""
-    ) -> Dict[str, Any]:
+    def handle_hive_cancel_issue(self, issue_id: str, reason: str = "") -> Dict[str, Any]:
         """Cancel an issue."""
         issue = self.db.get_issue(issue_id)
         if not issue:
@@ -332,9 +326,7 @@ class ToolExecutor:
             "message": f"Escalated issue {issue_id}: {reason}",
         }
 
-    def handle_hive_close_issue(
-        self, issue_id: str, resolution: str = ""
-    ) -> Dict[str, Any]:
+    def handle_hive_close_issue(self, issue_id: str, resolution: str = "") -> Dict[str, Any]:
         """Close/finalize an issue."""
         issue = self.db.get_issue(issue_id)
         if not issue:
@@ -370,11 +362,8 @@ class ToolExecutor:
         # Get ready queue
         ready = self.db.get_ready_queue(limit=10)
 
-        # Get merge queue count
-        cursor = self.db.conn.execute(
-            "SELECT COUNT(*) FROM merge_queue WHERE status = 'queued'"
-        )
-        merge_count = cursor.fetchone()[0]
+        # Get merge queue stats
+        merge_stats = self.db.get_merge_queue_stats()
 
         return {
             "project": self.project_name,
@@ -382,7 +371,7 @@ class ToolExecutor:
             "total_issues": sum(status_counts.values()),
             "active_agents": len(active_agents),
             "ready_queue": len(ready),
-            "merge_queue": merge_count,
+            "merge_queue": merge_stats,
             "ready_issues": [{"id": i["id"], "title": i["title"]} for i in ready[:5]],
         }
 
@@ -453,8 +442,6 @@ class ToolExecutor:
         limit: int = 20,
     ) -> Dict[str, Any]:
         """Get events."""
-        events = self.db.get_events(
-            issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit
-        )
+        events = self.db.get_events(issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit)
 
         return {"count": len(events), "events": events}

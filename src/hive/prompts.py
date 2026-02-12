@@ -11,6 +11,9 @@ from .models import CompletionResult
 # Regex for parsing structured completion signal
 COMPLETION_RE = re.compile(r":::COMPLETION\s*\n(.*?):::", re.DOTALL)
 
+# Regex for parsing merge result signal
+MERGE_RESULT_RE = re.compile(r":::MERGE_RESULT\s*\n(.*?):::", re.DOTALL)
+
 
 def build_worker_prompt(
     agent_name: str,
@@ -47,9 +50,7 @@ def build_worker_prompt(
     ]
 
     if step_number and total_steps and molecule_title:
-        context_parts.append(
-            f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"'
-        )
+        context_parts.append(f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"')
 
     context = "\n".join(context_parts)
 
@@ -158,9 +159,7 @@ artifacts:
     return prompt
 
 
-def build_system_prompt(
-    project: str, agent_name: str, worktree_path: Optional[str] = None
-) -> str:
+def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[str] = None) -> str:
     """
     Build the system prompt for an agent session.
 
@@ -265,15 +264,9 @@ def assess_completion(messages: List[Dict[str, Any]]) -> CompletionResult:
         )
 
     # Check for tool errors in the last message
-    tool_errors = [
-        p
-        for p in parts
-        if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"
-    ]
+    tool_errors = [p for p in parts if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"]
     if tool_errors:
-        error_details = "; ".join(
-            p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors
-        )
+        error_details = "; ".join(p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors)
         return CompletionResult(
             success=False,
             reason=f"Tool errors: {error_details}",
@@ -303,3 +296,182 @@ def assess_completion(messages: List[Dict[str, Any]]) -> CompletionResult:
         reason="",
         summary="Task appears complete (no explicit completion signal)",
     )
+
+
+def build_refinery_prompt(
+    issue_title: str,
+    issue_id: str,
+    branch_name: str,
+    worktree_path: str,
+    agent_name: Optional[str] = None,
+    rebase_succeeded: bool = False,
+    test_output: Optional[str] = None,
+    test_command: Optional[str] = None,
+) -> str:
+    """
+    Build the Refinery prompt for processing a merge.
+
+    Args:
+        issue_title: Title of the issue being merged
+        issue_id: Issue ID
+        branch_name: Git branch name
+        worktree_path: Path to the worktree
+        agent_name: Name of the worker agent (optional)
+        rebase_succeeded: Whether mechanical rebase succeeded
+        test_output: Output from test run (if tests failed)
+        test_command: Test command that was run
+
+    Returns:
+        Formatted refinery prompt string
+    """
+    if not rebase_succeeded:
+        problem = "Mechanical rebase FAILED — conflicts detected. Please resolve them."
+    elif test_output:
+        problem = f"Rebase succeeded but TESTS FAILED. Please diagnose.\n\nTest command: {test_command}\nTest output:\n{test_output[:3000]}"
+    else:
+        problem = "Unknown merge issue. Investigate and resolve."
+
+    prompt = f"""You are the Refinery — the merge processor for a multi-agent coding system.
+
+## YOUR ROLE
+
+You process branches that workers have completed. Your job:
+1. Rebase the branch onto the latest main
+2. Resolve any merge conflicts
+3. Run tests and verify the integration
+4. If everything passes, leave the branch in a mergeable state
+
+You are NOT a developer. You do not re-implement features. You integrate
+completed work. If a branch is fundamentally incompatible with main, you
+reject it — you don't rewrite it.
+
+## CURRENT TASK
+
+Process this branch for merge to main.
+
+- **Issue**: {issue_id} — {issue_title}
+- **Branch**: {branch_name}
+- **Worktree**: {worktree_path}
+{f"- **Worker**: {agent_name}" if agent_name else ""}
+
+### Problem
+
+{problem}
+
+## STEPS
+
+1. `cd {worktree_path}`
+2. Run `git rebase main` (resolve conflicts if any)
+3. {f"Run tests: `{test_command}`" if test_command else "Verify the code compiles/looks correct"}
+4. Ensure all changes are committed and git status is clean
+5. Output a `:::MERGE_RESULT:::` block (see below)
+
+## CARDINAL RULES
+
+1. **Sequential processing**: After every merge, main moves. Each branch
+   MUST rebase on the latest baseline.
+
+2. **The Verification Gate**: You CANNOT approve a merge without:
+   - Tests passing, OR
+   - A clear determination that test failures are pre-existing (not introduced
+     by this branch)
+   If tests fail and you can't determine the cause, REJECT the branch.
+
+3. **No silent failures**: Every conflict must be recorded. Every test failure
+   must be attributed.
+
+4. **Stay in the worktree**: All work happens in {worktree_path}
+
+## CONFLICT RESOLUTION APPROACH
+
+When you hit a rebase conflict:
+1. Read the conflicting files — understand what both sides changed
+2. If the conflict is mechanical (both sides added imports): resolve it
+3. If the conflict is semantic (both sides changed the same logic): resolve
+   if the intent is clear, reject if ambiguous
+4. After resolving, run tests to verify
+
+## COMPLETION SIGNAL
+
+After processing, output this as the LAST thing in your response:
+
+:::MERGE_RESULT
+issue_id: {issue_id}
+status: merged | rejected | needs_human
+summary: <what happened>
+tests_passed: true | false
+conflicts_resolved: <number, 0 if none>
+:::
+"""
+    return prompt
+
+
+def parse_merge_result(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Parse a :::MERGE_RESULT::: signal from session messages.
+
+    Args:
+        messages: List of message dicts from OpenCode session
+
+    Returns:
+        Dict with keys: status, summary, tests_passed, conflicts_resolved.
+        Returns a default 'needs_human' result if parsing fails.
+    """
+    default_result = {
+        "status": "needs_human",
+        "summary": "Could not parse merge result",
+        "tests_passed": False,
+        "conflicts_resolved": 0,
+    }
+
+    if not messages:
+        return default_result
+
+    # Get text from the last message
+    last = messages[-1]
+    parts = last.get("parts", [])
+    text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
+    text = " ".join(text_parts)
+
+    # Try structured signal
+    match = MERGE_RESULT_RE.search(text)
+    if match:
+        try:
+            payload = yaml.safe_load(match.group(1))
+            return {
+                "status": payload.get("status", "needs_human"),
+                "summary": payload.get("summary", ""),
+                "tests_passed": payload.get("tests_passed", False),
+                "conflicts_resolved": int(payload.get("conflicts_resolved", 0)),
+            }
+        except (yaml.YAMLError, KeyError, TypeError, ValueError):
+            pass
+
+    # Heuristic fallback
+    text_lower = text.lower()
+
+    if any(
+        kw in text_lower
+        for kw in [
+            "successfully merged",
+            "merge complete",
+            "rebase complete",
+            "all tests pass",
+        ]
+    ):
+        return {
+            "status": "merged",
+            "summary": text[:200],
+            "tests_passed": True,
+            "conflicts_resolved": 0,
+        }
+
+    if any(kw in text_lower for kw in ["rejecting", "rejected", "incompatible", "cannot merge"]):
+        return {
+            "status": "rejected",
+            "summary": text[:200],
+            "tests_passed": False,
+            "conflicts_resolved": 0,
+        }
+
+    return default_result

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from .config import Config
 from .db import Database
 from .git import create_worktree, get_commit_hash, remove_worktree
+from .merge import MergeProcessor
 from .ids import generate_id
 from .models import AgentIdentity, CompletionResult
 from .opencode import OpenCodeClient, make_model_config
@@ -44,6 +45,14 @@ class Orchestrator:
         self.project_path = Path(project_path).resolve()
         self.project_name = project_name
 
+        # Merge processor
+        self.merge_processor = MergeProcessor(
+            db=db,
+            opencode=opencode_client,
+            project_path=project_path,
+            project_name=project_name,
+        )
+
         # Track active agents
         self.active_agents: Dict[str, AgentIdentity] = {}
 
@@ -68,10 +77,7 @@ class Orchestrator:
             status = properties.get("status", {})
 
             # If session becomes idle, signal completion
-            if (
-                status.get("type") == "idle"
-                and session_id in self.session_status_events
-            ):
+            if status.get("type") == "idle" and session_id in self.session_status_events:
                 self.session_status_events[session_id].set()
 
         self.sse_client.on("session.status", handle_session_status)
@@ -87,6 +93,9 @@ class Orchestrator:
         # Start permission unblocker in background
         permission_task = asyncio.create_task(self.permission_unblocker_loop())
 
+        # Start merge queue processor in background
+        merge_task = asyncio.create_task(self.merge_processor_loop())
+
         try:
             # Run main loop
             await self.main_loop()
@@ -95,6 +104,7 @@ class Orchestrator:
             self.sse_client.stop()
             await sse_task
             await permission_task
+            await merge_task
 
     async def main_loop(self):
         """Main orchestration loop."""
@@ -293,9 +303,7 @@ class Orchestrator:
         """
         # Get messages from session
         try:
-            messages = await self.opencode.get_messages(
-                agent.session_id, directory=agent.worktree
-            )
+            messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
 
             # Assess completion
             result = assess_completion(messages)
@@ -376,9 +384,7 @@ class Orchestrator:
             if agent.agent_id in self.active_agents:
                 del self.active_agents[agent.agent_id]
 
-    async def cycle_agent_to_next_step(
-        self, agent: AgentIdentity, next_step: Dict[str, Any]
-    ):
+    async def cycle_agent_to_next_step(self, agent: AgentIdentity, next_step: Dict[str, Any]):
         """
         Cycle an agent to the next step in a molecule.
 
@@ -559,6 +565,20 @@ class Orchestrator:
 
             await self.handle_stalled_agent(agent)
 
+    async def merge_processor_loop(self):
+        """
+        Background loop to process the merge queue.
+
+        Runs on MERGE_POLL_INTERVAL, processes one merge at a time.
+        """
+        while self.running:
+            try:
+                if Config.MERGE_QUEUE_ENABLED:
+                    await self.merge_processor.process_queue_once()
+            except Exception as e:
+                print(f"Error in merge processor: {e}")
+            await asyncio.sleep(Config.MERGE_POLL_INTERVAL)
+
     async def permission_unblocker_loop(self):
         """
         Fast loop to auto-resolve pending permission requests based on policy.
@@ -646,9 +666,7 @@ async def main():
     db = Database(Config.DB_PATH)
     db.connect()
 
-    async with OpenCodeClient(
-        Config.OPENCODE_URL, Config.OPENCODE_PASSWORD
-    ) as opencode:
+    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
         # Get project path from command line or env
         import sys
 

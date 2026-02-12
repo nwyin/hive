@@ -15,9 +15,7 @@ def test_database_connection(temp_db):
     assert isinstance(temp_db.conn, sqlite3.Connection)
 
     # Check that tables were created
-    cursor = temp_db.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    )
+    cursor = temp_db.conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
     tables = [row[0] for row in cursor.fetchall()]
 
     expected_tables = [
@@ -283,3 +281,126 @@ def test_foreign_keys_enabled(temp_db):
     cursor = temp_db.conn.execute("PRAGMA foreign_keys")
     enabled = cursor.fetchone()[0]
     assert enabled == 1
+
+
+# --- Merge queue method tests ---
+
+
+@pytest.fixture
+def db_with_merge_queue(temp_db):
+    """Create a DB with issues and merge queue entries."""
+    db = temp_db
+
+    # Create agents first (needed for FK)
+    agent_id = db.create_agent(name="worker-abc")
+
+    # Create issues
+    id1 = db.create_issue(title="Feature A", project="test")
+    id2 = db.create_issue(title="Feature B", project="test")
+    id3 = db.create_issue(title="Feature C", project="test")
+
+    # Mark them done
+    db.update_issue_status(id1, "done")
+    db.update_issue_status(id2, "done")
+    db.update_issue_status(id3, "done")
+
+    # Enqueue to merge queue
+    db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (id1, agent_id, "test", "/tmp/wt1", "agent/worker-1"),
+    )
+    db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (id2, agent_id, "test", "/tmp/wt2", "agent/worker-2"),
+    )
+    db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status) VALUES (?, ?, ?, ?, ?, ?)",
+        (id3, agent_id, "test", "/tmp/wt3", "agent/worker-3", "merged"),
+    )
+    db.conn.commit()
+
+    return db, agent_id, [id1, id2, id3]
+
+
+def test_get_queued_merges(db_with_merge_queue):
+    """Test retrieving queued merge entries."""
+    db, agent_id, issue_ids = db_with_merge_queue
+
+    merges = db.get_queued_merges()
+    assert len(merges) == 2  # Only 'queued', not 'merged'
+
+    # Should have joined fields
+    assert merges[0]["issue_title"] == "Feature A"
+    assert merges[0]["branch_name"] == "agent/worker-1"
+    assert merges[0]["agent_name"] == "worker-abc"
+
+    # Should be ordered by enqueued_at
+    assert merges[0]["issue_id"] == issue_ids[0]
+    assert merges[1]["issue_id"] == issue_ids[1]
+
+
+def test_get_queued_merges_with_limit(db_with_merge_queue):
+    """Test limit parameter on get_queued_merges."""
+    db, _, _ = db_with_merge_queue
+
+    merges = db.get_queued_merges(limit=1)
+    assert len(merges) == 1
+
+
+def test_get_queued_merges_empty(temp_db):
+    """Test get_queued_merges with empty queue."""
+    merges = temp_db.get_queued_merges()
+    assert merges == []
+
+
+def test_update_merge_queue_status(db_with_merge_queue):
+    """Test updating merge queue entry status."""
+    db, _, _ = db_with_merge_queue
+
+    # Get the first queued entry
+    merges = db.get_queued_merges(limit=1)
+    queue_id = merges[0]["id"]
+
+    # Update to running
+    db.update_merge_queue_status(queue_id, "running")
+    entry = db.get_merge_queue_entry(queue_id)
+    assert entry["status"] == "running"
+    assert entry["completed_at"] is None
+
+    # Update to merged with timestamp
+    db.update_merge_queue_status(queue_id, "merged", completed_at="2026-02-12 12:00:00")
+    entry = db.get_merge_queue_entry(queue_id)
+    assert entry["status"] == "merged"
+    assert entry["completed_at"] == "2026-02-12 12:00:00"
+
+
+def test_get_merge_queue_entry(db_with_merge_queue):
+    """Test retrieving a single merge queue entry."""
+    db, _, _ = db_with_merge_queue
+
+    entry = db.get_merge_queue_entry(1)
+    assert entry is not None
+    assert entry["branch_name"] == "agent/worker-1"
+
+
+def test_get_merge_queue_entry_missing(temp_db):
+    """Test retrieving non-existent merge queue entry returns None."""
+    entry = temp_db.get_merge_queue_entry(9999)
+    assert entry is None
+
+
+def test_get_merge_queue_stats(db_with_merge_queue):
+    """Test merge queue statistics."""
+    db, _, _ = db_with_merge_queue
+
+    stats = db.get_merge_queue_stats()
+    assert stats["queued"] == 2
+    assert stats["merged"] == 1
+    assert stats["running"] == 0
+    assert stats["failed"] == 0
+
+
+def test_get_merge_queue_stats_empty(temp_db):
+    """Test merge queue stats with empty queue."""
+    stats = temp_db.get_merge_queue_stats()
+    assert stats == {"queued": 0, "running": 0, "merged": 0, "failed": 0}
