@@ -37,5 +37,15 @@ class Config:
     MAX_RETRIES = int(os.environ.get("HIVE_MAX_RETRIES", "2"))
     MAX_AGENT_SWITCHES = int(os.environ.get("HIVE_MAX_AGENT_SWITCHES", "2"))
 
+    # Merge queue
+    MERGE_POLL_INTERVAL = int(
+        os.environ.get("HIVE_MERGE_POLL_INTERVAL", "10")
+    )  # seconds
+    TEST_COMMAND = os.environ.get("HIVE_TEST_COMMAND")  # None = skip test gate
+    MERGE_QUEUE_ENABLED = os.environ.get(
+        "HIVE_MERGE_QUEUE_ENABLED", "true"
+    ).lower() in ("true", "1", "yes")
+
     # Model
     DEFAULT_MODEL = os.environ.get("HIVE_DEFAULT_MODEL", "claude-opus-4-6")
+    REFINERY_MODEL = os.environ.get("HIVE_REFINERY_MODEL", DEFAULT_MODEL)
