@@ -90,6 +90,9 @@ class Orchestrator:
         # Start SSE event consumer in background
         sse_task = asyncio.create_task(self.sse_client.connect_with_reconnect())
 
+        # Start permission unblocker in background
+        permission_task = asyncio.create_task(self.permission_unblocker_loop())
+
         try:
             # Run main loop
             await self.main_loop()
@@ -97,6 +100,7 @@ class Orchestrator:
             self.running = False
             self.sse_client.stop()
             await sse_task
+            await permission_task
 
     async def main_loop(self):
         """Main orchestration loop."""
@@ -765,6 +769,89 @@ Ready for the next request.""",
             )
 
             await self.handle_stalled_agent(agent)
+
+    async def permission_unblocker_loop(self):
+        """
+        Fast loop to auto-resolve pending permission requests based on policy.
+
+        Polls every 500ms to prevent agent stalls.
+        """
+        while self.running:
+            try:
+                # Slow down if no active agents
+                if len(self.active_agents) == 0:
+                    await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL * 4)
+                    continue
+
+                # Get pending permissions
+                pending = await self.opencode.get_pending_permissions()
+
+                for perm in pending:
+                    decision = self.evaluate_permission_policy(perm)
+                    if decision:
+                        # Auto-resolve based on policy
+                        await self.opencode.reply_permission(
+                            perm["id"], reply=decision
+                        )
+
+                        # Find which issue this permission belongs to
+                        session_id = perm.get("sessionID")
+                        issue_id = None
+                        agent_id = None
+
+                        for agent in self.active_agents.values():
+                            if agent.session_id == session_id:
+                                issue_id = agent.issue_id
+                                agent_id = agent.agent_id
+                                break
+
+                        self.db.log_event(
+                            issue_id,
+                            agent_id,
+                            "permission_resolved",
+                            {
+                                "permission": perm.get("permission"),
+                                "patterns": perm.get("patterns"),
+                                "decision": decision,
+                            },
+                        )
+
+                await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL)
+
+            except Exception as e:
+                print(f"Error in permission unblocker: {e}")
+                await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL)
+
+    def evaluate_permission_policy(self, perm: Dict[str, Any]) -> Optional[str]:
+        """
+        Apply policy rules to decide allow/deny.
+
+        Args:
+            perm: Permission request dict from OpenCode
+
+        Returns:
+            "once", "always", or None if no rule matches
+        """
+        permission = perm.get("permission")
+        patterns = perm.get("patterns", [])
+
+        # Session-level permissions handle most cases (set at session creation).
+        # This catches runtime permission requests that slip through.
+
+        # Workers should never ask questions or enter plan mode
+        if permission in ("question", "plan_enter", "plan_exit"):
+            return "reject"
+
+        # Workers should never leave their worktree
+        if permission == "external_directory":
+            return "reject"
+
+        # Allow standard tool usage within the session's directory scope
+        if permission in ("read", "edit", "write", "bash"):
+            return "once"
+
+        # Unknown permission - let it block (human reviews)
+        return None
 
 
 async def main():
