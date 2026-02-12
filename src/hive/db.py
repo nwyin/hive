@@ -528,3 +528,85 @@ class Database:
             """
         )
         return [dict(row) for row in cursor.fetchall()]
+
+    # --- Merge Queue Methods ---
+
+    def get_queued_merges(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Get queued merge queue entries, oldest first.
+
+        Args:
+            limit: Maximum entries to return
+
+        Returns:
+            List of merge queue entry dicts with joined issue/agent info
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT mq.*, i.title as issue_title, a.name as agent_name
+            FROM merge_queue mq
+            JOIN issues i ON mq.issue_id = i.id
+            LEFT JOIN agents a ON mq.agent_id = a.id
+            WHERE mq.status = 'queued'
+            ORDER BY mq.enqueued_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_merge_queue_status(
+        self, queue_id: int, status: str, completed_at: Optional[str] = None
+    ):
+        """
+        Update merge queue entry status.
+
+        Args:
+            queue_id: Merge queue entry ID
+            status: New status (queued|running|merged|failed)
+            completed_at: Completion timestamp (optional)
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE merge_queue
+                SET status = ?, completed_at = ?
+                WHERE id = ?
+                """,
+                (status, completed_at, queue_id),
+            )
+
+    def get_merge_queue_entry(self, queue_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get a single merge queue entry by ID.
+
+        Args:
+            queue_id: Merge queue entry ID
+
+        Returns:
+            Merge queue entry dict, or None if not found
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM merge_queue WHERE id = ?", (queue_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_merge_queue_stats(self) -> Dict[str, int]:
+        """
+        Get merge queue statistics by status.
+
+        Returns:
+            Dict mapping status to count, e.g. {"queued": 3, "merged": 10, ...}
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT status, COUNT(*) as count
+            FROM merge_queue
+            GROUP BY status
+            """
+        )
+        stats = {"queued": 0, "running": 0, "merged": 0, "failed": 0}
+        for row in cursor.fetchall():
+            stats[row["status"]] = row["count"]
+        return stats
