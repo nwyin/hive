@@ -536,19 +536,21 @@ class HiveCLI:
     def _make_daemon(self) -> HiveDaemon:
         return HiveDaemon(self.project_name, str(self.project_path))
 
-    def start(self, foreground: bool = False):
+    def start(self, foreground: bool = False, *, json_mode: bool = False):
         """Start the hive daemon (or run in foreground for debugging)."""
         if foreground:
-            print(
-                f"Starting Hive orchestrator in foreground for project: {self.project_name}"
-            )
-            print("Press Ctrl+C to stop\n")
+            if not json_mode:
+                print(
+                    f"Starting Hive orchestrator in foreground for project: {self.project_name}"
+                )
+                print("Press Ctrl+C to stop\n")
             try:
                 run_daemon_foreground(
                     self.db, str(self.project_path), self.project_name
                 )
             except KeyboardInterrupt:
-                print("\nStopping orchestrator...")
+                if not json_mode:
+                    print("\nStopping orchestrator...")
             return
 
         daemon = self._make_daemon()
@@ -556,10 +558,13 @@ class HiveCLI:
         # Check if already running
         status = daemon.status()
         if status["running"]:
-            print(f"Hive daemon already running (PID {status['pid']})")
-            print(f"  Log file: {status.get('log_file', 'N/A')}")
-            print("\n  hive stop        — stop the daemon")
-            print("  hive daemon logs — view daemon logs")
+            if json_mode:
+                print(json.dumps({"status": "already_running", "pid": status["pid"]}))
+            else:
+                print(f"Hive daemon already running (PID {status['pid']})")
+                print(f"  Log file: {status.get('log_file', 'N/A')}")
+                print("\n  hive stop        — stop the daemon")
+                print("  hive daemon logs — view daemon logs")
             return
 
         # Start daemon as a detached subprocess
@@ -567,50 +572,98 @@ class HiveCLI:
 
         if started:
             ds = daemon.status()
-            print(f"Hive daemon started (PID {ds['pid']})")
-            print(f"  Log file: {ds.get('log_file', 'N/A')}")
-            print("\n  hive status      — check system status")
-            print("  hive stop        — stop the daemon")
-            print("  hive daemon logs — view daemon logs")
+            if json_mode:
+                print(json.dumps({"status": "started", "pid": ds["pid"]}))
+            else:
+                print(f"Hive daemon started (PID {ds['pid']})")
+                print(f"  Log file: {ds.get('log_file', 'N/A')}")
+                print("\n  hive status      — check system status")
+                print("  hive stop        — stop the daemon")
+                print("  hive daemon logs — view daemon logs")
         else:
-            print("Failed to start daemon. Check logs:")
-            print(f"  {daemon.log_file}")
+            if json_mode:
+                print(json.dumps({"error": "Failed to start daemon"}))
+                sys.exit(1)
+            else:
+                print("Failed to start daemon. Check logs:")
+                print(f"  {daemon.log_file}")
 
-    def stop(self):
+    def stop(self, *, json_mode: bool = False):
         """Stop the hive daemon."""
         daemon = self._make_daemon()
         status = daemon.status()
         if not status["running"]:
-            print("Hive daemon is not running.")
+            if json_mode:
+                print(json.dumps({"status": "not_running"}))
+            else:
+                print("Hive daemon is not running.")
             return
         pid = status["pid"]
         stopped = daemon.stop()
         if stopped:
-            print(f"Hive daemon stopped (was PID {pid})")
+            if json_mode:
+                print(json.dumps({"status": "stopped"}))
+            else:
+                print(f"Hive daemon stopped (was PID {pid})")
         else:
-            print(f"Failed to stop daemon (PID {pid})")
+            if json_mode:
+                print(json.dumps({"error": f"Failed to stop daemon (PID {pid})"}))
+                sys.exit(1)
+            else:
+                print(f"Failed to stop daemon (PID {pid})")
 
-    def daemon_start(self, foreground: bool = False):
+    def daemon_start(self, foreground: bool = False, *, json_mode: bool = False):
         """Start the orchestrator daemon (legacy, delegates to start)."""
-        self.start(foreground=foreground)
+        self.start(foreground=foreground, json_mode=json_mode)
 
-    def daemon_stop(self):
+    def daemon_stop(self, *, json_mode: bool = False):
         """Stop the orchestrator daemon."""
-        self.stop()
+        self.stop(json_mode=json_mode)
 
-    def daemon_restart(self):
+    def daemon_restart(self, *, json_mode: bool = False):
         """Restart the orchestrator daemon."""
-        self.stop()
-        time.sleep(0.5)
-        self.start()
+        daemon = self._make_daemon()
+        status = daemon.status()
 
-    def daemon_status(self):
+        if json_mode:
+            # For JSON mode, perform restart silently and return final result
+            if status["running"]:
+                stopped = daemon.stop()
+                if not stopped:
+                    print(json.dumps({"error": "Failed to stop daemon for restart"}))
+                    sys.exit(1)
+                time.sleep(0.5)
+
+            # Start daemon
+            started = daemon.start(db_path=self.db.db_path)
+            if started:
+                final_status = daemon.status()
+                print(json.dumps({"status": "restarted", "pid": final_status["pid"]}))
+            else:
+                print(json.dumps({"error": "Failed to restart daemon"}))
+                sys.exit(1)
+        else:
+            # For regular mode, use existing stop/start with output
+            if status["running"]:
+                self.stop(json_mode=False)
+                time.sleep(0.5)
+            self.start(json_mode=False)
+
+    def daemon_status(self, *, json_mode: bool = False):
         """Show daemon status."""
         daemon = self._make_daemon()
         status = daemon.status()
-        print(status["message"])
-        if status["running"]:
-            print(f"Log file: {status.get('log_file', 'N/A')}")
+        if json_mode:
+            result = {
+                "running": status["running"],
+                "pid": status.get("pid"),
+                "log_file": status.get("log_file"),
+            }
+            print(json.dumps(result))
+        else:
+            print(status["message"])
+            if status["running"]:
+                print(f"Log file: {status.get('log_file', 'N/A')}")
 
     def daemon_logs(self, lines: int = 50, follow: bool = False):
         """Show daemon logs."""
@@ -984,20 +1037,20 @@ def main():
             cli.status(json_mode=json_mode)
 
         elif args.command == "start":
-            cli.start(foreground=args.foreground)
+            cli.start(foreground=args.foreground, json_mode=json_mode)
 
         elif args.command == "stop":
-            cli.stop()
+            cli.stop(json_mode=json_mode)
 
         elif args.command == "daemon":
             if args.daemon_command == "start":
-                cli.daemon_start(foreground=args.foreground)
+                cli.daemon_start(foreground=args.foreground, json_mode=json_mode)
             elif args.daemon_command == "stop":
-                cli.daemon_stop()
+                cli.daemon_stop(json_mode=json_mode)
             elif args.daemon_command == "restart":
-                cli.daemon_restart()
+                cli.daemon_restart(json_mode=json_mode)
             elif args.daemon_command == "status":
-                cli.daemon_status()
+                cli.daemon_status(json_mode=json_mode)
             elif args.daemon_command == "logs":
                 cli.daemon_logs(lines=args.lines, follow=args.follow)
             else:
