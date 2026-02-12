@@ -188,7 +188,16 @@ class Database:
                 INSERT INTO issues (id, title, description, priority, type, project, parent_id, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (issue_id, title, description, priority, issue_type, project, parent_id, metadata_json),
+                (
+                    issue_id,
+                    title,
+                    description,
+                    priority,
+                    issue_type,
+                    project,
+                    parent_id,
+                    metadata_json,
+                ),
             )
             self.log_event(issue_id, None, "created", {"title": title})
 
@@ -373,7 +382,9 @@ class Database:
                 (issue_id, depends_on, dep_type),
             )
 
-    def get_events(self, issue_id: Optional[str] = None, agent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_events(
+        self, issue_id: Optional[str] = None, agent_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Get events filtered by issue or agent."""
         if issue_id:
             cursor = self.conn.execute(
@@ -386,7 +397,9 @@ class Database:
                 (agent_id,),
             )
         else:
-            cursor = self.conn.execute("SELECT * FROM events ORDER BY created_at DESC LIMIT 100")
+            cursor = self.conn.execute(
+                "SELECT * FROM events ORDER BY created_at DESC LIMIT 100"
+            )
 
         return [dict(row) for row in cursor.fetchall()]
 

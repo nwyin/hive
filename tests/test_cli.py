@@ -169,16 +169,20 @@ def test_evaluate_permission_policy():
 
     # Test allow rules
     assert (
-        orch.evaluate_permission_policy({"permission": "read", "patterns": []}) == "once"
+        orch.evaluate_permission_policy({"permission": "read", "patterns": []})
+        == "once"
     )
     assert (
-        orch.evaluate_permission_policy({"permission": "edit", "patterns": []}) == "once"
+        orch.evaluate_permission_policy({"permission": "edit", "patterns": []})
+        == "once"
     )
     assert (
-        orch.evaluate_permission_policy({"permission": "write", "patterns": []}) == "once"
+        orch.evaluate_permission_policy({"permission": "write", "patterns": []})
+        == "once"
     )
     assert (
-        orch.evaluate_permission_policy({"permission": "bash", "patterns": []}) == "once"
+        orch.evaluate_permission_policy({"permission": "bash", "patterns": []})
+        == "once"
     )
 
     # Test unknown permission

@@ -120,7 +120,7 @@ class HiveCLI:
         print(f"Assignee: {issue['assignee'] or 'None'}")
         print(f"Created: {issue['created_at']}")
 
-        if issue['description']:
+        if issue["description"]:
             print(f"\nDescription:\n{issue['description']}")
 
         # Show dependencies
@@ -147,9 +147,10 @@ class HiveCLI:
             print(f"\nEvents ({len(events)}):")
             for event in events[:10]:  # Show last 10 events
                 print(f"  [{event['created_at']}] {event['event_type']}")
-                if event['detail']:
+                if event["detail"]:
                     import json
-                    detail = json.loads(event['detail'])
+
+                    detail = json.loads(event["detail"])
                     for key, value in detail.items():
                         print(f"    {key}: {value}")
 
@@ -188,7 +189,13 @@ class HiveCLI:
 
         return line
 
-    def logs(self, follow: bool = False, n: int = 20, issue_id: Optional[str] = None, agent_id: Optional[str] = None):
+    def logs(
+        self,
+        follow: bool = False,
+        n: int = 20,
+        issue_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ):
         """
         Show event log, optionally tailing for new events.
 
@@ -212,7 +219,9 @@ class HiveCLI:
         try:
             while True:
                 time.sleep(0.5)
-                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id)
+                new_events = self.db.get_events_since(
+                    after_id=cursor, issue_id=issue_id, agent_id=agent_id
+                )
                 for event in new_events:
                     print(self._format_event(event))
                     cursor = event["id"]
@@ -241,14 +250,26 @@ class HiveCLI:
         print(f"Database: {self.db.db_path}")
 
         print("\nIssues:")
-        for status in ["open", "in_progress", "done", "finalized", "failed", "blocked", "canceled"]:
+        for status in [
+            "open",
+            "in_progress",
+            "done",
+            "finalized",
+            "failed",
+            "blocked",
+            "canceled",
+        ]:
             count = status_counts.get(status, 0)
             if count > 0:
                 print(f"  {status}: {count}")
 
         print(f"\nActive workers: {len(active_agents)}/{Config.MAX_AGENTS}")
         for agent in active_agents:
-            issue = self.db.get_issue(agent["current_issue"]) if agent["current_issue"] else None
+            issue = (
+                self.db.get_issue(agent["current_issue"])
+                if agent["current_issue"]
+                else None
+            )
             issue_title = issue["title"] if issue else "unknown"
             print(f"  - {agent['name']}: {issue_title}")
 
@@ -272,7 +293,9 @@ async def run_orchestrator(db: Database, project_path: str):
         db: Database instance
         project_path: Path to the project repository
     """
-    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
+    async with OpenCodeClient(
+        Config.OPENCODE_URL, Config.OPENCODE_PASSWORD
+    ) as opencode:
         orchestrator = Orchestrator(
             db=db,
             opencode_client=opencode,
@@ -296,7 +319,9 @@ def main():
     # create command
     create_parser = subparsers.add_parser("create", help="Create a new issue")
     create_parser.add_argument("title", help="Issue title")
-    create_parser.add_argument("description", nargs="?", default="", help="Issue description")
+    create_parser.add_argument(
+        "description", nargs="?", default="", help="Issue description"
+    )
     create_parser.add_argument("--priority", type=int, default=2, help="Priority (0-4)")
 
     # list command
@@ -316,8 +341,16 @@ def main():
 
     # logs command
     logs_parser = subparsers.add_parser("logs", help="Show event log (tail -f style)")
-    logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow new events in real time")
-    logs_parser.add_argument("-n", "--lines", type=int, default=20, help="Number of recent events to show (default: 20)")
+    logs_parser.add_argument(
+        "-f", "--follow", action="store_true", help="Follow new events in real time"
+    )
+    logs_parser.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=20,
+        help="Number of recent events to show (default: 20)",
+    )
     logs_parser.add_argument("--issue", help="Filter by issue ID")
     logs_parser.add_argument("--agent", help="Filter by agent ID")
 
@@ -353,7 +386,12 @@ def main():
             cli.close(args.issue_id)
 
         elif args.command == "logs":
-            cli.logs(follow=args.follow, n=args.lines, issue_id=args.issue, agent_id=args.agent)
+            cli.logs(
+                follow=args.follow,
+                n=args.lines,
+                issue_id=args.issue,
+                agent_id=args.agent,
+            )
 
         elif args.command == "status":
             cli.status()

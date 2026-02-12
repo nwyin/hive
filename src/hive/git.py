@@ -11,7 +11,9 @@ class GitWorktreeError(Exception):
     pass
 
 
-def create_worktree(project_path: str, agent_name: str, base_branch: str = "main") -> str:
+def create_worktree(
+    project_path: str, agent_name: str, base_branch: str = "main"
+) -> str:
     """
     Create a git worktree for an agent.
 
@@ -108,7 +110,8 @@ def remove_worktree(worktree_path: str, force: bool = False):
 
         # If we couldn't find main repo, try to remove directly
         subprocess.run(
-            ["git", "worktree", "remove", str(worktree_path)] + (["--force"] if force else []),
+            ["git", "worktree", "remove", str(worktree_path)]
+            + (["--force"] if force else []),
             check=True,
             capture_output=True,
             text=True,

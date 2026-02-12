@@ -76,7 +76,9 @@ class OpenCodeClient:
             Session info dict with id, title, directory, etc.
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -119,7 +121,9 @@ class OpenCodeClient:
             Full message response with info and parts
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -159,7 +163,9 @@ class OpenCodeClient:
             directory: Directory context for this request
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -175,7 +181,9 @@ class OpenCodeClient:
         async with self.session.post(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
-    async def abort_session(self, session_id: str, directory: Optional[str] = None) -> bool:
+    async def abort_session(
+        self, session_id: str, directory: Optional[str] = None
+    ) -> bool:
         """
         Abort a running session.
 
@@ -187,7 +195,9 @@ class OpenCodeClient:
             True if aborted successfully
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -198,7 +208,9 @@ class OpenCodeClient:
         async with self.session.post(url, headers=headers) as resp:
             return resp.status == 200
 
-    async def delete_session(self, session_id: str, directory: Optional[str] = None) -> bool:
+    async def delete_session(
+        self, session_id: str, directory: Optional[str] = None
+    ) -> bool:
         """
         Delete a session.
 
@@ -210,7 +222,9 @@ class OpenCodeClient:
             True if deleted successfully
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -235,7 +249,9 @@ class OpenCodeClient:
             Status dict with type field
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -261,7 +277,9 @@ class OpenCodeClient:
             Session info dict
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -274,7 +292,10 @@ class OpenCodeClient:
             return await resp.json()
 
     async def get_messages(
-        self, session_id: str, directory: Optional[str] = None, limit: Optional[int] = None
+        self,
+        session_id: str,
+        directory: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get all messages in a session.
@@ -288,7 +309,9 @@ class OpenCodeClient:
             List of message dicts
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -317,7 +340,9 @@ class OpenCodeClient:
             List of session info dicts
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -348,7 +373,9 @@ class OpenCodeClient:
             List of pending permission request dicts
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),
@@ -377,7 +404,9 @@ class OpenCodeClient:
             directory: Directory context
         """
         if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         headers = {
             **self._get_auth_header(),

@@ -29,7 +29,9 @@ class Config:
     REFINERY_TOKEN_THRESHOLD = int(
         os.environ.get("HIVE_REFINERY_TOKEN_THRESHOLD", "100000")
     )
-    WORKER_TOKEN_THRESHOLD = int(os.environ.get("HIVE_WORKER_TOKEN_THRESHOLD", "150000"))
+    WORKER_TOKEN_THRESHOLD = int(
+        os.environ.get("HIVE_WORKER_TOKEN_THRESHOLD", "150000")
+    )
 
     # Escalation
     MAX_RETRIES = int(os.environ.get("HIVE_MAX_RETRIES", "2"))

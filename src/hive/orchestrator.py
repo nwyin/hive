@@ -74,7 +74,10 @@ class Orchestrator:
             status = properties.get("status", {})
 
             # If session becomes idle, signal completion
-            if status.get("type") == "idle" and session_id in self.session_status_events:
+            if (
+                status.get("type") == "idle"
+                and session_id in self.session_status_events
+            ):
                 self.session_status_events[session_id].set()
 
         self.sse_client.on("session.status", handle_session_status)
@@ -156,7 +159,9 @@ class Orchestrator:
         )
 
         self.mayor_session_id = session["id"]
-        self.db.log_event(None, None, "mayor_session_created", {"session_id": self.mayor_session_id})
+        self.db.log_event(
+            None, None, "mayor_session_created", {"session_id": self.mayor_session_id}
+        )
         return self.mayor_session_id
 
     async def send_to_mayor(self, message: str) -> Optional[WorkPlan]:
@@ -177,7 +182,9 @@ class Orchestrator:
         active_workers_info = [
             {
                 "name": agent.name,
-                "current_issue_title": self.db.get_issue(agent.issue_id).get("title", "unknown"),
+                "current_issue_title": self.db.get_issue(agent.issue_id).get(
+                    "title", "unknown"
+                ),
             }
             for agent in active_workers
         ]
@@ -290,7 +297,9 @@ Analyze this request and create a work plan. Output a :::WORK_PLAN::: block."""
                 for dep_plan_id in needs:
                     if dep_plan_id in id_map:
                         dep_issue_id = id_map[dep_plan_id]
-                        self.db.add_dependency(issue_id, dep_issue_id, dep_type="blocks")
+                        self.db.add_dependency(
+                            issue_id, dep_issue_id, dep_type="blocks"
+                        )
 
     async def maybe_cycle_mayor(self):
         """Cycle Mayor session if context is getting full."""
@@ -314,7 +323,9 @@ Analyze this request and create a work plan. Output a :::WORK_PLAN::: block."""
             active_workers_info = [
                 {
                     "name": agent.name,
-                    "current_issue_title": self.db.get_issue(agent.issue_id).get("title", "unknown"),
+                    "current_issue_title": self.db.get_issue(agent.issue_id).get(
+                        "title", "unknown"
+                    ),
                 }
                 for agent in active_workers
             ]
@@ -338,7 +349,9 @@ Analyze this request and create a work plan. Output a :::WORK_PLAN::: block."""
 
             # Delete old session
             old_session = self.mayor_session_id
-            await self.opencode.delete_session(old_session, directory=str(self.project_path))
+            await self.opencode.delete_session(
+                old_session, directory=str(self.project_path)
+            )
 
             # Create new session
             await self.create_mayor_session()
@@ -407,7 +420,11 @@ Ready for the next request.""",
                     {"permission": "*", "pattern": "*", "action": "allow"},
                     {"permission": "question", "pattern": "*", "action": "deny"},
                     {"permission": "plan_enter", "pattern": "*", "action": "deny"},
-                    {"permission": "external_directory", "pattern": "*", "action": "deny"},
+                    {
+                        "permission": "external_directory",
+                        "pattern": "*",
+                        "action": "deny",
+                    },
                 ],
             )
             session_id = session["id"]
@@ -421,9 +438,7 @@ Ready for the next request.""",
                     lease_expires_at = datetime('now', '+{} seconds'),
                     last_progress_at = datetime('now')
                 WHERE id = ?
-                """.format(
-                    Config.LEASE_DURATION
-                ),
+                """.format(Config.LEASE_DURATION),
                 (session_id, worktree_path, agent_id),
             )
             self.db.conn.commit()
@@ -613,7 +628,9 @@ Ready for the next request.""",
             if agent.agent_id in self.active_agents:
                 del self.active_agents[agent.agent_id]
 
-    async def cycle_agent_to_next_step(self, agent: AgentIdentity, next_step: Dict[str, Any]):
+    async def cycle_agent_to_next_step(
+        self, agent: AgentIdentity, next_step: Dict[str, Any]
+    ):
         """
         Cycle an agent to the next step in a molecule.
 
@@ -641,7 +658,11 @@ Ready for the next request.""",
                     {"permission": "*", "pattern": "*", "action": "allow"},
                     {"permission": "question", "pattern": "*", "action": "deny"},
                     {"permission": "plan_enter", "pattern": "*", "action": "deny"},
-                    {"permission": "external_directory", "pattern": "*", "action": "deny"},
+                    {
+                        "permission": "external_directory",
+                        "pattern": "*",
+                        "action": "deny",
+                    },
                 ],
             )
             new_session_id = session["id"]
@@ -655,9 +676,7 @@ Ready for the next request.""",
                     lease_expires_at = datetime('now', '+{} seconds'),
                     last_progress_at = datetime('now')
                 WHERE id = ?
-                """.format(
-                    Config.LEASE_DURATION
-                ),
+                """.format(Config.LEASE_DURATION),
                 (new_session_id, next_step["id"], agent.agent_id),
             )
             self.db.conn.commit()
@@ -731,6 +750,17 @@ Ready for the next request.""",
         # Abort the session
         await self.opencode.abort_session(agent.session_id, directory=agent.worktree)
 
+        # Mark agent as failed so it's not picked up again
+        self.db.conn.execute(
+            """
+            UPDATE agents
+            SET status = 'failed',
+                current_issue = NULL
+            WHERE id = ?
+            """,
+            (agent.agent_id,),
+        )
+
         # Unassign issue so it can be retried
         self.db.conn.execute(
             """
@@ -742,6 +772,13 @@ Ready for the next request.""",
             (agent.issue_id,),
         )
         self.db.conn.commit()
+
+        # Clean up worktree
+        if agent.worktree:
+            try:
+                remove_worktree(agent.worktree)
+            except Exception:
+                pass  # Best-effort cleanup
 
         # Remove from active agents
         if agent.agent_id in self.active_agents:
@@ -794,9 +831,7 @@ Ready for the next request.""",
                     decision = self.evaluate_permission_policy(perm)
                     if decision:
                         # Auto-resolve based on policy
-                        await self.opencode.reply_permission(
-                            perm["id"], reply=decision
-                        )
+                        await self.opencode.reply_permission(perm["id"], reply=decision)
 
                         # Find which issue this permission belongs to
                         session_id = perm.get("sessionID")
@@ -863,7 +898,9 @@ async def main():
     db = Database(Config.DB_PATH)
     db.connect()
 
-    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
+    async with OpenCodeClient(
+        Config.OPENCODE_URL, Config.OPENCODE_PASSWORD
+    ) as opencode:
         # Get project path from command line or env
         import sys
 
@@ -871,7 +908,10 @@ async def main():
         project_name = Path(project_path).name
 
         orchestrator = Orchestrator(
-            db=db, opencode_client=opencode, project_path=project_path, project_name=project_name
+            db=db,
+            opencode_client=opencode,
+            project_path=project_path,
+            project_name=project_name,
         )
 
         try:

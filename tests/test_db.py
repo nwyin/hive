@@ -20,7 +20,14 @@ def test_database_connection(temp_db):
     )
     tables = [row[0] for row in cursor.fetchall()]
 
-    expected_tables = ["agents", "dependencies", "events", "issues", "labels", "merge_queue"]
+    expected_tables = [
+        "agents",
+        "dependencies",
+        "events",
+        "issues",
+        "labels",
+        "merge_queue",
+    ]
     for table in expected_tables:
         assert table in tables
 

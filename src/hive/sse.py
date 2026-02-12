@@ -112,11 +112,13 @@ class SSEClient:
         """
         Dispatch an event to registered handlers.
 
-        Args:
-            event: Event dict with "type" and "properties" fields
+        OpenCode wraps events in a payload envelope:
+            {"directory": "...", "payload": {"type": "...", "properties": {...}}}
+        Unwrap if present, otherwise fall back to top-level fields.
         """
-        event_type = event.get("type")
-        properties = event.get("properties", {})
+        payload = event.get("payload", event)
+        event_type = payload.get("type")
+        properties = payload.get("properties", {})
 
         # Call specific handler if registered
         if event_type in self.handlers:
@@ -138,9 +140,7 @@ class SSEClient:
         """Stop consuming events and close connection."""
         self.running = False
 
-    async def connect_with_reconnect(
-        self, max_retries: int = -1, retry_delay: int = 5
-    ):
+    async def connect_with_reconnect(self, max_retries: int = -1, retry_delay: int = 5):
         """
         Connect with automatic reconnection on failure.
 

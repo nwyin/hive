@@ -51,7 +51,7 @@ def build_worker_prompt(
 
     if step_number and total_steps and molecule_title:
         context_parts.append(
-            f"- This is step {step_number} of {total_steps} in the workflow \"{molecule_title}\""
+            f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"'
         )
 
     context = "\n".join(context_parts)
@@ -60,16 +60,16 @@ def build_worker_prompt(
     completed_section = ""
     if completed_steps:
         completed_section = "\n\n### Previous Steps (already completed)\n" + "\n".join(
-            f"{i+1}. {step}" for i, step in enumerate(completed_steps)
+            f"{i + 1}. {step}" for i, step in enumerate(completed_steps)
         )
 
     prompt = f"""You are agent '{agent_name}', working on project '{project}'.
 
 ## YOUR TASK
 
-**{issue['title']}**
+**{issue["title"]}**
 
-{issue.get('description', '')}
+{issue.get("description", "")}
 
 ## CONTEXT
 
@@ -140,7 +140,9 @@ artifacts:
     return prompt
 
 
-def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[str] = None) -> str:
+def build_system_prompt(
+    project: str, agent_name: str, worktree_path: Optional[str] = None
+) -> str:
     """
     Build the system prompt for an agent session.
 
@@ -314,7 +316,8 @@ def build_mayor_prompt(
     # Summarize open issues
     if open_issues:
         issues_summary = "\n".join(
-            f"- {i['id']}: {i['title']} (priority {i['priority']})" for i in open_issues[:10]
+            f"- {i['id']}: {i['title']} (priority {i['priority']})"
+            for i in open_issues[:10]
         )
         if len(open_issues) > 10:
             issues_summary += f"\n... and {len(open_issues) - 10} more"
@@ -471,13 +474,17 @@ def build_mayor_state_summary(
     if active_workers:
         summary_parts.append(
             "Currently working on:\n"
-            + "\n".join(f"  - {w['name']}: {w.get('current_issue_title', 'unknown')}" for w in active_workers)
+            + "\n".join(
+                f"  - {w['name']}: {w.get('current_issue_title', 'unknown')}"
+                for w in active_workers
+            )
         )
 
     summary_parts.append(f"\nOpen issues: {len(open_issues)}")
     if open_issues:
         summary_parts.append(
-            "Queued:\n" + "\n".join(f"  - {i['id']}: {i['title']}" for i in open_issues[:10])
+            "Queued:\n"
+            + "\n".join(f"  - {i['id']}: {i['title']}" for i in open_issues[:10])
         )
 
     if recent_completions:

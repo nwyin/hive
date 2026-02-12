@@ -97,6 +97,33 @@ async def test_sse_dispatch_sync_handler():
 
 
 @pytest.mark.asyncio
+async def test_sse_dispatch_payload_envelope():
+    """Test event dispatching with OpenCode's payload envelope format."""
+    client = SSEClient()
+
+    received_events = []
+
+    async def handler(properties):
+        received_events.append(properties)
+
+    client.on("session.status", handler)
+
+    # OpenCode wraps events: {"directory": "...", "payload": {"type": "...", "properties": {...}}}
+    event = {
+        "directory": "/some/worktree",
+        "payload": {
+            "type": "session.status",
+            "properties": {"sessionID": "test456", "status": {"type": "idle"}},
+        },
+    }
+    await client._dispatch_event(event)
+
+    assert len(received_events) == 1
+    assert received_events[0]["sessionID"] == "test456"
+    assert received_events[0]["status"]["type"] == "idle"
+
+
+@pytest.mark.asyncio
 async def test_sse_stop():
     """Test stopping the SSE client."""
     client = SSEClient()

@@ -8,12 +8,20 @@ from hive.db import Database
 def test_get_next_ready_step(temp_db):
     """Test getting next ready step in a molecule."""
     # Create parent molecule
-    parent = temp_db.create_issue("Multi-step workflow", issue_type="molecule", project="test")
+    parent = temp_db.create_issue(
+        "Multi-step workflow", issue_type="molecule", project="test"
+    )
 
     # Create steps
-    step1 = temp_db.create_issue("Step 1", issue_type="step", parent_id=parent, project="test")
-    step2 = temp_db.create_issue("Step 2", issue_type="step", parent_id=parent, project="test")
-    step3 = temp_db.create_issue("Step 3", issue_type="step", parent_id=parent, project="test")
+    step1 = temp_db.create_issue(
+        "Step 1", issue_type="step", parent_id=parent, project="test"
+    )
+    step2 = temp_db.create_issue(
+        "Step 2", issue_type="step", parent_id=parent, project="test"
+    )
+    step3 = temp_db.create_issue(
+        "Step 3", issue_type="step", parent_id=parent, project="test"
+    )
 
     # Wire dependencies: step2 depends on step1, step3 depends on step2
     temp_db.add_dependency(step2, step1)
@@ -53,8 +61,12 @@ def test_get_next_ready_step_no_dependencies(temp_db):
     parent = temp_db.create_issue("Molecule", issue_type="molecule", project="test")
 
     # Create independent steps
-    step1 = temp_db.create_issue("Step 1", issue_type="step", parent_id=parent, project="test")
-    step2 = temp_db.create_issue("Step 2", issue_type="step", parent_id=parent, project="test")
+    step1 = temp_db.create_issue(
+        "Step 1", issue_type="step", parent_id=parent, project="test"
+    )
+    step2 = temp_db.create_issue(
+        "Step 2", issue_type="step", parent_id=parent, project="test"
+    )
 
     # First step should be step1 (oldest by created_at)
     next_step = temp_db.get_next_ready_step(parent)
@@ -113,14 +125,26 @@ def test_get_active_agents(temp_db):
 def test_molecule_execution_order(temp_db):
     """Test that molecule steps execute in dependency order."""
     # Create a molecule with complex dependencies
-    parent = temp_db.create_issue("Complex workflow", issue_type="molecule", project="test")
+    parent = temp_db.create_issue(
+        "Complex workflow", issue_type="molecule", project="test"
+    )
 
     # Create steps
-    setup = temp_db.create_issue("Setup", issue_type="step", parent_id=parent, project="test")
-    design = temp_db.create_issue("Design", issue_type="step", parent_id=parent, project="test")
-    impl_a = temp_db.create_issue("Implement A", issue_type="step", parent_id=parent, project="test")
-    impl_b = temp_db.create_issue("Implement B", issue_type="step", parent_id=parent, project="test")
-    test = temp_db.create_issue("Test", issue_type="step", parent_id=parent, project="test")
+    setup = temp_db.create_issue(
+        "Setup", issue_type="step", parent_id=parent, project="test"
+    )
+    design = temp_db.create_issue(
+        "Design", issue_type="step", parent_id=parent, project="test"
+    )
+    impl_a = temp_db.create_issue(
+        "Implement A", issue_type="step", parent_id=parent, project="test"
+    )
+    impl_b = temp_db.create_issue(
+        "Implement B", issue_type="step", parent_id=parent, project="test"
+    )
+    test = temp_db.create_issue(
+        "Test", issue_type="step", parent_id=parent, project="test"
+    )
 
     # Dependencies:
     # - design depends on setup
@@ -168,12 +192,22 @@ async def test_session_cycling(temp_db, git_repo):
     from hive.orchestrator import Orchestrator
 
     # Create a molecule with two steps
-    parent = temp_db.create_issue("Two-step workflow", issue_type="molecule", project="test")
+    parent = temp_db.create_issue(
+        "Two-step workflow", issue_type="molecule", project="test"
+    )
     step1 = temp_db.create_issue(
-        "Create README", issue_type="step", parent_id=parent, project="test", description="Create a README.md file"
+        "Create README",
+        issue_type="step",
+        parent_id=parent,
+        project="test",
+        description="Create a README.md file",
     )
     step2 = temp_db.create_issue(
-        "Add license", issue_type="step", parent_id=parent, project="test", description="Add a LICENSE file"
+        "Add license",
+        issue_type="step",
+        parent_id=parent,
+        project="test",
+        description="Add a LICENSE file",
     )
 
     # Wire dependency
@@ -193,6 +227,7 @@ async def test_session_cycling(temp_db, git_repo):
 
         # Wait a bit for the agent to work
         import asyncio
+
         await asyncio.sleep(5)
 
         # Check if step1 is done and step2 is claimed
