@@ -368,20 +368,24 @@ uv pip install -e ".[dev]"
 ### Running Tests
 
 ```bash
-# Run all unit tests
+# Run unit tests (default, integration tests are excluded)
 pytest
 
 # Run specific test file
 pytest tests/test_orchestrator.py
+```
 
-# Run with verbose output
-pytest -v
+### Integration Tests
 
-# Run only integration tests (requires a running OpenCode server)
+Integration tests require a running OpenCode server (`opencode serve` on port 4096).
+They are excluded by default and have a 60-second per-test timeout.
+
+```bash
+# Run only integration tests
 pytest -m integration
 
-# Run everything except integration tests
-pytest -m "not integration"
+# Run all tests (unit + integration)
+pytest -m ""
 ```
 
 ### Linting & Formatting
