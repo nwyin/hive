@@ -50,7 +50,9 @@ def build_worker_prompt(
     ]
 
     if step_number and total_steps and molecule_title:
-        context_parts.append(f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"')
+        context_parts.append(
+            f'- This is step {step_number} of {total_steps} in the workflow "{molecule_title}"'
+        )
 
     context = "\n".join(context_parts)
 
@@ -81,6 +83,18 @@ When you have work, EXECUTE. No confirmation seeking, no clarifying questions,
 no waiting for approval. Read the task, understand it, implement it, verify it,
 commit it, signal completion. That is the entire cycle.
 
+### NEVER STOP MID-WORKFLOW
+This is critical. You must execute the ENTIRE task in a single unbroken flow:
+read → plan → implement → test → commit → signal. Do NOT stop partway through.
+Do NOT output a partial plan and wait. Do NOT describe what you're going to do
+and then stop. Do NOT pause between steps. Every time you generate a response,
+it must either contain tool calls that advance the work, or be the final response
+with the :::COMPLETION signal. There is no middle ground.
+
+If you find yourself writing a message that does NOT contain tool calls and does
+NOT contain :::COMPLETION, you are about to stall. STOP and either make a tool
+call or emit the completion signal.
+
 ### No Approval Fallacy
 There is NO approval step. There is NO confirmation. There is NO human reviewing
 your work before you finish. Here is the failure mode you must avoid:
@@ -95,6 +109,8 @@ you commit and signal completion IMMEDIATELY. Do NOT:
 - Ask "should I commit this?"
 - Pause after finishing to see if there's feedback
 - Wait for a human to press enter
+- Describe your plan and then stop
+- Output intermediate progress updates without tool calls
 
 ### The Idle Worker Heresy
 An idle worker is a system failure. The instant your implementation is done and
@@ -159,7 +175,9 @@ artifacts:
     return prompt
 
 
-def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[str] = None) -> str:
+def build_system_prompt(
+    project: str, agent_name: str, worktree_path: Optional[str] = None
+) -> str:
     """
     Build the system prompt for an agent session.
 
@@ -264,9 +282,15 @@ def assess_completion(messages: List[Dict[str, Any]]) -> CompletionResult:
         )
 
     # Check for tool errors in the last message
-    tool_errors = [p for p in parts if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"]
+    tool_errors = [
+        p
+        for p in parts
+        if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"
+    ]
     if tool_errors:
-        error_details = "; ".join(p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors)
+        error_details = "; ".join(
+            p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors
+        )
         return CompletionResult(
             success=False,
             reason=f"Tool errors: {error_details}",
@@ -466,7 +490,10 @@ def parse_merge_result(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
             "conflicts_resolved": 0,
         }
 
-    if any(kw in text_lower for kw in ["rejecting", "rejected", "incompatible", "cannot merge"]):
+    if any(
+        kw in text_lower
+        for kw in ["rejecting", "rejected", "incompatible", "cannot merge"]
+    ):
         return {
             "status": "rejected",
             "summary": text[:200],

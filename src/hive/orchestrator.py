@@ -510,14 +510,28 @@ class Orchestrator:
         except Exception:
             return False
 
+    async def _poll_session_idle(self, agent: AgentIdentity) -> bool:
+        """Poll opencode to check if a session has gone idle.
+
+        Fallback for when SSE events are missed (e.g., reconnect gap).
+        Returns True if the session is idle, False otherwise.
+        """
+        try:
+            status = await self.opencode.get_session_status(
+                agent.session_id, directory=agent.worktree
+            )
+            return status is not None and status.get("type") == "idle"
+        except Exception:
+            return False
+
     async def monitor_agent(self, agent: AgentIdentity):
         """
         Monitor an agent until completion.
 
-        Uses a renewable timeout: the agent gets LEASE_DURATION to show
-        activity. Each SSE event resets the clock via _renew_lease_for_session.
-        The agent is only declared stalled if there's been NO activity for
-        the full lease duration.
+        Uses a dual detection strategy:
+        1. SSE events: `session.status` → `idle` sets an asyncio.Event immediately
+        2. Polling fallback: every check_interval, polls `get_session_status` directly
+           to catch idle transitions that were missed by SSE (reconnect gaps, etc.)
 
         Also checks periodically if the issue was canceled, and if so,
         aborts the session immediately.
@@ -550,6 +564,11 @@ class Orchestrator:
                     if self._is_issue_canceled(agent.issue_id):
                         await self.cancel_agent_for_issue(agent.issue_id)
                         return
+
+                    # Polling fallback: directly check if the session went idle.
+                    # This catches cases where the SSE event was missed.
+                    if await self._poll_session_idle(agent):
+                        break
 
                     # Check if there's been recent activity
                     last_activity = self._session_last_activity.get(
