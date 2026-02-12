@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from .config import Config
 from .db import Database
 from .git import create_worktree, get_commit_hash, remove_worktree
+from .merge import MergeProcessor
 from .ids import generate_id
 from .models import AgentIdentity, CompletionResult
 from .opencode import OpenCodeClient, make_model_config
@@ -43,6 +44,14 @@ class Orchestrator:
         self.opencode = opencode_client
         self.project_path = Path(project_path).resolve()
         self.project_name = project_name
+
+        # Merge processor
+        self.merge_processor = MergeProcessor(
+            db=db,
+            opencode=opencode_client,
+            project_path=project_path,
+            project_name=project_name,
+        )
 
         # Track active agents
         self.active_agents: Dict[str, AgentIdentity] = {}
@@ -87,6 +96,9 @@ class Orchestrator:
         # Start permission unblocker in background
         permission_task = asyncio.create_task(self.permission_unblocker_loop())
 
+        # Start merge queue processor in background
+        merge_task = asyncio.create_task(self.merge_processor_loop())
+
         try:
             # Run main loop
             await self.main_loop()
@@ -95,6 +107,7 @@ class Orchestrator:
             self.sse_client.stop()
             await sse_task
             await permission_task
+            await merge_task
 
     async def main_loop(self):
         """Main orchestration loop."""
@@ -558,6 +571,20 @@ class Orchestrator:
             )
 
             await self.handle_stalled_agent(agent)
+
+    async def merge_processor_loop(self):
+        """
+        Background loop to process the merge queue.
+
+        Runs on MERGE_POLL_INTERVAL, processes one merge at a time.
+        """
+        while self.running:
+            try:
+                if Config.MERGE_QUEUE_ENABLED:
+                    await self.merge_processor.process_queue_once()
+            except Exception as e:
+                print(f"Error in merge processor: {e}")
+            await asyncio.sleep(Config.MERGE_POLL_INTERVAL)
 
     async def permission_unblocker_loop(self):
         """
