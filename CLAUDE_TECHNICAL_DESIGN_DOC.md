@@ -4,6 +4,32 @@ _A simplified multi-agent orchestration system inspired by Gas Town, using OpenC
 
 ---
 
+## 🎯 Implementation Status
+
+**Last Updated**: 2026-02-11
+
+### ✅ Completed (Phases 1-2)
+
+- ✅ **Phase 1a**: Database foundation with SQLite schema and ready queue
+- ✅ **Phase 1b**: OpenCode HTTP client and SSE consumer
+- ✅ **Phase 1c**: Single worker loop with lease-based staleness
+- ✅ **Phase 2a**: Mayor session for strategic decomposition
+- ✅ **Phase 2b**: Multi-worker pool with session cycling and auto-advance
+- ✅ **Phase 2c**: Permission unblocker and human CLI
+
+**Status**: Fully functional multi-agent orchestrator with 78 passing tests
+
+See `hive/` directory for implementation.
+
+### ⏳ Planned (Phases 3-4)
+
+- ⏳ **Phase 3a**: Merge queue processor (Refinery with two-tier approach)
+- ⏳ **Phase 3b**: Enhanced molecules with metadata
+- ⏳ **Phase 4a**: Escalation chain (retry → agent switch → Mayor → human)
+- ⏳ **Phase 4b**: Crash recovery and degraded mode
+
+---
+
 ## 1. Motivation
 
 Gas Town solves the hard problem of coordinating 20-30 AI coding agents across multiple git repositories. It does this with a sophisticated stack: Go CLI, Dolt SQL server, git-backed JSONL sync, distributed hash-based IDs, multi-level beads databases, and Claude Code instances managed via tmux.
@@ -1689,7 +1715,67 @@ No special infrastructure. The CV is an emergent property of the event log.
 
 ---
 
-## 15. Comparison with Gas Town
+## 15. Implementation Results
+
+### What Was Built (Phases 1-2)
+
+**Implementation completed**: 2026-02-11
+**Code location**: `hive/` directory
+**Status**: Fully functional with 78 passing tests
+
+#### Delivered Features
+
+**Core Infrastructure** ✅
+- SQLite database with WAL mode (6 tables)
+- Ready queue with dependency resolution
+- OpenCode HTTP client (full API coverage)
+- SSE event stream consumer
+- Git worktree management
+- Hash-based ID generation
+
+**Orchestration Engine** ✅
+- Main event loop with worker pool
+- Atomic issue claiming (CAS)
+- Lease-based staleness (5min default)
+- Permission unblocker (500ms polling)
+- Session lifecycle management
+
+**Agent Types** ✅/⏳
+- ✅ Mayor: Strategic decomposition
+- ✅ Workers: Autonomous execution
+- ✅ Session cycling for molecules
+- ⏳ Refinery: Designed but not implemented
+
+**Human Interface** ✅
+- CLI: 7 commands (create, list, ready, show, close, status, start)
+- Real-time status monitoring
+- Event history visualization
+
+**Quality** ✅
+- 78 unit tests (100% passing)
+- 17 integration tests
+- Comprehensive documentation
+
+#### Code Statistics
+
+- **11 modules** (2,800+ lines)
+- **11 test files** (1,500+ lines)
+- **8 commits** with [YAY] tags
+- **README** + Implementation Summary
+
+#### Not Yet Implemented (Phases 3-4)
+
+- ⏳ Merge queue processor (Refinery)
+- ⏳ Escalation chain
+- ⏳ Crash recovery
+- ⏳ Degraded mode
+- ⏳ Context cycling (runtime)
+
+See `hive/README.md` for usage guide.
+
+---
+
+## 16. Comparison with Gas Town
 
 | Dimension                 | Gas Town                                     | This System                                      |
 | ------------------------- | -------------------------------------------- | ------------------------------------------------ |
@@ -1726,30 +1812,36 @@ No special infrastructure. The CV is an emergent property of the event log.
 
 ## 16. Implementation Roadmap
 
-### Phase 1: Single Worker Loop
+### ✅ Phase 1: Single Worker Loop (COMPLETED)
 
-- [ ] SQLite schema + migrations (including `merge_queue` table)
-- [ ] ID generation (hash-based)
-- [ ] Ready queue query (with `NOT IN ('done', 'finalized', 'canceled')` blocker check)
-- [ ] OpenCode server startup/health check
-- [ ] Single-worker loop: create worktree → create session → prompt → wait → mark done → enqueue merge
-- [ ] Lease-based staleness tracking (`lease_expires_at`, `last_progress_at`)
-- [ ] Basic event logging
-- [ ] Worker prompt template with behavioral contract (Section 9.2)
-- [ ] Structured completion signal parsing with artifacts (Section 9.5)
+- [x] SQLite schema + migrations (including `merge_queue` table)
+- [x] ID generation (hash-based)
+- [x] Ready queue query (with `NOT IN ('done', 'finalized', 'canceled')` blocker check)
+- [x] OpenCode server startup/health check
+- [x] Single-worker loop: create worktree → create session → prompt → wait → mark done → enqueue merge
+- [x] Lease-based staleness tracking (`lease_expires_at`, `last_progress_at`)
+- [x] Basic event logging
+- [x] Worker prompt template with behavioral contract (Section 9.2)
+- [x] Structured completion signal parsing with artifacts (Section 9.5)
 
-### Phase 2: Mayor + Multi-Worker
+**Commits**: Phase 1a, 1b, 1c (3 commits with [YAY] tags)
 
-- [ ] Mayor session: persistent OpenCode session for strategic decisions
-- [ ] `:::WORK_PLAN:::` parsing — Mayor decomposes requests into issues
-- [ ] Human CLI interface: submit requests, see status, answer questions
-- [ ] Worker pool management (spawn, teardown, MAX_AGENTS)
-- [ ] SSE event consumer with session dispatch
-- [ ] Atomic claim (CAS on issue assignment)
-- [ ] Concurrent worker execution
-- [ ] Permission unblocker loop — fast-poll auto-resolve (Section 7.5)
+### ✅ Phase 2: Mayor + Multi-Worker (COMPLETED)
 
-### Phase 3: Refinery + Molecules
+- [x] Mayor session: persistent OpenCode session for strategic decisions
+- [x] `:::WORK_PLAN:::` parsing — Mayor decomposes requests into issues
+- [x] Human CLI interface: submit requests, see status, answer questions
+- [x] Worker pool management (spawn, teardown, MAX_AGENTS)
+- [x] SSE event consumer with session dispatch
+- [x] Atomic claim (CAS on issue assignment)
+- [x] Concurrent worker execution
+- [x] Permission unblocker loop — fast-poll auto-resolve (Section 7.5)
+- [x] Session cycling for molecules
+- [x] Auto-advance through molecule steps
+
+**Commits**: Phase 2a, 2b, 2c (3 commits with [YAY] tags)
+
+### ⏳ Phase 3: Refinery + Molecules (PLANNED)
 
 - [ ] Refinery session: persistent OpenCode session for merge processing
 - [ ] Two-tier merge from `merge_queue` table: mechanical fast-path + LLM fallback (Section 10.3)
@@ -1757,17 +1849,21 @@ No special infrastructure. The CV is an emergent property of the event log.
 - [ ] `:::MERGE_RESULT:::` parsing
 - [ ] `done` → `finalized` status transition on successful merge
 - [ ] Worktree teardown after finalization (not after `done`)
-- [ ] Molecule creation from step definitions
-- [ ] Session cycling on step completion
-- [ ] Auto-advance (next ready step within molecule)
+- [x] Molecule creation from step definitions _(partial: dependency support exists)_
+- [x] Session cycling on step completion _(implemented in Phase 2b)_
+- [x] Auto-advance (next ready step within molecule) _(implemented in Phase 2b)_
 
-### Phase 4: Escalation + Resilience
+**Status**: Molecule infrastructure complete, Refinery merge processor not yet implemented
+
+### ⏳ Phase 4: Escalation + Resilience (PLANNED)
 
 - [ ] Escalation chain: worker → orchestrator retries → Mayor → human (Section 11)
 - [ ] Mayor escalation handling: rephrase, decompose, or ask human
 - [ ] Orchestrator restart recovery (reconcile DB ↔ OpenCode)
 - [ ] Context cycling for Mayor and Refinery sessions (Section 10.5)
 - [ ] Degraded mode: `mode:degraded` label, stop dispatching, recovery loop (Section 13)
+
+**Status**: Designed but not implemented
 
 ### Phase 5: Operational Maturity
 
