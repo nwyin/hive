@@ -709,6 +709,8 @@ class Database:
         if not idle_agents:
             return {}
 
+        idle_agent_ids = {agent["id"] for agent in idle_agents}
+
         # Extract issue characteristics
         issue_project = issue_dict.get("project", "")
         issue_type = issue_dict.get("type", "")
@@ -758,26 +760,37 @@ class Database:
 
         scores = {}
 
-        for agent in idle_agents:
-            agent_id = agent["id"]
+        # Initialize scores for all idle agents
+        for agent_id in idle_agent_ids:
+            scores[agent_id] = 0.0
 
-            # Query for successfully completed issues by this agent
-            cursor = self.conn.execute(
-                """
-                SELECT DISTINCT i.project, i.type, i.title
-                FROM events e
-                JOIN issues i ON e.issue_id = i.id
-                WHERE e.agent_id = ?
-                  AND e.event_type IN ('done', 'finalized', 'completed')
-                """,
-                (agent_id,),
-            )
+        # Query for successfully completed issues by ALL idle agents in one query
+        # This replaces the N+1 query loop
+        cursor = self.conn.execute(
+            """
+            SELECT DISTINCT e.agent_id, i.project, i.type, i.title
+            FROM events e
+            JOIN issues i ON e.issue_id = i.id
+            JOIN agents a ON e.agent_id = a.id
+            WHERE a.status = 'idle'
+              AND e.event_type IN ('done', 'finalized', 'completed')
+            """
+        )
 
-            completed_issues = cursor.fetchall()
+        completed_issues_rows = cursor.fetchall()
+        completed_by_agent = {}
 
-            if not completed_issues:
-                # No track record, score = 0
-                scores[agent_id] = 0.0
+        for row in completed_issues_rows:
+            agent_id = row["agent_id"]
+            if agent_id not in completed_by_agent:
+                completed_by_agent[agent_id] = []
+            completed_by_agent[agent_id].append(row)
+
+        for agent_id, completed_issues in completed_by_agent.items():
+            if agent_id not in idle_agent_ids:
+                # Agent might have become busy/non-idle between get_idle_agents() call and query execution?
+                # Unlikely in WAL mode without concurrent transactions, but safe to ignore if we only care about currently idle.
+                # However, our query joins agents with status='idle', so it should be consistent.
                 continue
 
             same_project_count = 0
