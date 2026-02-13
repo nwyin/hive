@@ -23,7 +23,7 @@ See `src/hive/` directory for implementation.
 
 ### ⏳ Planned (Phase 7+)
 
-- ⏳ **Phase 7**: Long-lived refinery session (eager creation, periodic health checks, auto-restart on death), dead code cleanup, web dashboard, webhook notifications
+- ⏳ **Phase 7**: Long-lived refinery session ✅, dead code cleanup, inter-agent knowledge transfer (Notes system), web dashboard, webhook notifications
 
 ---
 
@@ -1268,187 +1268,131 @@ at any time without losing work. The Mayor just runs `hive status` to catch up.
 OpenCode's built-in context compaction also helps — the TUI will compress older
 turns automatically as the context fills up.
 
-### 10.3 The Refinery: Merge Processor
+### 10.3 The Refinery: Long-Lived Merge Processor
 
-The Refinery is a persistent OpenCode session that processes the merge queue. Unlike Gas Town's Refinery (which is a full patrol agent running wisps), ours is simpler: the orchestrator notifies it when there's work, and it processes one branch at a time.
+The Refinery is a **persistent, long-lived** OpenCode session that processes the merge queue. Unlike workers (which are ephemeral, one per issue), the Refinery session stays alive across merges, accumulating project context. Each merge is a new message in the same conversation.
 
-**The two-tier approach: mechanical first, LLM for hard cases.**
+**Why long-lived?**
+- Session creation is expensive (~2-3s per OpenCode session)
+- The Refinery accumulates context about the project — it sees what changed across merges
+- Merges are sequential anyway (each rebases on latest main), so there's no parallelism benefit to separate sessions
 
-The merge queue is a dedicated table (`merge_queue`) populated by `handle_agent_complete()` when a worker finishes. The refinery processor pulls from this queue, not from the issues table directly.
+#### Two-Tier Architecture
+
+The merge queue is a dedicated table (`merge_queue`) populated by `handle_agent_complete()` when a worker finishes. The merge processor pulls from this queue one at a time.
+
+**Tier 1: Mechanical merge (no LLM).** The processor attempts a pure-git workflow:
+
+1. `git rebase main` in the worker's worktree
+2. Run tests (if `Config.TEST_COMMAND` is set)
+3. `git merge --ff-only` to main
+
+If all three succeed — done. Issue finalized, worktree torn down, branch deleted. No LLM cost.
+
+**Tier 2: Refinery LLM (when mechanical fails).** If rebase has conflicts or tests fail, the merge is handed to the Refinery session. The Refinery gets a prompt explaining the branch, the problem (conflicts or test failures), and instructions to resolve and emit a `:::MERGE_RESULT` signal with `merged`, `rejected`, or `needs_human`.
+
+#### Session Lifecycle
+
+```
+Orchestrator.start()
+  └─ MergeProcessor.initialize()     # Eager session creation (warm start)
+      └─ _ensure_refinery_session()  # Creates OpenCode session, stores session_id
+
+merge_processor_loop (background asyncio task, every MERGE_POLL_INTERVAL):
+  ├─ process_queue_once()            # Pop next queued merge entry
+  │   ├─ _try_mechanical_merge()     # Tier 1: rebase → test → ff-merge
+  │   │   └─ SUCCESS → _finalize_issue() → teardown worktree/branch/agent
+  │   │   └─ FAILURE → fall through to Tier 2
+  │   └─ _send_to_refinery()         # Tier 2: LLM-assisted merge
+  │       ├─ _ensure_refinery_session()   # Reuse existing or create new
+  │       ├─ Record pre-send message count (stale-result fence)
+  │       ├─ build_refinery_prompt()      # Context about the branch + problem
+  │       ├─ send_message_async()         # New message in existing conversation
+  │       ├─ Post-send status check (0.5s — verify session became active)
+  │       ├─ _wait_for_refinery()         # Poll until idle, parse :::MERGE_RESULT
+  │       ├─ Process result:
+  │       │   merged     → _finalize_issue()
+  │       │   rejected   → reopen issue for rework
+  │       │   needs_human → escalate
+  │       └─ _maybe_cycle_refinery_session()  # Check context size
+  │
+  └─ health_check() (every ~60s)     # Verify session alive, recreate if dead
+
+Orchestrator.shutdown()
+  └─ MergeProcessor.shutdown()       # Abort + delete refinery session
+```
+
+#### Hardening Mechanisms
+
+The refinery session has seven protections against failure modes:
+
+**1. Force-reset on any exception** (`_force_reset_refinery_session`): If `_send_to_refinery` throws, the session ID is immediately invalidated — abort, delete, set to `None`. The next merge gets a clean session. Prevents a corrupted session from poisoning subsequent merges.
+
+**2. Consecutive error bail-out** in `_wait_for_refinery`: If polling the session status fails 5 times in a row, it returns `needs_human` instead of blocking for the full timeout. Prevents silent hangs when OpenCode is in a bad state.
+
+**3. Eager creation at startup** (`initialize()`): The session is pre-created when the orchestrator boots so it's warm for the first merge. If this fails, falls back to lazy creation on first use — non-fatal.
+
+**4. Periodic health checks** (`health_check()`): Every ~60 seconds, the merge loop checks if the session is still alive via `get_session_status`. If dead, it recreates. Catches OpenCode server restarts.
+
+**5. Message count fence** (stale-result race prevention): Before sending a message, the processor records the current message count. When the session goes idle, it verifies there are new messages beyond that count. This prevents the race where the session was already idle before the prompt was processed — without the fence, the processor would read stale results from the previous merge.
+
+**6. Post-send status verification**: After sending the message, waits 0.5s and checks if the session transitioned from idle to active. If not, the message wasn't picked up — raises an error which triggers the force-reset.
+
+**7. Auto-restart of the loop itself** (`_on_merge_task_done`): The `merge_processor_loop` runs as an asyncio task with a done callback. If the task dies from any exception (including `BaseException`), and the orchestrator is still running, it automatically creates a new task. This makes the merge loop self-healing even against unexpected crashes.
+
+#### Context Cycling
+
+The session accumulates context with each merge. `_maybe_cycle_refinery_session()` runs after each successful merge and checks:
+- Token usage from message metadata (if available)
+- Message count (>20 as a heuristic proxy when token metadata isn't available)
+
+If usage exceeds `Config.REFINERY_TOKEN_THRESHOLD` (100K tokens), the session is killed and the next merge creates a fresh one. Each merge is independent (state lives in git, not in the context), so cycling is safe.
+
+#### Cleanup Boundary
+
+When an issue is finalized (`_finalize_issue` → `_teardown_after_finalize`):
+- The **worker's** OpenCode session is aborted and deleted
+- The worker's worktree is removed
+- The worker's branch is deleted
+- The agent is marked idle
+
+The **refinery** session stays alive — it's shared across all merges. It's only killed on orchestrator shutdown, context cycling, or force-reset after an error.
+
+#### Refinery Session Permissions
 
 ```python
-async def process_merge_queue():
-    """Process the merge_queue. Try mechanical merge first, escalate to Refinery LLM."""
-    pending = db.query("""
-        SELECT mq.id as queue_id, mq.issue_id, mq.agent_id,
-               mq.project, mq.worktree, mq.branch_name,
-               i.title, a.name as agent_name
-        FROM merge_queue mq
-        JOIN issues i ON mq.issue_id = i.id
-        LEFT JOIN agents a ON mq.agent_id = a.id
-        WHERE mq.status = 'queued'
-        ORDER BY mq.enqueued_at ASC
-    """)
-
-    for item in pending:
-        # Mark queue entry as running
-        db.update_merge_queue(item.queue_id, status="running")
-
-        # Tier 1: Try mechanical rebase (no LLM)
-        rebase_ok = try_mechanical_rebase(item.worktree)
-
-        if rebase_ok:
-            # Tier 1 continued: Run tests
-            test_ok = run_tests(item.worktree, item.project)
-            if test_ok:
-                # Clean merge — push it through
-                git_merge_to_main(item.worktree)
-                db.update_merge_queue(item.queue_id, status="merged",
-                                      completed_at=datetime.utcnow())
-                db.update_issue(item.issue_id, status="finalized")
-                db.log_event(item.issue_id, item.agent_id, "finalized")
-                # NOW tear down the worktree (issue is finalized)
-                agent = db.get_agent(item.agent_id)
-                if agent:
-                    teardown_agent(agent)
-                continue
-
-        # Tier 2: Something went wrong — hand to the Refinery LLM
-        await send_to_refinery(item, rebase_ok)
+session = opencode.create_session(
+    directory=project_path,   # Main repo — NOT a worktree
+    title="refinery",
+    permissions=[
+        {"permission": "*", "pattern": "*", "action": "allow"},
+        {"permission": "question", "pattern": "*", "action": "deny"},
+        {"permission": "plan_enter", "pattern": "*", "action": "deny"},
+        {"permission": "external_directory", "pattern": "*", "action": "deny"},
+    ],
+)
 ```
 
-**Refinery Session Setup:**
+The Refinery gets full tool access (it needs to rebase, edit conflicting files, run tests) but is denied question/plan mode (must be autonomous) and external directory access (scoped to the project).
 
-```python
-def create_refinery_session(project_dir: str) -> str:
-    """Create the Refinery's persistent OpenCode session."""
-    session = opencode.create_session(
-        directory=project_dir,
-        title="refinery",
-        permission=[
-            # Refinery needs full access — it resolves conflicts and runs tests
-            {"permission": "*", "pattern": "*", "action": "allow"},
-            {"permission": "question", "pattern": "*", "action": "deny"},
-            {"permission": "plan_enter", "pattern": "*", "action": "deny"},
-            # But scoped to the project directory
-            {"permission": "external_directory", "pattern": "*", "action": "deny"},
-        ],
-    )
-    return session["id"]
-```
+**Note:** The Refinery session is scoped to the **main project directory** (not a worktree), but it operates on worker worktrees by `cd`-ing into them. This is because the Refinery needs to run `git merge --ff-only` on main and also work inside worktrees — it straddles both.
 
-**Refinery Prompt Template:**
+#### Refinery Prompt Template
 
-```
-You are the Refinery — the merge processor for a multi-agent coding system.
+The prompt template lives at `src/hive/prompts/refinery.md`. Each merge gets a fresh prompt injected as a new message. Key variables:
 
-## YOUR ROLE
+- `${issue_id}`, `${issue_title}` — what's being merged
+- `${branch_name}`, `${worktree_path}` — where the code lives
+- `${problem}` — "rebase conflict" or "test failure" with details
+- `${test_step}` — the test command to run (from `Config.TEST_COMMAND`)
 
-You process branches that workers have completed. Your job:
-1. Rebase each branch onto the latest main
-2. Resolve any merge conflicts
-3. Run tests and verify the integration
-4. Merge to main and push
+The prompt instructs the Refinery to:
+1. Check worktree state, abort any in-progress rebase
+2. Run `git rebase main` and resolve conflicts
+3. Run tests
+4. Emit a `:::MERGE_RESULT` block with status, summary, and conflict count
 
-You are NOT a developer. You do not re-implement features. You integrate
-completed work. If a branch is fundamentally incompatible with main, you
-reject it back to the queue — you don't rewrite it.
-
-## CARDINAL RULES
-
-1. **Sequential processing**: One branch at a time. After every merge, main
-   moves. The next branch MUST rebase on the new baseline.
-
-2. **The Verification Gate**: You CANNOT merge without:
-   - Tests passing, OR
-   - A clear determination that test failures are pre-existing (not introduced
-     by this branch)
-   If tests fail and you can't determine the cause, REJECT the branch.
-
-3. **No silent failures**: Every merge attempt is logged. Every conflict is
-   recorded. Every test failure is attributed.
-
-## CONFLICT RESOLUTION APPROACH
-
-When you hit a rebase conflict:
-1. Read the conflicting files — understand what both sides changed
-2. If the conflict is mechanical (e.g., both sides added imports): resolve it
-3. If the conflict is semantic (both sides changed the same logic differently):
-   resolve it if the intent is clear, reject if ambiguous
-4. After resolving, run tests to verify the resolution didn't break anything
-
-## COMPLETION SIGNAL
-
-After processing each branch, output:
-
-:::MERGE_RESULT
-issue_id: {id}
-status: merged | rejected | needs_human
-summary: <what happened>
-tests_passed: true | false
-conflicts_resolved: <count>
-:::
-```
-
-**Orchestrator-Refinery Interface:**
-
-```python
-async def send_to_refinery(item, rebase_succeeded: bool):
-    """Hand a merge to the Refinery LLM for processing."""
-    if not rebase_succeeded:
-        # Abort the failed rebase so the refinery can try its own approach
-        subprocess.run(["git", "rebase", "--abort"], cwd=item.worktree)
-
-    context = f"""
-Process this branch for merge to main.
-
-Issue: {item.issue_id} — {item.title}
-Branch: {item.branch_name}
-Branch worktree: {item.worktree}
-Agent: {item.agent_name}
-
-{"Mechanical rebase FAILED — conflicts detected. Please resolve them." if not rebase_succeeded
- else "Mechanical rebase succeeded but TESTS FAILED. Please diagnose."}
-
-Steps:
-1. cd {item.worktree}
-2. git rebase origin/main  (resolve conflicts if any)
-3. Run tests: {get_test_command(item.project)}
-4. If tests pass: git checkout main && git merge --ff-only {item.branch_name} && git push origin main
-5. Output a :::MERGE_RESULT::: block
-"""
-    opencode.prompt_async(refinery_session_id, context)
-    await wait_for_idle(refinery_session_id)
-
-    # Parse result
-    messages = opencode.get_messages(refinery_session_id)
-    result = parse_merge_result(messages[-1])
-
-    if result.status == "merged":
-        db.update_merge_queue(item.queue_id, status="merged",
-                              completed_at=datetime.utcnow())
-        db.update_issue(item.issue_id, status="finalized")
-        db.log_event(item.issue_id, item.agent_id, "finalized",
-                     detail=f"conflicts_resolved={result.conflicts_resolved}")
-        # Tear down the worktree now that the issue is finalized
-        agent = db.get_agent(item.agent_id)
-        if agent:
-            teardown_agent(agent)
-    elif result.status == "rejected":
-        db.update_merge_queue(item.queue_id, status="failed")
-        db.update_issue(item.issue_id, status="open")  # re-queue for rework
-        db.log_event(item.issue_id, item.agent_id, "merge_rejected",
-                     detail=result.summary)
-    elif result.status == "needs_human":
-        db.update_merge_queue(item.queue_id, status="failed")
-        db.update_issue(item.issue_id, status="escalated")
-        db.log_event(item.issue_id, item.agent_id, "merge_escalated",
-                     detail=result.summary)
-```
-
-**Refinery Context Cycling:**
-
-Same pattern as the Mayor — state lives in the DB and git, not in the context window. The Refinery can be cycled freely because each merge is independent.
+The orchestrator parses `:::MERGE_RESULT` via regex and dispatches on the status field. The actual `git merge --ff-only` to main is done by the orchestrator after the Refinery succeeds — the Refinery just gets the branch into a mergeable state.
 
 ### 10.4 Gas Town Role Mapping (Updated)
 
@@ -1934,12 +1878,14 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 
 ### Phase 7: Resilience & Extensions
 
-- [ ] Long-lived refinery session — eager creation at startup, periodic health checks, auto-restart on death, stale-result race prevention
-- [ ] Dead code cleanup — remove orphaned functions, unused DB tables, unused config values
+- [x] Long-lived refinery session — eager creation at startup, periodic health checks (~60s), auto-restart on task death, stale-result fence (message count), force-reset on exception, post-send status verification, consecutive error bail-out
+- [x] Dependency race fix — `claim_issue()` CAS checks unresolved blocking deps atomically; `hive create --depends-on` wires deps at creation time
+- [ ] Dead code cleanup — remove orphaned functions, unused DB tables, unused config values (in progress)
+- [ ] Inter-agent knowledge transfer — Notes system: `notes` DB table, `.hive-notes.jsonl` worker file convention, orchestrator harvest/inject, `hive note`/`hive notes` CLI (in progress)
 - [ ] Web dashboard (read-only view of SQLite)
 - [ ] Formula/template system for reusable molecule definitions
 
-### Maybe Eventualy
+### Maybe Eventually
 
 - [ ] Multi-project support (multiple orchestrator instances sharing one OpenCode server)
 
@@ -1949,7 +1895,7 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 
 1. **Completion verification depth**: Section 9.5 proposes a structured completion signal. But how do we handle agents that claim success but produced incorrect output? The Refinery's test gate catches some of this, but not semantic errors. Options: secondary review agent, git diff size heuristics, mandatory test coverage.
 
-2. **Agent-to-agent knowledge transfer**: Gas Town's mail protocol lets agents share findings. Our workers are more isolated — they only communicate through the orchestrator. How does worker B learn what worker A discovered? Options: shared notes in issue metadata, Mayor-mediated context injection into worker prompts, shared scratch files in the repo.
+2. **Agent-to-agent knowledge transfer**: ~~Gas Town's mail protocol lets agents share findings. Our workers are more isolated — they only communicate through the orchestrator. How does worker B learn what worker A discovered?~~ **In progress**: Notes system being implemented. Workers write `.hive-notes.jsonl` with discoveries/gotchas. Orchestrator harvests on completion, stores in `notes` table, injects relevant notes into future worker prompts. Queen can add project-wide notes via `hive note`. This is the 80/20 of Gas Town's mail system — context injection without routing/addressing/inbox complexity.
 
 3. **Mayor model selection**: ~~The Mayor reasons about architecture and decomposition — should it use a stronger model (e.g., Opus) while workers use a cheaper model (e.g., Sonnet)?~~ **Resolved**: Three-tier model configuration implemented:
    - `HIVE_DEFAULT_MODEL` (default: `claude-opus-4-6`) — used by the Queen/Mayor
@@ -1964,6 +1910,6 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 
 6. **Mayor scope**: ~~How much should the Mayor do?~~ **Resolved**: The Mayor is the user-facing interface. It does whatever the user asks — from creating issues to monitoring progress to diagnosing failures. Its scope is defined by the conversation, not by the orchestrator. Context management is handled by OpenCode's built-in compaction and the user's ability to start fresh sessions (state is in the DB, not the context).
 
-7. **Refinery worktree management**: The Refinery needs to work in git worktrees to resolve conflicts. Should it have its own persistent worktree, or should the orchestrator create temporary ones per merge? Persistent is simpler; temporary is cleaner.
+7. **Refinery worktree management**: ~~Should it have its own persistent worktree, or use temporary ones per merge?~~ **Resolved**: The Refinery session is scoped to the main project directory, but operates on worker worktrees by `cd`-ing into them. It straddles both — needs access to main (for `git merge --ff-only`) and to worktrees (for conflict resolution). No dedicated worktree needed.
 
 8. **Multiple OpenCode servers**: A single OpenCode server might bottleneck at many concurrent sessions (Mayor + Refinery + N workers). Should the orchestrator manage multiple server instances, or does OpenCode scale sufficiently within a single process?
