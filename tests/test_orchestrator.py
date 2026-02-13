@@ -55,7 +55,7 @@ def test_completion_result():
 
     assert result.success is True
     assert result.git_commit == "abc123"
-    assert result.test_result is True
+    assert result.artifacts.get("test_result") is True
 
 
 def test_completion_result_no_artifacts():
@@ -64,7 +64,7 @@ def test_completion_result_no_artifacts():
 
     assert result.success is False
     assert result.git_commit is None
-    assert result.test_result is None
+    assert result.artifacts.get("test_result") is None
 
 
 # Integration tests (require OpenCode server and git repo)

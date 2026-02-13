@@ -107,15 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_mq_status ON merge_queue(status);
 CREATE INDEX IF NOT EXISTS idx_mq_project ON merge_queue(project);
 
 ----------------------------------------------------------------------
--- LABELS: denormalized tags for fast filtering
-----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS labels (
-    entity_type TEXT NOT NULL,
-    entity_id   TEXT NOT NULL,
-    label       TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (entity_type, entity_id, label)
-);
+
 """
 
 
@@ -546,16 +538,6 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
 
-    def count_active_agents(self) -> int:
-        """
-        Count currently active agents.
-
-        Returns:
-            Number of agents with status 'working'
-        """
-        cursor = self.conn.execute("SELECT COUNT(*) FROM agents WHERE status = 'working'")
-        return cursor.fetchone()[0]
-
     def get_active_agents(self) -> List[Dict[str, Any]]:
         """
         Get all currently active agents.
@@ -616,20 +598,6 @@ class Database:
                 """,
                 (status, completed_at, queue_id),
             )
-
-    def get_merge_queue_entry(self, queue_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Get a single merge queue entry by ID.
-
-        Args:
-            queue_id: Merge queue entry ID
-
-        Returns:
-            Merge queue entry dict, or None if not found
-        """
-        cursor = self.conn.execute("SELECT * FROM merge_queue WHERE id = ?", (queue_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
 
     def get_merge_queue_stats(self) -> Dict[str, int]:
         """

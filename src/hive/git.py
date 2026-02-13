@@ -143,32 +143,6 @@ def delete_branch(project_path: str, branch_name: str, force: bool = False):
         raise GitWorktreeError(f"Failed to delete branch: {e.stderr}") from e
 
 
-def get_current_branch(worktree_path: str) -> str:
-    """
-    Get the current branch name in a worktree.
-
-    Args:
-        worktree_path: Path to the worktree
-
-    Returns:
-        Branch name
-
-    Raises:
-        GitWorktreeError: If getting branch fails
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(worktree_path),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        raise GitWorktreeError(f"Failed to get current branch: {e.stderr}") from e
-
-
 def rebase_onto_main(worktree_path: str, main_branch: str = "main") -> bool:
     """
     Rebase the worktree branch onto the latest main branch.

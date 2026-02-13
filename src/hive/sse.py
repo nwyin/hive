@@ -154,7 +154,7 @@ class SSEClient:
         while self.running and (max_retries < 0 or retries < max_retries):
             try:
                 await self.connect()
-            except Exception as e:
+            except Exception:
                 retries += 1
                 if max_retries >= 0 and retries >= max_retries:
                     raise

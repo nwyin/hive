@@ -23,7 +23,6 @@ def test_database_connection(temp_db):
         "dependencies",
         "events",
         "issues",
-        "labels",
         "merge_queue",
     ]
     for table in expected_tables:
@@ -363,30 +362,19 @@ def test_update_merge_queue_status(db_with_merge_queue):
 
     # Update to running
     db.update_merge_queue_status(queue_id, "running")
-    entry = db.get_merge_queue_entry(queue_id)
+    cursor = db.conn.execute("SELECT * FROM merge_queue WHERE id = ?", (queue_id,))
+    entry = cursor.fetchone()
+    assert entry is not None
     assert entry["status"] == "running"
     assert entry["completed_at"] is None
 
     # Update to merged with timestamp
     db.update_merge_queue_status(queue_id, "merged", completed_at="2026-02-12 12:00:00")
-    entry = db.get_merge_queue_entry(queue_id)
+    cursor = db.conn.execute("SELECT * FROM merge_queue WHERE id = ?", (queue_id,))
+    entry = cursor.fetchone()
+    assert entry is not None
     assert entry["status"] == "merged"
     assert entry["completed_at"] == "2026-02-12 12:00:00"
-
-
-def test_get_merge_queue_entry(db_with_merge_queue):
-    """Test retrieving a single merge queue entry."""
-    db, _, _ = db_with_merge_queue
-
-    entry = db.get_merge_queue_entry(1)
-    assert entry is not None
-    assert entry["branch_name"] == "agent/worker-1"
-
-
-def test_get_merge_queue_entry_missing(temp_db):
-    """Test retrieving non-existent merge queue entry returns None."""
-    entry = temp_db.get_merge_queue_entry(9999)
-    assert entry is None
 
 
 def test_get_merge_queue_stats(db_with_merge_queue):

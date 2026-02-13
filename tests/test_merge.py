@@ -139,7 +139,9 @@ async def test_mechanical_merge_success(merge_entry_with_worktree, temp_db, mock
     assert issue["status"] == "finalized"
 
     # Merge queue entry should be merged
-    entry = temp_db.get_merge_queue_entry(1)
+    cursor = temp_db.conn.execute("SELECT * FROM merge_queue WHERE id = 1")
+    entry = cursor.fetchone()
+    assert entry is not None
     assert entry["status"] == "merged"
     assert entry["completed_at"] is not None
 
@@ -196,7 +198,9 @@ conflicts_resolved: 0
     assert issue["status"] == "open"
 
     # Merge queue should be failed
-    entry = temp_db.get_merge_queue_entry(1)
+    cursor = temp_db.conn.execute("SELECT * FROM merge_queue WHERE id = 1")
+    entry = cursor.fetchone()
+    assert entry is not None
     assert entry["status"] == "failed"
 
 
@@ -251,7 +255,9 @@ async def test_finalize_issue(merge_entry_with_worktree, temp_db, mock_opencode)
 
     mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
 
-    entry = dict(temp_db.get_merge_queue_entry(1))
+    cursor = temp_db.conn.execute("SELECT * FROM merge_queue WHERE id = 1")
+    row = cursor.fetchone()
+    entry = dict(row) if row else {}
     entry["issue_title"] = "Test Feature"
     entry["agent_name"] = "worker-test"
 
@@ -262,7 +268,9 @@ async def test_finalize_issue(merge_entry_with_worktree, temp_db, mock_opencode)
     assert issue["status"] == "finalized"
 
     # Merge queue should be merged
-    mq = temp_db.get_merge_queue_entry(1)
+    cursor = temp_db.conn.execute("SELECT * FROM merge_queue WHERE id = 1")
+    mq = cursor.fetchone()
+    assert mq is not None
     assert mq["status"] == "merged"
 
     # Worktree should be cleaned up
@@ -281,7 +289,9 @@ async def test_teardown_after_finalize(merge_entry_with_worktree, temp_db, mock_
 
     mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
 
-    entry = dict(temp_db.get_merge_queue_entry(1))
+    cursor = temp_db.conn.execute("SELECT * FROM merge_queue WHERE id = 1")
+    row = cursor.fetchone()
+    entry = dict(row) if row else {}
     await mp._teardown_after_finalize(entry)
 
     # Worktree gone

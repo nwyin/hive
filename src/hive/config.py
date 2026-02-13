@@ -23,9 +23,7 @@ class Config:
     DB_PATH = os.environ.get("HIVE_DB_PATH", "hive.db")
 
     # Context cycling thresholds (token counts)
-    QUEEN_TOKEN_THRESHOLD = int(os.environ.get("HIVE_QUEEN_TOKEN_THRESHOLD", "120000"))
     REFINERY_TOKEN_THRESHOLD = int(os.environ.get("HIVE_REFINERY_TOKEN_THRESHOLD", "100000"))
-    WORKER_TOKEN_THRESHOLD = int(os.environ.get("HIVE_WORKER_TOKEN_THRESHOLD", "150000"))
 
     # Escalation
     MAX_RETRIES = int(os.environ.get("HIVE_MAX_RETRIES", "2"))

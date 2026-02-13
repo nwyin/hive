@@ -11,7 +11,6 @@ from hive.git import (
     create_worktree,
     delete_branch,
     get_commit_hash,
-    get_current_branch,
     merge_to_main,
     rebase_onto_main,
     remove_worktree,
@@ -65,7 +64,14 @@ def test_create_worktree(git_repo):
     assert (Path(worktree_path) / "README.md").exists()
 
     # Check branch name
-    branch = get_current_branch(worktree_path)
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    branch = result.stdout.strip()
     assert branch == "agent/test-agent"
 
     # Clean up
@@ -96,17 +102,6 @@ def test_remove_nonexistent_worktree(tmp_path):
     """Test removing a nonexistent worktree doesn't error."""
     # Should not raise
     remove_worktree(str(tmp_path / "nonexistent"))
-
-
-def test_get_current_branch(git_repo):
-    """Test getting current branch name."""
-    worktree_path = create_worktree(str(git_repo), "test-agent")
-
-    branch = get_current_branch(worktree_path)
-    assert branch == "agent/test-agent"
-
-    # Clean up
-    remove_worktree(worktree_path)
 
 
 def test_get_commit_hash(git_repo):

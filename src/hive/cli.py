@@ -13,8 +13,7 @@ from typing import Optional
 from .config import Config
 from .daemon import HiveDaemon, run_daemon_foreground
 from .db import Database
-from .opencode import OpenCodeClient
-from .orchestrator import Orchestrator
+
 from .sse import SSEClient
 from .tools import ToolExecutor
 
@@ -539,7 +538,7 @@ class HiveCLI:
         if not issue_id and not agent_id:
             issue_breakdown = usage.get("issue_breakdown", {})
             if issue_breakdown:
-                print(f"\n=== Top Issues by Token Usage ===")
+                print("\n=== Top Issues by Token Usage ===")
                 sorted_issues = sorted(
                     issue_breakdown.items(),
                     key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
@@ -551,7 +550,7 @@ class HiveCLI:
 
             agent_breakdown = usage.get("agent_breakdown", {})
             if agent_breakdown:
-                print(f"\n=== Top Agents by Token Usage ===")
+                print("\n=== Top Agents by Token Usage ===")
                 sorted_agents = sorted(
                     agent_breakdown.items(),
                     key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
@@ -563,7 +562,7 @@ class HiveCLI:
 
             model_breakdown = usage.get("model_breakdown", {})
             if model_breakdown:
-                print(f"\n=== Usage by Model ===")
+                print("\n=== Usage by Model ===")
                 for model, tokens in model_breakdown.items():
                     total = tokens["input_tokens"] + tokens["output_tokens"]
                     print(f"{model}: {total:,} tokens")
@@ -719,10 +718,6 @@ class HiveCLI:
         print("Launching Queen Bee TUI...\n")
         os.execvp(cmd[0], cmd)
 
-    def execute_tool(self, tool_name: str, params: dict) -> dict:
-        """Execute a tool call (used by Queen Bee via tool bridge)."""
-        return self._executor.execute(tool_name, params)
-
     def watch(self, issue_id: str, *, json_mode: bool = False):
         """Watch live events from a worker's OpenCode session."""
         # First, get the issue and find its assignee
@@ -865,18 +860,6 @@ class HiveCLI:
                 print(f"Error: {e}", file=sys.stderr)
         finally:
             sse_client.stop()
-
-
-async def run_orchestrator(db: Database, project_path: str):
-    """Run orchestrator in background."""
-    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
-        orchestrator = Orchestrator(
-            db=db,
-            opencode_client=opencode,
-            project_path=project_path,
-            project_name=Path(project_path).name,
-        )
-        await orchestrator.start()
 
 
 def main():

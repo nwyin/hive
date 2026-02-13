@@ -62,33 +62,6 @@ def test_get_next_ready_step_no_dependencies(temp_db):
     assert next_step["id"] == step1
 
 
-def test_count_active_agents(temp_db):
-    """Test counting active agents."""
-    # Initially no active agents
-    assert temp_db.count_active_agents() == 0
-
-    # Create some agents
-    agent1 = temp_db.create_agent("agent-1")
-    agent2 = temp_db.create_agent("agent-2")
-    agent3 = temp_db.create_agent("agent-3")
-
-    # All idle initially
-    assert temp_db.count_active_agents() == 0
-
-    # Set some to working
-    temp_db.conn.execute("UPDATE agents SET status = 'working' WHERE id = ?", (agent1,))
-    temp_db.conn.execute("UPDATE agents SET status = 'working' WHERE id = ?", (agent2,))
-    temp_db.conn.commit()
-
-    assert temp_db.count_active_agents() == 2
-
-    # Set one back to idle
-    temp_db.conn.execute("UPDATE agents SET status = 'idle' WHERE id = ?", (agent1,))
-    temp_db.conn.commit()
-
-    assert temp_db.count_active_agents() == 1
-
-
 def test_get_active_agents(temp_db):
     """Test getting all active agents."""
     # Create agents
@@ -242,7 +215,8 @@ async def test_multi_worker_pool(temp_db, git_repo):
         await orch.spawn_worker(temp_db.get_issue(issue3))
 
         # Check that multiple workers are active
-        active_count = temp_db.count_active_agents()
+        cursor = temp_db.conn.execute("SELECT COUNT(*) FROM agents WHERE status = 'working'")
+        active_count = cursor.fetchone()[0]
         assert active_count <= Config.MAX_AGENTS
 
         # Clean up

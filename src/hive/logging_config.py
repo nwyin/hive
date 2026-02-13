@@ -71,18 +71,3 @@ def _is_cli_context() -> bool:
             return True
 
     return False
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Get a logger with the given name under the hive hierarchy.
-
-    Args:
-        name: Logger name (will be prefixed with 'hive.' if not already)
-
-    Returns:
-        Logger instance
-    """
-    if not name.startswith("hive."):
-        name = f"hive.{name}"
-
-    return logging.getLogger(name)

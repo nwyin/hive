@@ -3,7 +3,7 @@
 import base64
 import os
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+
 
 import aiohttp
 
@@ -92,49 +92,6 @@ class OpenCodeClient:
             payload["permission"] = permissions
 
         url = f"{self.base_url}/session"
-        async with self.session.post(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def send_message(
-        self,
-        session_id: str,
-        parts: List[Dict[str, Any]],
-        agent: str = "build",
-        model: Optional[Dict[str, str]] = None,
-        system: Optional[str] = None,
-        directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Send a message to a session (synchronous - blocks until complete).
-
-        Args:
-            session_id: Session ID
-            parts: Message parts (e.g., [{"type": "text", "text": "..."}])
-            agent: Agent type (default: "build")
-            model: Model config dict with providerID and modelID
-            system: Additional system prompt
-            directory: Directory context for this request
-
-        Returns:
-            Full message response with info and parts
-        """
-        if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
-
-        headers = {
-            **self._get_auth_header(),
-            **self._get_directory_header(directory),
-            "Content-Type": "application/json",
-        }
-
-        payload = {"parts": parts, "agent": agent}
-        if model:
-            payload["model"] = model
-        if system:
-            payload["system"] = system
-
-        url = f"{self.base_url}/session/{session_id}/message"
         async with self.session.post(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -250,30 +207,6 @@ class OpenCodeClient:
             resp.raise_for_status()
             return await resp.json()
 
-    async def get_session(self, session_id: str, directory: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get session info.
-
-        Args:
-            session_id: Session ID
-            directory: Directory context
-
-        Returns:
-            Session info dict
-        """
-        if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
-
-        headers = {
-            **self._get_auth_header(),
-            **self._get_directory_header(directory),
-        }
-
-        url = f"{self.base_url}/session/{session_id}"
-        async with self.session.get(url, headers=headers) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
     async def get_messages(
         self,
         session_id: str,
@@ -302,36 +235,6 @@ class OpenCodeClient:
         url = f"{self.base_url}/session/{session_id}/message"
         if limit:
             url += f"?limit={limit}"
-
-        async with self.session.get(url, headers=headers) as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def list_sessions(self, directory: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        List all sessions.
-
-        Args:
-            directory: Filter by directory
-            limit: Maximum number of sessions to return
-
-        Returns:
-            List of session info dicts
-        """
-        if not self.session:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
-
-        headers = {
-            **self._get_auth_header(),
-            **self._get_directory_header(directory),
-        }
-
-        url = f"{self.base_url}/session"
-        params = {}
-        if limit:
-            params["limit"] = limit
-        if params:
-            url += f"?{urlencode(params)}"
 
         async with self.session.get(url, headers=headers) as resp:
             resp.raise_for_status()

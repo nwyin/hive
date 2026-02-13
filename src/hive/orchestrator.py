@@ -1315,7 +1315,6 @@ class Orchestrator:
             "once", "always", or None if no rule matches
         """
         permission = perm.get("permission")
-        patterns = perm.get("patterns", [])
 
         # Session-level permissions handle most cases (set at session creation).
         # This catches runtime permission requests that slip through.
@@ -1334,34 +1333,3 @@ class Orchestrator:
 
         # Unknown permission - let it block (human reviews)
         return None
-
-
-async def main():
-    """Main entry point for orchestrator."""
-    db = Database(Config.DB_PATH)
-    db.connect()
-
-    async with OpenCodeClient(Config.OPENCODE_URL, Config.OPENCODE_PASSWORD) as opencode:
-        # Get project path from command line or env
-        import sys
-
-        project_path = sys.argv[1] if len(sys.argv) > 1 else "."
-        project_name = Path(project_path).name
-
-        orchestrator = Orchestrator(
-            db=db,
-            opencode_client=opencode,
-            project_path=project_path,
-            project_name=project_name,
-        )
-
-        try:
-            await orchestrator.start()
-        except KeyboardInterrupt:
-            logger.info("Shutting down orchestrator")
-        finally:
-            db.close()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

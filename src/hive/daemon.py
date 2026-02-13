@@ -172,17 +172,6 @@ class HiveDaemon:
         self._remove_pid()
         return True
 
-    def restart(self, db_path: str = "hive.db") -> bool:
-        """
-        Restart the daemon.
-
-        Returns:
-            True if restarted successfully
-        """
-        self.stop()
-        time.sleep(0.5)
-        return self.start(db_path=db_path)
-
     def status(self) -> dict:
         """
         Get daemon status.

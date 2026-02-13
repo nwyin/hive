@@ -18,11 +18,6 @@ class CompletionResult:
         """Get git commit hash from artifacts."""
         return self.artifacts.get("git_commit")
 
-    @property
-    def test_result(self) -> Optional[bool]:
-        """Get test result from artifacts."""
-        return self.artifacts.get("test_result")
-
 
 @dataclass
 class AgentIdentity:
