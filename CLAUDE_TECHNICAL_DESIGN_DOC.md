@@ -1788,11 +1788,11 @@ No special infrastructure. The CV is an emergent property of the event log.
 **Human Interface** ✅
 
 - CLI: 20+ commands (create, list, ready, show, update, cancel, finalize, retry, escalate, molecule, dep, agents, agent, events, close, logs, status, merges, start, daemon, queen)
-- `hive logs -f` for live event tailing (JSONL in `--json` mode)
-- `hive logs --json` for machine-readable output
+- `hive --json logs -f` for live event tailing (JSONL in `--json` mode)
+- `hive --json logs` for machine-readable output
 - `hive list --sort --reverse --type --assignee --limit` for flexible filtering
 - `hive create --model` / `hive update --model` for per-issue model config
-- `hive start/stop/daemon status --json` for scripting
+- `hive --json start/stop/daemon status` for scripting
 - `hive merges` for merge queue visibility
 - `hive status` with merge queue stats
 - Real-time status monitoring
