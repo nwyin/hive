@@ -89,6 +89,22 @@ CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
 ----------------------------------------------------------------------
+-- NOTES: inter-agent knowledge transfer system
+----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    TEXT REFERENCES issues(id),
+    agent_id    TEXT REFERENCES agents(id),
+    category    TEXT NOT NULL DEFAULT 'discovery',
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_issue ON notes(issue_id);
+CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category);
+CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
+
+----------------------------------------------------------------------
 -- MERGE_QUEUE: dedicated finalizer queue
 ----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS merge_queue (
@@ -887,3 +903,102 @@ class Database:
             "agent_breakdown": agent_breakdown,
             "model_breakdown": model_breakdown,
         }
+
+    # --- Notes Methods ---
+
+    def add_note(self, issue_id: Optional[str] = None, agent_id: Optional[str] = None, content: str = "", category: str = "discovery") -> int:
+        """
+        Insert a note and return its ID.
+
+        Args:
+            issue_id: Which issue the note was discovered during. None = project-wide note.
+            agent_id: Which agent wrote it. None = Queen-authored or system note.
+            content: The note text. Short — typically 1-3 sentences.
+            category: One of 'discovery', 'gotcha', 'dependency', 'pattern', 'context'.
+
+        Returns:
+            The ID of the inserted note
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        cursor = self.conn.execute(
+            "INSERT INTO notes (issue_id, agent_id, category, content) VALUES (?, ?, ?, ?)", (issue_id, agent_id, category, content)
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_notes(self, issue_id: Optional[str] = None, category: Optional[str] = None, limit: int = 20) -> List[Dict]:
+        """
+        Retrieve notes with optional filtering. Returns newest first.
+
+        Args:
+            issue_id: Filter by specific issue ID (optional)
+            category: Filter by specific category (optional)
+            limit: Maximum number of notes to return
+
+        Returns:
+            List of note dicts, ordered by newest first
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        query = "SELECT * FROM notes WHERE 1=1"
+        params = []
+        if issue_id is not None:
+            query += " AND issue_id = ?"
+            params.append(issue_id)
+        if category is not None:
+            query += " AND category = ?"
+            params.append(category)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_notes_for_molecule(self, parent_id: str) -> List[Dict]:
+        """
+        Get all notes from issues that share a parent molecule. For predecessor context.
+
+        Args:
+            parent_id: Parent molecule issue ID
+
+        Returns:
+            List of note dicts from child issues, ordered by creation time (oldest first)
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        rows = self.conn.execute(
+            """
+            SELECT n.* FROM notes n
+            JOIN issues i ON n.issue_id = i.id
+            WHERE i.parent_id = ?
+            ORDER BY n.created_at ASC
+        """,
+            (parent_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_recent_project_notes(self, limit: int = 10) -> List[Dict]:
+        """
+        Get recent project-wide notes plus recent cross-issue notes.
+
+        Args:
+            limit: Maximum number of notes to return
+
+        Returns:
+            List of note dicts, ordered by newest first
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        rows = self.conn.execute(
+            """
+            SELECT * FROM notes 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]

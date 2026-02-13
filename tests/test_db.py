@@ -24,6 +24,7 @@ def test_database_connection(temp_db):
         "events",
         "issues",
         "merge_queue",
+        "notes",
     ]
     for table in expected_tables:
         assert table in tables
@@ -733,3 +734,272 @@ def test_get_token_usage_with_invalid_json(temp_db):
     assert usage["total_tokens"] == 1500
     assert usage["total_input_tokens"] == 1000
     assert usage["total_output_tokens"] == 500
+
+
+# --- Notes system tests ---
+
+
+def test_add_note_returns_integer_id(temp_db):
+    """Test add_note returns an integer ID."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    note_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Test note", category="discovery")
+
+    assert isinstance(note_id, int)
+    assert note_id > 0
+
+
+def test_add_note_with_defaults(temp_db):
+    """Test add_note with default parameters."""
+    note_id = temp_db.add_note(content="Project-wide note")
+
+    assert isinstance(note_id, int)
+
+    # Verify the note was saved with defaults
+    notes = temp_db.get_notes(limit=1)
+    assert len(notes) == 1
+    note = notes[0]
+    assert note["id"] == note_id
+    assert note["issue_id"] is None
+    assert note["agent_id"] is None
+    assert note["category"] == "discovery"
+    assert note["content"] == "Project-wide note"
+    assert note["created_at"] is not None
+
+
+def test_add_note_all_categories(temp_db):
+    """Test add_note works with all expected categories."""
+    categories = ["discovery", "gotcha", "dependency", "pattern", "context"]
+
+    for category in categories:
+        note_id = temp_db.add_note(content=f"Test {category} note", category=category)
+        assert isinstance(note_id, int)
+
+        # Verify category was saved correctly
+        notes = temp_db.get_notes(category=category, limit=1)
+        assert len(notes) == 1
+        assert notes[0]["category"] == category
+
+
+def test_get_notes_no_filters_newest_first(temp_db):
+    """Test get_notes with no filters returns notes ordered by newest first."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create notes in order
+    note1_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="First note")
+    note2_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Second note")
+    note3_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Third note")
+
+    notes = temp_db.get_notes()
+
+    # Should be ordered newest first
+    assert len(notes) == 3
+    assert notes[0]["id"] == note3_id  # Newest
+    assert notes[1]["id"] == note2_id
+    assert notes[2]["id"] == note1_id  # Oldest
+    assert notes[0]["content"] == "Third note"
+
+
+def test_get_notes_filter_by_issue_id(temp_db):
+    """Test get_notes filters correctly by issue_id."""
+    issue1_id = temp_db.create_issue("Issue 1")
+    issue2_id = temp_db.create_issue("Issue 2")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create notes for different issues
+    note1_id = temp_db.add_note(issue_id=issue1_id, agent_id=agent_id, content="Note for issue 1")
+    note2_id = temp_db.add_note(issue_id=issue2_id, agent_id=agent_id, content="Note for issue 2")
+    note3_id = temp_db.add_note(issue_id=issue1_id, agent_id=agent_id, content="Another note for issue 1")
+
+    # Filter by issue1
+    notes = temp_db.get_notes(issue_id=issue1_id)
+
+    assert len(notes) == 2
+    note_ids = [note["id"] for note in notes]
+    assert note1_id in note_ids
+    assert note3_id in note_ids
+    assert note2_id not in note_ids
+
+    # Verify content
+    contents = [note["content"] for note in notes]
+    assert "Note for issue 1" in contents
+    assert "Another note for issue 1" in contents
+    assert "Note for issue 2" not in contents
+
+
+def test_get_notes_filter_by_category(temp_db):
+    """Test get_notes filters correctly by category."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create notes with different categories
+    discovery_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Discovery note", category="discovery")
+    gotcha_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Gotcha note", category="gotcha")
+    pattern_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Pattern note", category="pattern")
+
+    # Filter by gotcha category
+    notes = temp_db.get_notes(category="gotcha")
+
+    assert len(notes) == 1
+    assert notes[0]["id"] == gotcha_id
+    assert notes[0]["category"] == "gotcha"
+    assert notes[0]["content"] == "Gotcha note"
+
+    # Filter by discovery category
+    discovery_notes = temp_db.get_notes(category="discovery")
+    assert len(discovery_notes) == 1
+    assert discovery_notes[0]["id"] == discovery_id
+
+
+def test_get_notes_limit_parameter(temp_db):
+    """Test get_notes respects the limit parameter."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create 5 notes
+    for i in range(5):
+        temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content=f"Note {i}")
+
+    # Test limit
+    notes = temp_db.get_notes(limit=3)
+    assert len(notes) == 3
+
+    # Test default limit (should be 20, but we only have 5 notes)
+    all_notes = temp_db.get_notes()
+    assert len(all_notes) == 5
+
+
+def test_get_notes_for_molecule(temp_db):
+    """Test get_notes_for_molecule returns notes from child issues."""
+    # Create a parent molecule issue
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+
+    # Create child issues
+    child1_id = temp_db.create_issue("Child 1", parent_id=parent_id, issue_type="step")
+    child2_id = temp_db.create_issue("Child 2", parent_id=parent_id, issue_type="step")
+    child3_id = temp_db.create_issue("Child 3", parent_id=parent_id, issue_type="step")
+
+    # Create an unrelated issue
+    unrelated_id = temp_db.create_issue("Unrelated issue")
+
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create notes for child issues (older first to test ordering)
+    note1_id = temp_db.add_note(issue_id=child1_id, agent_id=agent_id, content="Note from child 1")
+    note2_id = temp_db.add_note(issue_id=child2_id, agent_id=agent_id, content="Note from child 2")
+    note3_id = temp_db.add_note(issue_id=child3_id, agent_id=agent_id, content="Note from child 3")
+
+    # Create note for unrelated issue (should not be included)
+    unrelated_note_id = temp_db.add_note(issue_id=unrelated_id, agent_id=agent_id, content="Unrelated note")
+
+    # Get notes for the molecule
+    notes = temp_db.get_notes_for_molecule(parent_id)
+
+    assert len(notes) == 3
+    note_ids = [note["id"] for note in notes]
+    assert note1_id in note_ids
+    assert note2_id in note_ids
+    assert note3_id in note_ids
+    assert unrelated_note_id not in note_ids
+
+    # Should be ordered by creation time (oldest first)
+    assert notes[0]["id"] == note1_id  # First created
+    assert notes[1]["id"] == note2_id
+    assert notes[2]["id"] == note3_id  # Last created
+
+    # Verify content
+    contents = [note["content"] for note in notes]
+    assert "Note from child 1" in contents
+    assert "Note from child 2" in contents
+    assert "Note from child 3" in contents
+
+
+def test_get_notes_for_molecule_empty(temp_db):
+    """Test get_notes_for_molecule returns empty list for molecule with no child notes."""
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+
+    notes = temp_db.get_notes_for_molecule(parent_id)
+    assert notes == []
+
+
+def test_get_notes_for_molecule_nonexistent_parent(temp_db):
+    """Test get_notes_for_molecule with non-existent parent returns empty list."""
+    notes = temp_db.get_notes_for_molecule("nonexistent-parent-id")
+    assert notes == []
+
+
+def test_get_recent_project_notes(temp_db):
+    """Test get_recent_project_notes returns mixed notes newest first."""
+    issue1_id = temp_db.create_issue("Issue 1")
+    issue2_id = temp_db.create_issue("Issue 2")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create various notes
+    note1_id = temp_db.add_note(issue_id=issue1_id, agent_id=agent_id, content="Issue-specific note 1")
+    note2_id = temp_db.add_note(content="Project-wide note 1")  # No issue_id
+    note3_id = temp_db.add_note(issue_id=issue2_id, agent_id=agent_id, content="Issue-specific note 2")
+    note4_id = temp_db.add_note(content="Project-wide note 2")  # No issue_id
+
+    notes = temp_db.get_recent_project_notes()
+
+    assert len(notes) == 4
+
+    # Should be ordered newest first
+    assert notes[0]["id"] == note4_id  # Last created
+    assert notes[1]["id"] == note3_id
+    assert notes[2]["id"] == note2_id
+    assert notes[3]["id"] == note1_id  # First created
+
+    # Verify mix of project-wide and issue-specific notes
+    issue_ids = [note["issue_id"] for note in notes]
+    assert None in issue_ids  # Project-wide notes
+    assert issue1_id in issue_ids  # Issue-specific notes
+    assert issue2_id in issue_ids
+
+
+def test_get_recent_project_notes_limit(temp_db):
+    """Test get_recent_project_notes respects limit parameter."""
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create more notes than the limit
+    for i in range(15):
+        temp_db.add_note(content=f"Note {i}", agent_id=agent_id)
+
+    # Test custom limit
+    notes = temp_db.get_recent_project_notes(limit=5)
+    assert len(notes) == 5
+
+    # Test default limit
+    default_notes = temp_db.get_recent_project_notes()
+    assert len(default_notes) == 10  # Default limit is 10
+
+    # Should be newest first
+    assert default_notes[0]["content"] == "Note 14"  # Last created (newest)
+    assert default_notes[9]["content"] == "Note 5"  # 10th newest
+
+
+def test_get_recent_project_notes_empty(temp_db):
+    """Test get_recent_project_notes returns empty list when no notes exist."""
+    notes = temp_db.get_recent_project_notes()
+    assert notes == []
+
+
+def test_notes_database_not_connected_error(temp_db):
+    """Test that notes methods raise error when database not connected."""
+    # Close the connection
+    temp_db.close()
+
+    # All methods should raise RuntimeError
+    with pytest.raises(RuntimeError, match="Database not connected"):
+        temp_db.add_note(content="Test note")
+
+    with pytest.raises(RuntimeError, match="Database not connected"):
+        temp_db.get_notes()
+
+    with pytest.raises(RuntimeError, match="Database not connected"):
+        temp_db.get_notes_for_molecule("test-parent")
+
+    with pytest.raises(RuntimeError, match="Database not connected"):
+        temp_db.get_recent_project_notes()
