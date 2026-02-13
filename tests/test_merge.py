@@ -310,3 +310,104 @@ async def test_teardown_missing_worktree(temp_db, mock_opencode):
 
     # Should not raise
     await mp._teardown_after_finalize(entry)
+
+
+@pytest.mark.asyncio
+async def test_refinery_session_cycling_by_token_count(temp_db, mock_opencode):
+    """Test refinery session is cycled when token threshold is exceeded."""
+    mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
+
+    # Set up a refinery session
+    mp.refinery_session_id = "test-session-123"
+
+    # Mock get_messages to return high token count
+    mock_opencode.get_messages = AsyncMock(
+        return_value=[
+            {
+                "metadata": {"token_count": 120000},  # Exceeds REFINERY_TOKEN_THRESHOLD (100000)
+                "parts": [{"type": "text", "text": "message 1"}],
+            },
+            {"metadata": {"token_count": 30000}, "parts": [{"type": "text", "text": "message 2"}]},
+        ]
+    )
+
+    # Mock abort and delete session calls
+    mock_opencode.abort_session = AsyncMock()
+    mock_opencode.delete_session = AsyncMock()
+
+    # Call the token check method
+    await mp._maybe_cycle_refinery_session()
+
+    # Verify session was cycled
+    assert mp.refinery_session_id is None
+    mock_opencode.abort_session.assert_called_once_with("test-session-123", directory=mp.project_path)
+    mock_opencode.delete_session.assert_called_once_with("test-session-123", directory=mp.project_path)
+
+    # Verify event was logged
+    events = temp_db.get_events(None)  # Get all events
+    cycling_events = [e for e in events if e["event_type"] == "refinery_session_cycled"]
+    assert len(cycling_events) == 1
+
+    event = cycling_events[0]
+    import json
+
+    details = json.loads(event["detail"])
+    assert details["session_id"] == "test-session-123"
+    assert details["token_count"] == 150000  # 120000 + 30000
+    assert details["threshold"] == 100000
+
+
+@pytest.mark.asyncio
+async def test_refinery_session_cycling_by_message_count(temp_db, mock_opencode):
+    """Test refinery session is cycled when message count exceeds threshold (fallback)."""
+    mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
+
+    # Set up a refinery session
+    mp.refinery_session_id = "test-session-456"
+
+    # Mock get_messages to return many messages without token metadata
+    messages = []
+    for i in range(25):  # More than 20 messages (our fallback threshold)
+        messages.append({"parts": [{"type": "text", "text": f"message {i}"}]})
+
+    mock_opencode.get_messages = AsyncMock(return_value=messages)
+    mock_opencode.abort_session = AsyncMock()
+    mock_opencode.delete_session = AsyncMock()
+
+    # Call the token check method
+    await mp._maybe_cycle_refinery_session()
+
+    # Verify session was cycled
+    assert mp.refinery_session_id is None
+    mock_opencode.abort_session.assert_called_once_with("test-session-456", directory=mp.project_path)
+    mock_opencode.delete_session.assert_called_once_with("test-session-456", directory=mp.project_path)
+
+
+@pytest.mark.asyncio
+async def test_refinery_session_no_cycling_under_threshold(temp_db, mock_opencode):
+    """Test refinery session is NOT cycled when under token threshold."""
+    mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
+
+    # Set up a refinery session
+    mp.refinery_session_id = "test-session-789"
+
+    # Mock get_messages to return low token count
+    mock_opencode.get_messages = AsyncMock(
+        return_value=[
+            {
+                "metadata": {"token_count": 50000},  # Under REFINERY_TOKEN_THRESHOLD (100000)
+                "parts": [{"type": "text", "text": "message 1"}],
+            }
+        ]
+    )
+
+    mock_opencode.abort_session = AsyncMock()
+    mock_opencode.delete_session = AsyncMock()
+
+    # Call the token check method
+    await mp._maybe_cycle_refinery_session()
+
+    # Verify session was NOT cycled
+    assert mp.refinery_session_id == "test-session-789"
+    mock_opencode.abort_session.assert_not_called()
+    mock_opencode.delete_session.assert_not_called()

@@ -223,6 +223,9 @@ class MergeProcessor:
                     {"summary": result.get("summary", "")},
                 )
 
+            # Check if refinery session should be cycled due to token usage
+            await self._maybe_cycle_refinery_session()
+
         except Exception as e:
             self.db.update_merge_queue_status(queue_id, "failed")
             self.db.log_event(
@@ -345,6 +348,73 @@ class MergeProcessor:
                 (agent_id,),
             )
             self.db.conn.commit()
+
+    async def _maybe_cycle_refinery_session(self):
+        """
+        Check if the refinery session exceeds token threshold and cycle it if needed.
+
+        If token usage exceeds Config.REFINERY_TOKEN_THRESHOLD, the session is
+        aborted, deleted, and reset to None (next merge will create a fresh one).
+        """
+        if not self.refinery_session_id:
+            return
+
+        try:
+            # Get session messages to check token usage
+            messages = await self.opencode.get_messages(self.refinery_session_id, directory=self.project_path)
+
+            # Sum up token counts from message metadata
+            total_tokens = 0
+            message_count = 0
+
+            for message in messages:
+                message_count += 1
+                metadata = message.get("metadata", {})
+                if "token_count" in metadata:
+                    total_tokens += metadata["token_count"]
+                elif "tokens" in metadata:
+                    # Handle different metadata formats
+                    total_tokens += metadata["tokens"]
+
+            # If no token metadata available, use message count as proxy
+            # Rough heuristic: >20 messages suggests we should cycle
+            should_cycle = False
+            if total_tokens > 0:
+                should_cycle = total_tokens > Config.REFINERY_TOKEN_THRESHOLD
+            else:
+                should_cycle = message_count > 20
+
+            if should_cycle:
+                # Log the cycling event
+                self.db.log_event(
+                    None,  # No specific issue
+                    None,  # No specific agent
+                    "refinery_session_cycled",
+                    {
+                        "session_id": self.refinery_session_id,
+                        "token_count": total_tokens,
+                        "message_count": message_count,
+                        "threshold": Config.REFINERY_TOKEN_THRESHOLD,
+                    },
+                )
+
+                # Abort and delete the current session
+                try:
+                    await self.opencode.abort_session(self.refinery_session_id, directory=self.project_path)
+                except Exception:
+                    pass  # Best effort
+
+                try:
+                    await self.opencode.delete_session(self.refinery_session_id, directory=self.project_path)
+                except Exception:
+                    pass  # Best effort
+
+                # Reset session ID - next merge will create a fresh session
+                self.refinery_session_id = None
+
+        except Exception:
+            # If we can't check token usage, don't cycle
+            pass
 
     async def _ensure_refinery_session(self) -> str:
         """
