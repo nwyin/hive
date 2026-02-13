@@ -1,6 +1,7 @@
 """Tests for CLI interface."""
 
 import json
+import unittest.mock
 
 import pytest
 
@@ -605,3 +606,73 @@ def test_cli_costs_by_agent(temp_db, tmp_path, capsys):
     captured = capsys.readouterr()
     assert f"Agent: {agent1_id}" in captured.out
     assert "Total tokens: 1,500" in captured.out
+
+
+def test_cli_watch_no_issue(temp_db, tmp_path, capsys):
+    """Test watch command with non-existent issue."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    with pytest.raises(SystemExit):
+        cli.watch("nonexistent-issue")
+
+    captured = capsys.readouterr()
+    assert "Issue nonexistent-issue not found" in captured.err
+
+
+def test_cli_watch_unassigned_issue(temp_db, tmp_path, capsys):
+    """Test watch command with unassigned issue."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    # Create an issue without assignee
+    issue_id = temp_db.create_issue("Test issue", project=tmp_path.name)
+
+    with pytest.raises(SystemExit):
+        cli.watch(issue_id)
+
+    captured = capsys.readouterr()
+    assert "is not assigned to any agent" in captured.err
+
+
+def test_cli_watch_no_session(temp_db, tmp_path, capsys):
+    """Test watch command with agent that has no active session."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    # Create an issue and agent
+    issue_id = temp_db.create_issue("Test issue", project=tmp_path.name)
+    agent_id = temp_db.create_agent("test-agent", "idle")
+
+    # Assign issue to agent
+    temp_db.claim_issue(issue_id, agent_id)
+
+    with pytest.raises(SystemExit):
+        cli.watch(issue_id)
+
+    captured = capsys.readouterr()
+    assert "has no active session" in captured.err
+
+
+@unittest.mock.patch("hive.cli.asyncio.run")
+def test_cli_watch_valid_issue(mock_asyncio_run, temp_db, tmp_path):
+    """Test watch command with valid issue assignment."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    # Create an issue and agent with session
+    issue_id = temp_db.create_issue("Test issue", project=tmp_path.name)
+    agent_id = temp_db.create_agent("test-agent", "working")
+
+    # Set agent session_id and worktree
+    temp_db.conn.execute("UPDATE agents SET session_id = ?, worktree = ? WHERE id = ?", ("test-session", "/test/worktree", agent_id))
+    temp_db.conn.commit()
+
+    # Assign issue to agent
+    temp_db.claim_issue(issue_id, agent_id)
+
+    # Call watch
+    cli.watch(issue_id)
+
+    # Verify asyncio.run was called
+    mock_asyncio_run.assert_called_once()
+
+    # Get the arguments passed to asyncio.run (should be a coroutine)
+    call_args = mock_asyncio_run.call_args[0][0]
+    assert hasattr(call_args, "__await__")  # It's a coroutine

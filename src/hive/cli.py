@@ -1,10 +1,12 @@
 """Human CLI interface for Hive orchestrator."""
 
 import argparse
+import asyncio
 import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +15,7 @@ from .daemon import HiveDaemon, run_daemon_foreground
 from .db import Database
 from .opencode import OpenCodeClient
 from .orchestrator import Orchestrator
+from .sse import SSEClient
 from .tools import ToolExecutor
 
 
@@ -720,6 +723,149 @@ class HiveCLI:
         """Execute a tool call (used by Queen Bee via tool bridge)."""
         return self._executor.execute(tool_name, params)
 
+    def watch(self, issue_id: str, *, json_mode: bool = False):
+        """Watch live events from a worker's OpenCode session."""
+        # First, get the issue and find its assignee
+        cursor = self.db.conn.execute("SELECT assignee FROM issues WHERE id = ?", (issue_id,))
+        result = cursor.fetchone()
+        if not result:
+            if json_mode:
+                print(json.dumps({"error": f"Issue {issue_id} not found"}))
+            else:
+                print(f"Error: Issue {issue_id} not found", file=sys.stderr)
+            sys.exit(1)
+
+        assignee = result[0]
+        if not assignee:
+            if json_mode:
+                print(json.dumps({"error": f"Issue {issue_id} is not assigned to any agent"}))
+            else:
+                print(f"Error: Issue {issue_id} is not assigned to any agent", file=sys.stderr)
+            sys.exit(1)
+
+        # Get the agent's session_id and worktree
+        cursor = self.db.conn.execute("SELECT session_id, worktree FROM agents WHERE id = ?", (assignee,))
+        result = cursor.fetchone()
+        if not result:
+            if json_mode:
+                print(json.dumps({"error": f"Agent {assignee} not found"}))
+            else:
+                print(f"Error: Agent {assignee} not found", file=sys.stderr)
+            sys.exit(1)
+
+        session_id, worktree = result
+        if not session_id:
+            if json_mode:
+                print(json.dumps({"error": f"Agent {assignee} has no active session"}))
+            else:
+                print(f"Error: Agent {assignee} has no active session", file=sys.stderr)
+            sys.exit(1)
+
+        if not worktree:
+            if json_mode:
+                print(json.dumps({"error": f"Agent {assignee} has no worktree"}))
+            else:
+                print(f"Error: Agent {assignee} has no worktree", file=sys.stderr)
+            sys.exit(1)
+
+        # Run the async event streaming
+        asyncio.run(self._watch_events(assignee, worktree, issue_id, json_mode))
+
+    async def _watch_events(self, agent_id: str, worktree: str, issue_id: str, json_mode: bool):
+        """Stream events from the agent's OpenCode session."""
+        sse_client = SSEClient(
+            base_url=Config.OPENCODE_URL,
+            password=Config.OPENCODE_PASSWORD,
+            global_events=False,
+            directory=worktree,
+        )
+
+        if not json_mode:
+            # Get issue title for display
+            cursor = self.db.conn.execute("SELECT title FROM issues WHERE id = ?", (issue_id,))
+            title_result = cursor.fetchone()
+            issue_title = title_result[0] if title_result else issue_id
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {agent_id} working on {issue_id}: {issue_title}")
+
+        def format_timestamp():
+            return datetime.now().strftime("%H:%M:%S")
+
+        def handle_event(event_type: str, properties: dict):
+            """Handle incoming SSE events and format them for display."""
+            if json_mode:
+                print(json.dumps({"timestamp": datetime.now().isoformat(), "event_type": event_type, "properties": properties}))
+                return
+
+            # Format events based on type
+            timestamp = format_timestamp()
+
+            if event_type == "session.status":
+                status = properties.get("status", "unknown")
+                if status == "idle":
+                    print(f"[{timestamp}] SESSION IDLE — work complete")
+                elif status == "active":
+                    print(f"[{timestamp}] SESSION ACTIVE — agent working")
+                else:
+                    print(f"[{timestamp}] SESSION STATUS: {status}")
+
+            elif event_type == "tool.call":
+                tool_name = properties.get("name", "unknown")
+                if tool_name == "bash":
+                    command = properties.get("arguments", {}).get("command", "")
+                    print(f"[{timestamp}] bash: {command}")
+                elif tool_name == "edit":
+                    file_path = properties.get("arguments", {}).get("filePath", "")
+                    print(f"[{timestamp}] edit: {file_path}")
+                elif tool_name == "write":
+                    file_path = properties.get("arguments", {}).get("filePath", "")
+                    print(f"[{timestamp}] write: {file_path}")
+                elif tool_name == "read":
+                    file_path = properties.get("arguments", {}).get("filePath", "")
+                    print(f"[{timestamp}] read: {file_path}")
+                else:
+                    print(f"[{timestamp}] {tool_name}: {json.dumps(properties.get('arguments', {}))}")
+
+            elif event_type == "tool.result":
+                tool_name = properties.get("tool_name", "unknown")
+                result = properties.get("result", "")
+                if isinstance(result, str) and result:
+                    # Truncate long results
+                    if len(result) > 200:
+                        result = result[:200] + "..."
+                    # Show first line of result
+                    first_line = result.split("\n")[0] if result else ""
+                    print(f"[{timestamp}] -> {first_line}")
+
+            elif event_type == "assistant.message":
+                message = properties.get("content", "")
+                if isinstance(message, str) and message.strip():
+                    # Show first line of assistant message
+                    first_line = message.split("\n")[0] if message else ""
+                    if len(first_line) > 100:
+                        first_line = first_line[:100] + "..."
+                    print(f"[{timestamp}] text: {first_line}")
+
+            else:
+                # Show other events as raw JSON
+                print(f"[{timestamp}] {event_type}: {json.dumps(properties)}")
+
+        # Register the event handler
+        sse_client.on_all(handle_event)
+
+        try:
+            # Connect and stream events
+            await sse_client.connect_with_reconnect(max_retries=3, retry_delay=2)
+        except KeyboardInterrupt:
+            if not json_mode:
+                print("\n[CTRL+C] Stopping watch...")
+        except Exception as e:
+            if json_mode:
+                print(json.dumps({"error": str(e)}))
+            else:
+                print(f"Error: {e}", file=sys.stderr)
+        finally:
+            sse_client.stop()
+
 
 async def run_orchestrator(db: Database, project_path: str):
     """Run orchestrator in background."""
@@ -937,6 +1083,10 @@ def main():
     # queen command
     subparsers.add_parser("queen", help="Launch Queen Bee TUI")
 
+    # watch command
+    watch_parser = subparsers.add_parser("watch", help="Stream live events from a worker's OpenCode session")
+    watch_parser.add_argument("issue_id", help="Issue ID to watch")
+
     args = parser.parse_args()
 
     # Initialize database
@@ -1082,6 +1232,9 @@ def main():
 
         elif args.command == "queen":
             cli.queen()
+
+        elif args.command == "watch":
+            cli.watch(args.issue_id, json_mode=json_mode)
 
         else:
             parser.print_help()
