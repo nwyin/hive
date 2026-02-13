@@ -8,6 +8,8 @@ from hive.prompts import (
     build_system_prompt,
     build_worker_prompt,
     parse_merge_result,
+    read_notes_file,
+    remove_notes_file,
 )
 
 
@@ -385,3 +387,160 @@ def test_assess_completion_multiple_text_parts():
 
     assert result.success is False
     assert "Blocker detected" in result.reason
+
+
+# --- Notes functionality tests ---
+
+
+def test_read_notes_file_nonexistent(tmp_path):
+    """Test reading notes file that doesn't exist."""
+    notes = read_notes_file(str(tmp_path))
+    assert notes == []
+
+
+def test_read_notes_file_empty(tmp_path):
+    """Test reading empty notes file."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    notes_file.write_text("")
+
+    notes = read_notes_file(str(tmp_path))
+    assert notes == []
+
+
+def test_read_notes_file_valid_single_note(tmp_path):
+    """Test reading notes file with a single valid note."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    notes_file.write_text('{"category": "discovery", "content": "Test discovery", "issue_id": "w-123"}')
+
+    notes = read_notes_file(str(tmp_path))
+    assert len(notes) == 1
+    assert notes[0]["category"] == "discovery"
+    assert notes[0]["content"] == "Test discovery"
+    assert notes[0]["issue_id"] == "w-123"
+
+
+def test_read_notes_file_valid_multiple_notes(tmp_path):
+    """Test reading notes file with multiple valid notes."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    content = """{"category": "discovery", "content": "First discovery", "issue_id": "w-123"}
+{"category": "gotcha", "content": "Second gotcha", "issue_id": "w-456"}
+{"category": "dependency", "content": "Third dependency", "issue_id": "w-789"}"""
+    notes_file.write_text(content)
+
+    notes = read_notes_file(str(tmp_path))
+    assert len(notes) == 3
+    assert notes[0]["category"] == "discovery"
+    assert notes[1]["category"] == "gotcha"
+    assert notes[2]["category"] == "dependency"
+
+
+def test_read_notes_file_malformed_json(tmp_path):
+    """Test reading notes file with malformed JSON returns empty list."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    notes_file.write_text('{"invalid": json}')
+
+    notes = read_notes_file(str(tmp_path))
+    assert notes == []
+
+
+def test_read_notes_file_mixed_valid_invalid(tmp_path):
+    """Test reading notes file with mix of valid and invalid lines."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    content = """{"category": "discovery", "content": "Valid note", "issue_id": "w-123"}
+{"invalid": json}
+{"category": "gotcha", "content": "Another valid note", "issue_id": "w-456"}"""
+    notes_file.write_text(content)
+
+    notes = read_notes_file(str(tmp_path))
+    # Should return empty list if any JSON parsing fails
+    assert notes == []
+
+
+def test_remove_notes_file_exists(tmp_path):
+    """Test removing notes file that exists."""
+    notes_file = tmp_path / ".hive-notes.jsonl"
+    notes_file.write_text('{"category": "discovery", "content": "Test"}')
+
+    result = remove_notes_file(str(tmp_path))
+    assert result is True
+    assert not notes_file.exists()
+
+
+def test_remove_notes_file_doesnt_exist(tmp_path):
+    """Test removing notes file that doesn't exist."""
+    result = remove_notes_file(str(tmp_path))
+    assert result is False
+
+
+def test_build_worker_prompt_with_notes():
+    """Test building worker prompt with notes parameter."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+    notes = [
+        {"category": "discovery", "content": "Test suite needs Python 3.12+", "issue_id": "w-123"},
+        {"category": "gotcha", "content": "Connection can be None", "issue_id": "w-456"},
+    ]
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+        notes=notes,
+    )
+
+    assert "Project Notes (from other workers)" in prompt
+    assert "[discovery] Test suite needs Python 3.12+ (from w-123)" in prompt
+    assert "[gotcha] Connection can be None (from w-456)" in prompt
+
+
+def test_build_worker_prompt_without_notes():
+    """Test building worker prompt without notes parameter."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+        notes=None,
+    )
+
+    assert "Project Notes (from other workers)" not in prompt
+
+
+def test_build_worker_prompt_empty_notes():
+    """Test building worker prompt with empty notes list."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+        notes=[],
+    )
+
+    assert "Project Notes (from other workers)" not in prompt
+
+
+def test_worker_prompt_contains_knowledge_sharing():
+    """Test that worker prompt template contains KNOWLEDGE SHARING section."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+    )
+
+    assert "KNOWLEDGE SHARING" in prompt
+    assert ".hive-notes.jsonl" in prompt
+    assert "discovery" in prompt
+    assert "gotcha" in prompt
+    assert "dependency" in prompt
+    assert "pattern" in prompt

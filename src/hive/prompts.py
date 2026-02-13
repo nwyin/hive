@@ -13,6 +13,9 @@ from .models import CompletionResult
 # Filename for file-based completion signal
 RESULT_FILE_NAME = ".hive-result.jsonl"
 
+# Filename for notes file
+NOTES_FILE_NAME = ".hive-notes.jsonl"
+
 # Regex for parsing structured completion signal
 COMPLETION_RE = re.compile(r":::COMPLETION\s*\n(.*?):::", re.DOTALL)
 
@@ -54,6 +57,7 @@ def build_worker_prompt(
     total_steps: Optional[int] = None,
     molecule_title: Optional[str] = None,
     completed_steps: Optional[List[str]] = None,
+    notes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Build the worker prompt for an issue.
@@ -68,6 +72,7 @@ def build_worker_prompt(
         total_steps: Total steps (for molecules)
         molecule_title: Molecule title (for molecules)
         completed_steps: List of completed step summaries (for molecules)
+        notes: List of note dicts from other workers
 
     Returns:
         Formatted worker prompt string
@@ -90,6 +95,17 @@ def build_worker_prompt(
             f"{i + 1}. {step}" for i, step in enumerate(completed_steps)
         )
 
+    # Build notes section (knowledge from other workers)
+    notes_section = ""
+    if notes:
+        note_lines = []
+        for note in notes:
+            category = note.get("category", "discovery")
+            content = note.get("content", "")
+            source = note.get("issue_id", "project")
+            note_lines.append(f"- [{category}] {content} (from {source})")
+        notes_section = "\n\n### Project Notes (from other workers)\n" + "\n".join(note_lines)
+
     template_str = _load_template("worker")
     return Template(template_str).safe_substitute(
         agent_name=agent_name,
@@ -98,6 +114,7 @@ def build_worker_prompt(
         description=issue.get("description", ""),
         context=context,
         completed_section=completed_section,
+        notes_section=notes_section,
         worktree_path=worktree_path,
     )
 
@@ -318,6 +335,34 @@ def remove_result_file(worktree_path: str) -> bool:
             return True
     except OSError:
         pass
+    return False
+
+
+def read_notes_file(worktree_path: str) -> List[Dict[str, Any]]:
+    """Read .hive-notes.jsonl from a worktree. Returns list of note dicts, or empty list."""
+    notes_path = Path(worktree_path) / NOTES_FILE_NAME
+    if not notes_path.exists():
+        return []
+    try:
+        text = notes_path.read_text().strip()
+        if not text:
+            return []
+        notes = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if line:
+                notes.append(json.loads(line))
+        return notes
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def remove_notes_file(worktree_path: str) -> bool:
+    """Remove .hive-notes.jsonl from a worktree. Returns True if file existed."""
+    notes_path = Path(worktree_path) / NOTES_FILE_NAME
+    if notes_path.exists():
+        notes_path.unlink()
+        return True
     return False
 
 

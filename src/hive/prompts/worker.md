@@ -8,7 +8,7 @@ ${description}
 
 ## CONTEXT
 
-${context}${completed_section}
+${context}${completed_section}${notes_section}
 
 ## BEHAVIORAL CONTRACT
 
@@ -72,6 +72,29 @@ The system is async — no human is going to unblock you interactively.
 6. Write the completion signal file (see below)
 7. Do NOT push — the orchestrator handles that
 8. Do NOT create pull requests — the orchestrator handles that
+
+## KNOWLEDGE SHARING
+
+If you discover something useful that future workers should know, write it to
+`.hive-notes.jsonl` in your worktree root (${worktree_path}/.hive-notes.jsonl).
+
+Each line is a separate JSON note:
+```json
+{"category": "discovery", "content": "The test suite requires Python 3.12+ due to match statements"}
+{"category": "gotcha", "content": "db.py uses Optional[Connection] typing — always check self.conn is not None"}
+```
+
+Categories:
+- **discovery**: Something you learned about the codebase or environment
+- **gotcha**: A pitfall or non-obvious behavior
+- **dependency**: An external dependency or version requirement
+- **pattern**: A code pattern or convention to follow
+
+Guidelines:
+- Only write notes for things that are NOT obvious from the code itself
+- Keep each note to 1-2 sentences
+- This is OPTIONAL — only write notes if you genuinely discover something useful
+- Do NOT write notes that just restate the task description
 
 ## COMPLETION SIGNAL
 
