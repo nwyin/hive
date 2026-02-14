@@ -63,6 +63,10 @@ class Orchestrator:
         # Track active agents
         self.active_agents: Dict[str, AgentIdentity] = {}
 
+        # Reverse lookup maps for O(1) session_id and issue_id lookups
+        self._session_to_agent: dict[str, str] = {}  # session_id -> agent_id
+        self._issue_to_agent: dict[str, str] = {}  # issue_id -> agent_id
+
         # SSE client for event monitoring
         self.sse_client = SSEClient(
             base_url=Config.OPENCODE_URL,
@@ -112,22 +116,22 @@ class Orchestrator:
         self._session_last_activity[session_id] = now
 
         # Find agent for this session and extend its DB lease
-        for agent in self.active_agents.values():
-            if agent.session_id == session_id:
-                try:
-                    self.db.conn.execute(
-                        """
-                        UPDATE agents
-                        SET lease_expires_at = datetime('now', '+{} seconds'),
-                            last_progress_at = datetime('now')
-                        WHERE id = ?
-                        """.format(Config.LEASE_EXTENSION),
-                        (agent.agent_id,),
-                    )
-                    self.db.conn.commit()
-                except Exception:
-                    pass  # Non-critical, best-effort
-                break
+        agent_id = self._session_to_agent.get(session_id)
+        if agent_id and agent_id in self.active_agents:
+            agent = self.active_agents[agent_id]
+            try:
+                self.db.conn.execute(
+                    """
+                    UPDATE agents
+                    SET lease_expires_at = datetime('now', '+{} seconds'),
+                        last_progress_at = datetime('now')
+                    WHERE id = ?
+                    """.format(Config.LEASE_EXTENSION),
+                    (agent.agent_id,),
+                )
+                self.db.conn.commit()
+            except Exception:
+                pass  # Non-critical, best-effort
 
     async def _reconcile_stale_agents(self):
         """Clean up stale agents from previous daemon runs.
@@ -222,6 +226,31 @@ class Orchestrator:
         self.db.conn.commit()
         logger.info(f"Reconciled {len(stale)} stale agent(s)")
 
+    def _rebuild_reverse_maps(self):
+        """Rebuild reverse lookup maps from current active_agents.
+
+        This is primarily for robustness and debugging. Under normal operation,
+        the maps should be kept in sync through spawn_worker and _unregister_agent.
+        """
+        self._session_to_agent.clear()
+        self._issue_to_agent.clear()
+
+        for agent_id, agent in self.active_agents.items():
+            self._session_to_agent[agent.session_id] = agent_id
+            self._issue_to_agent[agent.issue_id] = agent_id
+
+    def _unregister_agent(self, agent_id: str):
+        """Remove an agent from active_agents and clean up reverse lookup maps.
+
+        Args:
+            agent_id: The agent ID to remove
+        """
+        agent = self.active_agents.get(agent_id)
+        if agent:
+            self._session_to_agent.pop(agent.session_id, None)
+            self._issue_to_agent.pop(agent.issue_id, None)
+            del self.active_agents[agent_id]
+
     async def _shutdown_all_sessions(self):
         """Abort and delete all active opencode sessions on shutdown.
 
@@ -274,6 +303,8 @@ class Orchestrator:
         await self.merge_processor.shutdown()
 
         self.active_agents.clear()
+        self._session_to_agent.clear()
+        self._issue_to_agent.clear()
         logger.info("All sessions shut down")
 
     def _log_token_usage(self, agent: AgentIdentity, messages: List[Dict[str, Any]]):
@@ -342,11 +373,8 @@ class Orchestrator:
             issue_id: The issue ID that was canceled
         """
         # Find the agent working on this issue
-        agent = None
-        for a in self.active_agents.values():
-            if a.issue_id == issue_id:
-                agent = a
-                break
+        agent_id = self._issue_to_agent.get(issue_id)
+        agent = self.active_agents.get(agent_id) if agent_id else None
 
         if not agent:
             return  # No active agent for this issue
@@ -397,7 +425,7 @@ class Orchestrator:
 
         # Remove from active agents
         if agent.agent_id in self.active_agents:
-            del self.active_agents[agent.agent_id]
+            self._unregister_agent(agent.agent_id)
 
     async def start(self):
         """Start the orchestrator."""
@@ -603,6 +631,10 @@ class Orchestrator:
                 session_id=session_id,
             )
             self.active_agents[agent_id] = agent
+
+            # Populate reverse lookup maps
+            self._session_to_agent[agent.session_id] = agent_id
+            self._issue_to_agent[agent.issue_id] = agent_id
 
             # Gather notes for worker context
             worker_notes = self._gather_notes_for_worker(issue_id)
@@ -873,7 +905,7 @@ class Orchestrator:
             )
             await self._cleanup_session(agent)
             if agent.agent_id in self.active_agents:
-                del self.active_agents[agent.agent_id]
+                self._unregister_agent(agent.agent_id)
             return
 
         # Get messages from session
@@ -934,7 +966,7 @@ class Orchestrator:
                 # No more steps or not a molecule - clean up session and release agent
                 await self._cleanup_session(agent)
                 if agent.agent_id in self.active_agents:
-                    del self.active_agents[agent.agent_id]
+                    self._unregister_agent(agent.agent_id)
 
             else:
                 # Handle failure with retry escalation chain
@@ -943,7 +975,7 @@ class Orchestrator:
                 # Clean up session and release agent
                 await self._cleanup_session(agent)
                 if agent.agent_id in self.active_agents:
-                    del self.active_agents[agent.agent_id]
+                    self._unregister_agent(agent.agent_id)
 
         except Exception as e:
             self.db.log_event(
@@ -955,7 +987,7 @@ class Orchestrator:
             # Clean up session and release agent
             await self._cleanup_session(agent)
             if agent.agent_id in self.active_agents:
-                del self.active_agents[agent.agent_id]
+                self._unregister_agent(agent.agent_id)
 
     async def _handle_agent_failure(self, agent: AgentIdentity, result):
         """
@@ -1046,7 +1078,7 @@ class Orchestrator:
         if not claimed:
             # Someone else claimed it, release agent
             if agent.agent_id in self.active_agents:
-                del self.active_agents[agent.agent_id]
+                self._unregister_agent(agent.agent_id)
             return
 
         # Resolve model for the next step: next_step.model > Config.WORKER_MODEL > Config.DEFAULT_MODEL
@@ -1084,9 +1116,21 @@ class Orchestrator:
             )
             self.db.conn.commit()
 
+            # Update agent identity and reverse lookup maps
+            old_session_id = agent.session_id
+            old_issue_id = agent.issue_id
+
+            # Remove old mappings
+            self._session_to_agent.pop(old_session_id, None)
+            self._issue_to_agent.pop(old_issue_id, None)
+
             # Update agent identity
             agent.session_id = new_session_id
             agent.issue_id = next_step["id"]
+
+            # Add new mappings
+            self._session_to_agent[agent.session_id] = agent.agent_id
+            self._issue_to_agent[agent.issue_id] = agent.agent_id
 
             # Gather notes and completed steps for context
             worker_notes = self._gather_notes_for_worker(next_step["id"])
@@ -1144,7 +1188,7 @@ class Orchestrator:
             )
             # Release agent
             if agent.agent_id in self.active_agents:
-                del self.active_agents[agent.agent_id]
+                self._unregister_agent(agent.agent_id)
 
     async def handle_stalled_agent(self, agent: AgentIdentity):
         """
@@ -1201,7 +1245,7 @@ class Orchestrator:
 
         # Remove from active agents
         if agent.agent_id in self.active_agents:
-            del self.active_agents[agent.agent_id]
+            self._unregister_agent(agent.agent_id)
 
     async def _check_opencode_health(self) -> bool:
         """
@@ -1365,15 +1409,13 @@ class Orchestrator:
                         await self.opencode.reply_permission(perm["id"], reply=decision)
 
                         # Find which issue this permission belongs to
-                        session_id = perm.get("sessionID")
+                        perm_session_id = perm.get("sessionID")
                         issue_id = None
-                        agent_id = None
+                        agent_id = self._session_to_agent.get(perm_session_id)
 
-                        for agent in self.active_agents.values():
-                            if agent.session_id == session_id:
-                                issue_id = agent.issue_id
-                                agent_id = agent.agent_id
-                                break
+                        if agent_id and agent_id in self.active_agents:
+                            agent = self.active_agents[agent_id]
+                            issue_id = agent.issue_id
 
                         self.db.log_event(
                             issue_id,
