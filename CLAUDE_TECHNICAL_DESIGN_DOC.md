@@ -1884,7 +1884,7 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 - [x] Long-lived refinery session — eager creation at startup, periodic health checks (~60s), auto-restart on task death, stale-result fence (message count), force-reset on exception, post-send status verification, consecutive error bail-out
 - [x] Dependency race fix — `claim_issue()` CAS checks unresolved blocking deps atomically; `hive create --depends-on` wires deps at creation time
 - [ ] Dead code cleanup — remove orphaned functions, unused DB tables, unused config values (in progress)
-- [ ] Inter-agent knowledge transfer — Notes system: `notes` DB table, `.hive-notes.jsonl` worker file convention, orchestrator harvest/inject, `hive note`/`hive notes` CLI (in progress)
+- [x] Inter-agent knowledge transfer — Notes system: `notes` DB table, `.hive-notes.jsonl` worker file convention, orchestrator harvest/inject, `hive note`/`hive notes` CLI (see Section 19)
 - [ ] Web dashboard (read-only view of SQLite)
 - [ ] Formula/template system for reusable molecule definitions
 
@@ -1898,7 +1898,7 @@ The merge queue processor closes the loop from `done` → `finalized` → worktr
 
 1. **Completion verification depth**: Section 9.5 proposes a structured completion signal. But how do we handle agents that claim success but produced incorrect output? The Refinery's test gate catches some of this, but not semantic errors. Options: secondary review agent, git diff size heuristics, mandatory test coverage.
 
-2. **Agent-to-agent knowledge transfer**: ~~Gas Town's mail protocol lets agents share findings. Our workers are more isolated — they only communicate through the orchestrator. How does worker B learn what worker A discovered?~~ **In progress**: Notes system being implemented. Workers write `.hive-notes.jsonl` with discoveries/gotchas. Orchestrator harvests on completion, stores in `notes` table, injects relevant notes into future worker prompts. Queen can add project-wide notes via `hive note`. This is the 80/20 of Gas Town's mail system — context injection without routing/addressing/inbox complexity.
+2. **Agent-to-agent knowledge transfer**: ~~Gas Town's mail protocol lets agents share findings. Our workers are more isolated — they only communicate through the orchestrator. How does worker B learn what worker A discovered?~~ **Resolved**: Notes system implemented (Section 19). Workers write `.hive-notes.jsonl` with discoveries/gotchas. Orchestrator harvests on completion, stores in `notes` table, injects relevant notes into future worker prompts. Queen can add project-wide notes via `hive note`. This is the 80/20 of Gas Town's mail system — context injection without routing/addressing/inbox complexity.
 
 3. **Mayor model selection**: ~~The Mayor reasons about architecture and decomposition — should it use a stronger model (e.g., Opus) while workers use a cheaper model (e.g., Sonnet)?~~ **Resolved**: Three-tier model configuration implemented:
    - `HIVE_DEFAULT_MODEL` (default: `claude-opus-4-6`) — used by the Queen/Mayor
@@ -2046,3 +2046,117 @@ The retry budget is computed by counting events (`retry`, `agent_switch`), not b
 **4. Integration test for the full stall→retry→escalate cycle.** The existing unit tests cover `_handle_agent_failure` in isolation, but nothing tested the `handle_stalled_agent → _handle_agent_failure` chain end-to-end. The bug survived because the stall path was tested independently from the escalation path. An integration test that runs: spawn → stall → stall → stall → verify escalation would have caught this.
 
 **5. Audit all `UPDATE issues SET status` statements.** Grep the codebase for raw SQL that touches `issues.status`. Each one is a potential bypass of the state machine. They should all go through `update_issue_status` or `_handle_agent_failure` (INV-4).
+
+---
+
+## 19. Notes System (Inter-Agent Knowledge Transfer)
+
+### Purpose
+
+Workers are ephemeral — each gets a fresh session with no memory of what previous workers discovered. The notes system bridges this gap by letting workers share knowledge across sessions. A worker writes discoveries, gotchas, and patterns to `.hive-notes.jsonl`, and future workers get those notes injected into their prompts.
+
+This is the 80/20 of Gas Town's mail protocol: **context injection without routing, addressing, or inbox complexity.** No agent-to-agent messaging, no channels, no subscriptions — just a shared knowledge base that the orchestrator reads from and writes to on the workers' behalf.
+
+### Data Flow
+
+```
+Worker writes .hive-notes.jsonl     Orchestrator harvests     Future worker gets notes
+┌─────────────────────┐         ┌──────────────────────┐    ┌──────────────────────┐
+│ {"content": "...",  │ ──────> │ handle_agent_complete │ -> │ _gather_notes_for_   │
+│  "category": "..."}│         │   read_notes_file()   │    │   worker(issue_id)   │
+│ {"content": "..."}  │         │   db.add_note(...)    │    │ build_worker_prompt(  │
+└─────────────────────┘         │   remove_notes_file() │    │   notes=...)          │
+                                └──────────────────────┘    └──────────────────────┘
+```
+
+### DB Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    TEXT REFERENCES issues(id),
+    agent_id    TEXT REFERENCES agents(id),
+    category    TEXT NOT NULL DEFAULT 'discovery',
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_issue ON notes(issue_id);
+CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category);
+CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
+```
+
+- `issue_id`: Which issue the note was discovered during. `NULL` = project-wide note (e.g., added by Queen via `hive note`).
+- `agent_id`: Which agent wrote it. `NULL` = human-authored or system note.
+- `category`: One of `discovery`, `gotcha`, `dependency`, `pattern`, `context`.
+
+### Note Categories
+
+| Category | Meaning | Example |
+|---|---|---|
+| `discovery` | New finding about the codebase | "The API uses JWT tokens stored in httpOnly cookies" |
+| `gotcha` | Pitfall or non-obvious behavior | "Don't use `datetime.now()` — use `datetime.utcnow()` for DB timestamps" |
+| `dependency` | External dependency or blocker | "Requires Redis >= 7.0 for stream support" |
+| `pattern` | Established pattern to follow | "All API endpoints use the `@require_auth` decorator" |
+| `context` | Background information | "This repo was migrated from a monorepo; some imports still use old paths" |
+
+### File Convention
+
+Workers write notes to `.hive-notes.jsonl` in their worktree root. JSONL format — one JSON object per line:
+
+```jsonl
+{"content": "The API requires auth tokens in the X-Auth header", "category": "discovery"}
+{"content": "Tests fail if Redis is not running locally", "category": "gotcha"}
+```
+
+### Harvest Flow
+
+In `handle_agent_complete()`, **before** the canceled/finalized check (so even failed workers' discoveries are saved):
+
+1. `read_notes_file(agent.worktree)` — parse `.hive-notes.jsonl`
+2. For each note: `db.add_note(issue_id=..., agent_id=..., content=..., category=...)`
+3. `db.log_event(..., "notes_harvested", {"count": N})`
+4. `remove_notes_file(agent.worktree)` — always clean up (in `finally` block)
+
+The entire harvest is wrapped in `try/except/finally` — note harvesting is best-effort and must never block agent completion.
+
+### Inject Flow
+
+In `spawn_worker()` and `cycle_agent_to_next_step()`, before `build_worker_prompt()`:
+
+1. `_gather_notes_for_worker(issue_id)` assembles relevant notes:
+   - If the issue is a molecule step: `db.get_notes_for_molecule(parent_id)` (sibling notes)
+   - Always: `db.get_recent_project_notes(limit=10)` (recent cross-project notes)
+   - Deduplicates by note ID (a note from a sibling step might also appear in recent project notes)
+   - Returns `None` if no notes found (so `build_worker_prompt` skips the section)
+2. `build_worker_prompt(..., notes=worker_notes)` renders the `### Project Notes` section
+
+For `cycle_agent_to_next_step()`, also populates `completed_steps` via `db.get_completed_molecule_steps(parent_id)` — giving the next step context about what siblings have already finished.
+
+### CLI Commands
+
+| Command | Description |
+|---|---|
+| `hive note "content"` | Add a project-wide note |
+| `hive note --issue w-abc --category gotcha "content"` | Add a note tied to an issue |
+| `hive notes` | List all notes |
+| `hive notes --category gotcha` | Filter by category |
+| `hive notes --issue w-abc` | Filter by issue |
+| `hive --json notes` | JSON output for programmatic use |
+
+### Comparison with Gas Town Mail
+
+Gas Town's inter-agent communication uses a full mail protocol: channels, addressing, inbox/outbox, delivery confirmation. This is powerful but complex — it requires agents to know about each other's existence and manage their own mailboxes.
+
+The Hive notes system takes a simpler approach:
+
+| Feature | Gas Town Mail | Hive Notes |
+|---|---|---|
+| Addressing | Agent-to-agent | Broadcast (no addressing) |
+| Routing | Channel-based | Category-based filtering |
+| Delivery | Push (agent checks inbox) | Pull (orchestrator injects) |
+| Lifetime | Message expires | Permanent (DB-backed) |
+| Agent awareness | Agents know about each other | Agents are unaware of each other |
+| Complexity | High (routing, inbox, ACK) | Low (write file, read DB) |
+
+The notes system is sufficient for the current use case: sharing discoveries and gotchas across sequential workers on related issues. If real-time inter-agent messaging becomes needed (e.g., two workers coordinating on a shared resource), a Gas Town-style channel system can be layered on top without replacing the notes infrastructure.
