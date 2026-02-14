@@ -1236,3 +1236,94 @@ async def test_check_opencode_health_uses_list_sessions(temp_db, tmp_path):
     # Failure case
     mock_oc.list_sessions = AsyncMock(side_effect=Exception("Connection refused"))
     assert await orch._check_opencode_health() is False
+
+
+# --- SSE permission handling tests ---
+
+
+@pytest.mark.asyncio
+async def test_handle_permission_event_with_id(temp_db, tmp_path):
+    """SSE permission event with id resolves directly."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc.reply_permission = AsyncMock()
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    event_data = {"id": "perm-1", "permission": "bash", "sessionID": "s1"}
+    await orch._handle_permission_event(event_data)
+
+    mock_oc.reply_permission.assert_called_once_with("perm-1", reply="once")
+
+
+@pytest.mark.asyncio
+async def test_handle_permission_event_without_id_fetches_pending(temp_db, tmp_path):
+    """SSE permission event without id falls back to fetching pending."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc.get_pending_permissions = AsyncMock(return_value=[
+        {"id": "perm-2", "permission": "read", "sessionID": "s1"},
+    ])
+    mock_oc.reply_permission = AsyncMock()
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    await orch._handle_permission_event({})  # No id
+
+    mock_oc.get_pending_permissions.assert_called_once()
+    mock_oc.reply_permission.assert_called_once_with("perm-2", reply="once")
+
+
+@pytest.mark.asyncio
+async def test_handle_permission_event_rejects_question(temp_db, tmp_path):
+    """SSE permission event for 'question' gets rejected."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc.reply_permission = AsyncMock()
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    event_data = {"id": "perm-3", "permission": "question", "sessionID": "s1"}
+    await orch._handle_permission_event(event_data)
+
+    mock_oc.reply_permission.assert_called_once_with("perm-3", reply="reject")
+
+
+@pytest.mark.asyncio
+async def test_handle_permission_event_error_handling(temp_db, tmp_path):
+    """SSE permission handler doesn't raise on errors."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc.reply_permission = AsyncMock(side_effect=Exception("Network error"))
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    event_data = {"id": "perm-4", "permission": "bash", "sessionID": "s1"}
+    # Should not raise
+    await orch._handle_permission_event(event_data)
+
+
+def test_log_permission_resolved_uses_reverse_map(temp_db, tmp_path):
+    """_log_permission_resolved uses _session_to_agent for O(1) lookup."""
+    orch = _make_orchestrator(temp_db, tmp_path)
+
+    issue_id = temp_db.create_issue("Test task")
+    agent_id = temp_db.create_agent("test-agent")
+
+    agent = AgentIdentity(
+        agent_id=agent_id, name="test-agent", issue_id=issue_id,
+        worktree="/tmp/wt", session_id="s1",
+    )
+    orch.active_agents[agent_id] = agent
+    orch._session_to_agent["s1"] = agent_id
+
+    perm = {"permission": "bash", "sessionID": "s1", "patterns": ["*"]}
+    orch._log_permission_resolved(perm, "once")
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="permission_resolved")
+    assert len(events) == 1
+
+
+def test_log_permission_resolved_unknown_session(temp_db, tmp_path):
+    """_log_permission_resolved silently skips when session is unknown."""
+    orch = _make_orchestrator(temp_db, tmp_path)
+
+    perm = {"permission": "bash", "sessionID": "unknown-sess", "patterns": ["*"]}
+    # Should not raise
+    orch._log_permission_resolved(perm, "once")
+
+    # No events logged (no agent found)
+    events = temp_db.get_events(event_type="permission_resolved")
+    assert len(events) == 0

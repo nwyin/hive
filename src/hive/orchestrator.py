@@ -103,6 +103,56 @@ class Orchestrator:
 
         self.sse_client.on("session.status", handle_session_status)
 
+        # Register permission event handler
+        self.sse_client.on("permission.request", self._handle_permission_event)
+
+    async def _handle_permission_event(self, event_data: dict):
+        """Handle permission request from SSE event — resolve immediately."""
+        try:
+            perm_id = event_data.get("id")
+            if not perm_id:
+                # If SSE event doesn't include full permission data,
+                # fetch pending permissions and resolve
+                pending = await self.opencode.get_pending_permissions()
+                for perm in pending:
+                    decision = self.evaluate_permission_policy(perm)
+                    if decision:
+                        await self.opencode.reply_permission(perm["id"], reply=decision)
+                        self._log_permission_resolved(perm, decision)
+                return
+
+            decision = self.evaluate_permission_policy(event_data)
+            if decision:
+                await self.opencode.reply_permission(perm_id, reply=decision)
+                self._log_permission_resolved(event_data, decision)
+
+            logger.debug(f"Handled permission event via SSE: {perm_id}, decision: {decision}")
+
+        except Exception as e:
+            logger.warning(f"Error handling permission event: {e}")
+
+    def _log_permission_resolved(self, perm: Dict[str, Any], decision: str):
+        """Log permission resolution event."""
+        session_id = perm.get("sessionID")
+        agent_id = self._session_to_agent.get(session_id) if session_id else None
+        issue_id = None
+
+        if agent_id and agent_id in self.active_agents:
+            agent = self.active_agents[agent_id]
+            issue_id = agent.issue_id
+
+        if issue_id and agent_id:
+            self.db.log_event(
+                issue_id,
+                agent_id,
+                "permission_resolved",
+                {
+                    "permission": perm.get("permission"),
+                    "patterns": perm.get("patterns"),
+                    "decision": decision,
+                },
+            )
+
     def _renew_lease_for_session(self, session_id: str):
         """Renew the lease for the agent associated with a session.
 
@@ -1408,15 +1458,16 @@ class Orchestrator:
 
     async def permission_unblocker_loop(self):
         """
-        Fast loop to auto-resolve pending permission requests based on policy.
+        Safety-net loop to auto-resolve pending permission requests based on policy.
 
-        Polls every 500ms to prevent agent stalls.
+        Now runs at longer intervals since SSE events handle real-time permissions.
+        This serves as a safety net for SSE reconnection gaps or edge cases.
         """
         while self.running:
             try:
-                # Slow down if no active agents
+                # Very slow if no active agents
                 if len(self.active_agents) == 0:
-                    await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL * 4)
+                    await asyncio.sleep(30)
                     continue
 
                 # Get pending permissions
@@ -1428,31 +1479,14 @@ class Orchestrator:
                         # Auto-resolve based on policy
                         await self.opencode.reply_permission(perm["id"], reply=decision)
 
-                        # Find which issue this permission belongs to
-                        perm_session_id = perm.get("sessionID")
-                        issue_id = None
-                        agent_id = self._session_to_agent.get(perm_session_id)
+                        self._log_permission_resolved(perm, decision)
 
-                        if agent_id and agent_id in self.active_agents:
-                            agent = self.active_agents[agent_id]
-                            issue_id = agent.issue_id
-
-                        self.db.log_event(
-                            issue_id,
-                            agent_id,
-                            "permission_resolved",
-                            {
-                                "permission": perm.get("permission"),
-                                "patterns": perm.get("patterns"),
-                                "decision": decision,
-                            },
-                        )
-
-                await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL)
+                # Safety net only - SSE handles real-time permissions
+                await asyncio.sleep(Config.PERMISSION_SAFETY_NET_INTERVAL)
 
             except Exception as e:
                 logger.error(f"Error in permission unblocker: {e}")
-                await asyncio.sleep(Config.PERMISSION_POLL_INTERVAL)
+                await asyncio.sleep(Config.PERMISSION_SAFETY_NET_INTERVAL)
 
     def evaluate_permission_policy(self, perm: Dict[str, Any]) -> Optional[str]:
         """

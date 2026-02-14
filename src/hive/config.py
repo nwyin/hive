@@ -14,6 +14,7 @@ class Config:
     LEASE_DURATION = int(os.environ.get("HIVE_LEASE_DURATION", "900"))  # 15 minutes
     LEASE_EXTENSION = int(os.environ.get("HIVE_LEASE_EXTENSION", "600"))  # 10 minutes
     PERMISSION_POLL_INTERVAL = float(os.environ.get("HIVE_PERMISSION_POLL_INTERVAL", "0.5"))  # 500ms
+    PERMISSION_SAFETY_NET_INTERVAL = float(os.environ.get("HIVE_PERMISSION_SAFETY_NET_INTERVAL", "2"))  # 2s safety net
 
     # OpenCode
     OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:4096")
