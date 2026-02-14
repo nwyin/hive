@@ -1478,7 +1478,6 @@ async def retry_or_escalate(agent, issue):
     elif retry_count < (ESCALATION_THRESHOLDS["max_retries"]
                         + ESCALATION_THRESHOLDS["max_agent_switches"]):
         # Try a different worker
-        db.add_label(issue.id, f"failed-by:{agent.id}")
         teardown_agent(agent)
 
     else:
@@ -1553,7 +1552,6 @@ When OpenCode (or another critical dependency) becomes unreachable, the orchestr
 ```python
 def enter_degraded_mode(reason: str):
     """Transition the engine to degraded mode."""
-    db.add_label("engine", "orchestrator", f"mode:degraded")
     db.log_event(None, None, "engine.degraded", detail={"reason": reason})
     log.warning(f"Entering degraded mode: {reason}")
 ```
@@ -1568,17 +1566,17 @@ def enter_degraded_mode(reason: str):
 **Recovery:**
 
 ```python
-async def degraded_mode_recovery_loop():
+async def degraded_mode_recovery_loop(degraded: bool):
     """Attempt to recover from degraded mode."""
     backoff = 1.0  # seconds
-    while db.has_label("engine", "orchestrator", "mode:degraded"):
+    while degraded:
         try:
             # No dedicated health endpoint — GET /session returns JSON if alive
             sessions = opencode.list_sessions()
             if sessions is not None:
                 # OpenCode is back — reconcile and resume
                 reconcile_on_startup()
-                db.remove_label("engine", "orchestrator", "mode:degraded")
+                degraded = False
                 db.log_event(None, None, "engine.recovered")
                 log.info("Exited degraded mode — resuming normal operation")
                 return
@@ -1655,8 +1653,6 @@ ORDER BY go_tasks_completed DESC, avg_hours ASC;
 ```
 
 No special infrastructure. The CV is an emergent property of the event log.
-
-> **Implementation note**: The original design included a `labels` table for tagging entities, but this was never implemented. Instead, the `issues` table has a `tags` TEXT column (comma-separated) added via migration, and capability-based routing was simplified to direct SQL joins on events+issues. The `labels` abstraction added indirection without clear benefit.
 
 ---
 
