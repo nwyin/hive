@@ -16,7 +16,7 @@ os.environ["HIVE_CLI_CONTEXT"] = "1"
 from .config import Config
 from .daemon import HiveDaemon, run_daemon_foreground
 from .db import Database
-
+from .project import detect_project
 from .sse import SSEClient
 from .tools import ToolExecutor
 
@@ -902,13 +902,41 @@ class HiveCLI:
             sse_client.stop()
 
 
+_INIT_TEMPLATE = """\
+[project]
+name = "{name}"
+
+[hive]
+# max_agents = 10
+# worker_model = "claude-sonnet-4-20250514"
+# test_command = "pytest"
+"""
+
+
+def _do_init(project_path: Path, project_name: str, *, json_mode: bool = False):
+    """Create a .hive.toml template at the project root."""
+    target = project_path / ".hive.toml"
+    if target.exists():
+        if json_mode:
+            print(json.dumps({"error": f"{target} already exists"}))
+        else:
+            print(f"{target} already exists")
+        return
+
+    target.write_text(_INIT_TEMPLATE.format(name=project_name))
+    if json_mode:
+        print(json.dumps({"created": str(target)}))
+    else:
+        print(f"Created {target}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(description="Hive multi-agent orchestrator")
 
     # Global options
-    parser.add_argument("--db", default=Config.DB_PATH, help="Database path (default: ~/.hive/hive.db)")
-    parser.add_argument("--project", default=".", help="Project directory")
+    parser.add_argument("--db", default=None, help="Database path (default: ~/.hive/hive.db)")
+    parser.add_argument("--project", default=None, help="Project directory (auto-detected from git)")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -1112,6 +1140,9 @@ def main():
     watch_parser = subparsers.add_parser("watch", help="Stream live events from a worker's OpenCode session")
     watch_parser.add_argument("issue_id", help="Issue ID to watch")
 
+    # init command
+    subparsers.add_parser("init", help="Create a .hive.toml config at the project root")
+
     # note command (add a note)
     note_parser = subparsers.add_parser("note", help="Add a note to the knowledge base")
     note_parser.add_argument("content", help="Note content")
@@ -1135,12 +1166,33 @@ def main():
 
     args = parser.parse_args()
 
+    # ── Project auto-detection + layered config ──────────────────────
+    if args.project:
+        project_path = Path(args.project).resolve()
+        project_name = project_path.name
+    else:
+        project_path, project_name = detect_project()
+
+    # Load layered config: defaults → ~/.hive/config.toml → .hive.toml → env
+    Config.load(project_root=project_path)
+
+    # Ensure ~/.hive/ directory exists
+    Config.HIVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Handle init before DB (it doesn't need one)
+    if args.command == "init":
+        _do_init(project_path, project_name, json_mode=args.json_mode)
+        return
+
+    # Resolve DB path: CLI flag > config
+    db_path = args.db or Config.DB_PATH
+
     # Initialize database
-    db = Database(args.db)
+    db = Database(db_path)
     db.connect()
 
     # Create CLI
-    cli = HiveCLI(db, args.project)
+    cli = HiveCLI(db, str(project_path))
     json_mode = args.json_mode
 
     try:

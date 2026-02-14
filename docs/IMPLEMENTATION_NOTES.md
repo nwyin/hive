@@ -119,6 +119,8 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 4. **Multiple OpenCode servers**: A single OpenCode server might bottleneck at many concurrent sessions. Should the orchestrator manage multiple server instances, or does OpenCode scale sufficiently within a single process?
 
+5. **OpenCode is an external TypeScript dependency.** Hive requires a running OpenCode server (`opencode serve`) which is a TypeScript binary from the `anomalyco/opencode` repo — not a Python package. The Python SDK (`opencode-ai` on PyPI) is client-only. This means hive cannot be fully self-contained as a `uv tool install`. To make hive truly standalone, we'd need to reimplement OpenCode's headless LLM session management in pure Python: session lifecycle (create/abort/delete), multi-session multiplexing, SSE event streaming, permission handling, and the Anthropic API integration. Until then, users must install the `opencode` binary separately and run `opencode serve` (or have `hive start` auto-launch it as a managed subprocess).
+
 ### Resolved Questions
 
 - **Agent-to-agent knowledge transfer**: Notes system implemented. Workers write `.hive-notes.jsonl`, orchestrator harvests on completion, injects relevant notes into future worker prompts. Queen can add project-wide notes via `hive note`.
