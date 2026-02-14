@@ -628,6 +628,24 @@ class HiveCLI:
                     total = tokens["input_tokens"] + tokens["output_tokens"]
                     print(f"{model}: {total:,} tokens")
 
+    def stats(self, model=None, tag=None, json_mode=False):
+        results = self.db.get_model_performance(model=model, tag=tag)
+        if json_mode:
+            print(json.dumps(results, default=str))
+            return
+
+        if not results:
+            print("No performance data yet.")
+            return
+
+        print(f"{'Model':<35} {'Type':<10} {'Issues':>6} {'OK':>4} {'Fail':>4} {'Retries':>7} {'Avg Min':>8}")
+        print("-" * 80)
+        for r in results:
+            model_name = (r.get("model") or "unknown")[:34]
+            print(
+                f"{model_name:<35} {r.get('type', ''):<10} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('failures', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
+            )
+
     # ── Web UI ────────────────────────────────────────────────────────
 
     def ui(self, port: int = 8001, host: str = "127.0.0.1"):
@@ -1153,6 +1171,11 @@ def main():
     # status command
     subparsers.add_parser("status", help="Show orchestrator status")
 
+    # stats command
+    stats_parser = subparsers.add_parser("stats", help="Show model performance statistics")
+    stats_parser.add_argument("--model", type=str, help="Filter by model name")
+    stats_parser.add_argument("--tag", type=str, help="Filter by tag")
+
     # start command
     start_parser = subparsers.add_parser("start", help="Start the hive daemon")
     start_parser.add_argument(
@@ -1371,6 +1394,9 @@ def main():
 
         elif args.command == "status":
             cli.status(json_mode=json_mode)
+
+        elif args.command == "stats":
+            cli.stats(model=args.model, tag=args.tag, json_mode=json_mode)
 
         elif args.command == "start":
             cli.start(foreground=args.foreground, json_mode=json_mode)

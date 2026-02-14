@@ -984,3 +984,50 @@ class Database:
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_model_performance(self, model: Optional[str] = None, tag: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get model performance stats, optionally filtered by model or tag.
+
+        Returns aggregated stats: model, success count, failure count, retry count,
+        avg tokens, and tags breakdown.
+        """
+        query = """
+            SELECT 
+                a.model,
+                i.tags,
+                i.type,
+                COUNT(DISTINCT i.id) as issue_count,
+                SUM(CASE WHEN i.status IN ('done', 'finalized') THEN 1 ELSE 0 END) as successes,
+                SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END) as failures,
+                SUM(CASE WHEN i.status = 'escalated' THEN 1 ELSE 0 END) as escalations,
+                (SELECT COUNT(*) FROM events e2 WHERE e2.issue_id = i.id AND e2.event_type = 'retry') as total_retries,
+                COALESCE(SUM(CAST(json_extract(e.detail, '$.input_tokens') AS INTEGER)), 0) as total_input_tokens,
+                COALESCE(SUM(CAST(json_extract(e.detail, '$.output_tokens') AS INTEGER)), 0) as total_output_tokens,
+                ROUND(AVG(
+                    (julianday(COALESCE(i.closed_at, datetime('now'))) - julianday(i.created_at)) * 24 * 60
+                ), 1) as avg_duration_minutes
+            FROM issues i
+            LEFT JOIN agents a ON i.assignee = a.id
+            LEFT JOIN events e ON i.id = e.issue_id AND e.event_type = 'tokens_used'
+            WHERE i.type != 'molecule'
+        """
+        params = []
+        if model:
+            query += " AND a.model = ?"
+            params.append(model)
+        if tag:
+            query += " AND i.tags LIKE '%" + '"' + tag + '"' + "%'"
+
+        query += " GROUP BY a.model, i.type ORDER BY issue_count DESC"
+
+        cursor = self.conn.execute(query, params)
+        results = []
+        for row in cursor.fetchall():
+            r = dict(row)
+            if r.get("tags"):
+                try:
+                    r["tags"] = json.loads(r["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            results.append(r)
+        return results

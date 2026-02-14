@@ -41,7 +41,7 @@ Always use `--json` before the subcommand when calling `hive` commands so you ca
 
 #### Create an issue
 ```
-hive --json create <title> [description] [--priority 0-4] [--type task|bug|feature|step|molecule] [--model MODEL]
+hive --json create <title> [description] [--priority 0-4] [--type task|bug|feature|step|molecule] [--model MODEL] [--tags TAG1,TAG2,...]
 ```
 
 #### List issues
@@ -56,7 +56,7 @@ hive --json show <issue_id>
 
 #### Update an issue
 ```
-hive --json update <issue_id> [--title TEXT] [--description TEXT] [--priority 0-4] [--status STATUS] [--model MODEL]
+hive --json update <issue_id> [--title TEXT] [--description TEXT] [--priority 0-4] [--status STATUS] [--model MODEL] [--tags TAG1,TAG2,...]
 ```
 
 #### Cancel an issue
@@ -162,6 +162,34 @@ hive --json logs [-f] [-n COUNT] [--issue ID] [--agent ID]
 #### Merge queue
 ```
 hive --json merges [--status queued|running|merged|failed]
+```
+
+## ISSUE TAGGING
+
+Always tag issues when creating them. Tags help correlate model performance across task types.
+
+Available tags (comma-separated with --tags):
+
+**Task type** (pick one):
+- `refactor` — restructuring without behavior change
+- `bugfix` — fixing broken behavior
+- `feature` — new functionality
+- `test` — adding/updating tests
+- `docs` — documentation changes
+- `cleanup` — removing dead code, formatting, etc.
+- `config` — configuration/build/packaging changes
+
+**Language** (pick all that apply):
+- `python`, `typescript`, `javascript`, `sql`, `shell`, `markdown`
+
+**Complexity estimate** (pick one):
+- `small` — single file, < 50 lines changed
+- `medium` — 2-5 files, < 200 lines changed
+- `large` — 5+ files or > 200 lines changed
+
+Example:
+```
+hive --json create 'Add retry logic to API client' '...' --priority 1 --type feature --tags 'feature,python,medium'
 ```
 
 ## WRITING GOOD ISSUE DESCRIPTIONS
