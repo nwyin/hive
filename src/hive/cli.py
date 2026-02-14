@@ -8,17 +8,16 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 # Set CLI context for logging configuration
 os.environ["HIVE_CLI_CONTEXT"] = "1"
 
 from .config import Config
 from .daemon import HiveDaemon, run_daemon_foreground
-from .db import Database
+from .db import Database, validate_tags
 from .project import detect_project
 from .sse import SSEClient
-from .tools import ToolExecutor
 
 
 class HiveCLI:
@@ -28,28 +27,34 @@ class HiveCLI:
         self.db = db
         self.project_path = Path(project_path).resolve()
         self.project_name = self.project_path.name
-        self._executor = ToolExecutor(db, self.project_name)
 
-    def _run_tool(self, tool_name: str, params: dict, *, json_mode: bool = False):
-        """Execute a tool and print the result.
-
-        Args:
-            tool_name: Name of the tool handler (e.g. "hive_create_issue")
-            params: Parameters dict for the tool
-            json_mode: If True, print JSON output; otherwise human-readable
-        """
-        result = self._executor.execute(tool_name, params)
-
-        if "error" in result:
-            if json_mode:
-                print(json.dumps({"error": result["error"]}))
-            else:
-                print(f"Error: {result['error']}", file=sys.stderr)
-            sys.exit(1)
-
+    def _error(self, msg: str, *, json_mode: bool = False):
+        """Print error and exit."""
         if json_mode:
-            print(json.dumps(result["result"], default=str))
-        return result["result"]
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(1)
+
+    def _parse_tags(self, issue_dict: dict) -> dict:
+        """Parse tags JSON string into a list in-place."""
+        if issue_dict.get("tags"):
+            try:
+                issue_dict["tags"] = json.loads(issue_dict["tags"])
+            except (json.JSONDecodeError, TypeError):
+                issue_dict["tags"] = []
+        else:
+            issue_dict["tags"] = []
+        return issue_dict
+
+    # Map user-facing sort names to SQL column names
+    _SORT_COLUMNS = {
+        "priority": "priority",
+        "created": "created_at",
+        "updated": "updated_at",
+        "status": "status",
+        "title": "title",
+    }
 
     # ── Issue management ─────────────────────────────────────────────
 
@@ -66,25 +71,38 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Create a new issue."""
-        params = {
-            "title": title,
-            "description": description,
-            "priority": priority,
-            "type": issue_type,
-        }
-        if model:
-            params["model"] = model
-        if tags:
-            params["tags"] = [t.strip() for t in tags.split(",")]
-        if depends_on:
-            params["depends_on"] = depends_on
+        try:
+            tag_list = [t.strip() for t in tags.split(",")] if tags else None
+            issue_id = self.db.create_issue(
+                title=title,
+                description=description,
+                priority=priority,
+                issue_type=issue_type,
+                project=self.project_name,
+                model=model,
+                tags=tag_list,
+            )
+            # Wire dependencies immediately so the issue can't be claimed before they exist
+            deps_added = []
+            if depends_on:
+                for dep_id in depends_on:
+                    self.db.add_dependency(issue_id, dep_id, "blocks")
+                    deps_added.append(dep_id)
 
-        result = self._run_tool(
-            "hive_create_issue",
-            params,
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+            result = {
+                "issue_id": issue_id,
+                "title": title,
+                "status": "open",
+                "tags": tag_list or [],
+                "depends_on": deps_added,
+                "message": f"Created issue {issue_id}: {title}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(f"Created issue: {result['issue_id']}")
             print(f"  Title: {title}")
             print(f"  Priority: {priority}")
@@ -92,7 +110,7 @@ class HiveCLI:
                 print(f"  Tags: {', '.join(result['tags'])}")
             if depends_on:
                 print(f"  Depends on: {', '.join(depends_on)}")
-        return result.get("issue_id") if result else None
+        return result.get("issue_id")
 
     def list_issues(
         self,
@@ -106,15 +124,42 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """List all issues."""
-        params: dict = {"sort_by": sort_by, "reverse": reverse, "limit": limit}
-        if status:
-            params["status"] = status
-        if issue_type:
-            params["issue_type"] = issue_type
-        if assignee:
-            params["assignee"] = assignee
-        result = self._run_tool("hive_list_issues", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            query = "SELECT * FROM issues WHERE project = ?"
+            params: List[Any] = [self.project_name]
+
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+            if assignee:
+                query += " AND assignee = ?"
+                params.append(assignee)
+            if issue_type:
+                query += " AND type = ?"
+                params.append(issue_type)
+
+            # Resolve sort column (default to priority if unknown)
+            sort_col = self._SORT_COLUMNS.get(sort_by, "priority")
+            direction = "DESC" if reverse else "ASC"
+            query += f" ORDER BY {sort_col} {direction}"
+
+            query += " LIMIT ?"
+            params.append(str(limit))
+
+            cursor = self.db.conn.execute(query, params)
+            issues = []
+            for row in cursor.fetchall():
+                issue_dict = dict(row)
+                self._parse_tags(issue_dict)
+                issues.append(issue_dict)
+
+            result = {"count": len(issues), "issues": issues}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             issues = result.get("issues", [])
             if not issues:
                 print("No issues found.")
@@ -128,8 +173,54 @@ class HiveCLI:
 
     def show(self, issue_id: str, *, json_mode: bool = False):
         """Show issue details and events."""
-        result = self._run_tool("hive_get_issue", {"issue_id": issue_id}, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            # Get dependencies
+            cursor = self.db.conn.execute(
+                """
+                SELECT i.id, i.title, i.status
+                FROM dependencies d
+                JOIN issues i ON d.depends_on = i.id
+                WHERE d.issue_id = ?
+                """,
+                (issue_id,),
+            )
+            dependencies = [dict(row) for row in cursor.fetchall()]
+
+            # Get dependents (issues blocked by this one)
+            cursor = self.db.conn.execute(
+                """
+                SELECT i.id, i.title, i.status
+                FROM dependencies d
+                JOIN issues i ON d.issue_id = i.id
+                WHERE d.depends_on = ?
+                """,
+                (issue_id,),
+            )
+            dependents = [dict(row) for row in cursor.fetchall()]
+
+            # Get recent events
+            events = self.db.get_events(issue_id=issue_id, limit=10)
+
+            # Parse tags from JSON
+            issue_dict = dict(issue)
+            self._parse_tags(issue_dict)
+
+            result = {
+                "issue": issue_dict,
+                "dependencies": dependencies,
+                "dependents": dependents,
+                "recent_events": events,
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             issue = result["issue"]
             print(f"\nIssue: {issue['id']}")
             print(f"Title: {issue['title']}")
@@ -161,8 +252,27 @@ class HiveCLI:
 
     def show_ready(self, *, json_mode: bool = False):
         """Show ready queue."""
-        result = self._run_tool("hive_show_ready", {}, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            ready = self.db.get_ready_queue(limit=20)
+
+            result = {
+                "count": len(ready),
+                "ready_issues": [
+                    {
+                        "id": i["id"],
+                        "title": i["title"],
+                        "priority": i["priority"],
+                        "type": i["type"],
+                    }
+                    for i in ready
+                ],
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             ready = result.get("ready_issues", [])
             if not ready:
                 print("No ready issues.")
@@ -186,61 +296,174 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Update an issue."""
-        params = {"issue_id": issue_id}
-        if title is not None:
-            params["title"] = title
-        if description is not None:
-            params["description"] = description
-        if priority is not None:
-            params["priority"] = priority
-        if status is not None:
-            params["status"] = status
-        if model is not None:
-            params["model"] = model
-        if tags is not None:
-            params["tags"] = [t.strip() for t in tags.split(",")]
-        result = self._run_tool("hive_update_issue", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            tag_list = [t.strip() for t in tags.split(",")] if tags is not None else None
+
+            updates = []
+            params = []
+
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if priority is not None:
+                updates.append("priority = ?")
+                params.append(priority)
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            if model is not None:
+                updates.append("model = ?")
+                params.append(model)
+            if tag_list is not None:
+                validated_tags = validate_tags(tag_list)
+                updates.append("tags = ?")
+                params.append(json.dumps(validated_tags))
+
+            if updates:
+                query = f"UPDATE issues SET {', '.join(updates)}, updated_at = datetime('now') WHERE id = ?"
+                params.append(issue_id)
+                self.db.conn.execute(query, params)
+                self.db.conn.commit()
+
+                self.db.log_event(
+                    issue_id,
+                    None,
+                    "updated",
+                    {
+                        "fields": [
+                            k
+                            for k, v in [
+                                ("title", title),
+                                ("description", description),
+                                ("priority", priority),
+                                ("status", status),
+                                ("model", model),
+                            ]
+                            if v is not None
+                        ]
+                    },
+                )
+
+            result = {"issue_id": issue_id, "message": f"Updated issue {issue_id}"}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Updated issue {issue_id}"))
 
     def cancel(self, issue_id: str, reason: str = "", *, json_mode: bool = False):
         """Cancel an issue."""
-        result = self._run_tool(
-            "hive_cancel_issue",
-            {"issue_id": issue_id, "reason": reason},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            self.db.update_issue_status(issue_id, "canceled")
+            self.db.log_event(issue_id, None, "canceled", {"reason": reason})
+
+            result = {
+                "issue_id": issue_id,
+                "status": "canceled",
+                "reason": reason,
+                "message": f"Canceled issue {issue_id}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Canceled issue {issue_id}"))
 
     def finalize(self, issue_id: str, resolution: str = "", *, json_mode: bool = False):
         """Finalize/close an issue."""
-        result = self._run_tool(
-            "hive_close_issue",
-            {"issue_id": issue_id, "resolution": resolution},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            self.db.update_issue_status(issue_id, "finalized")
+            self.db.log_event(issue_id, None, "finalized", {"resolution": resolution})
+
+            result = {
+                "issue_id": issue_id,
+                "status": "finalized",
+                "resolution": resolution,
+                "message": f"Finalized issue {issue_id}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Finalized issue {issue_id}"))
 
     def retry(self, issue_id: str, notes: str = "", *, json_mode: bool = False):
         """Retry a failed/blocked issue."""
-        result = self._run_tool(
-            "hive_retry_issue",
-            {"issue_id": issue_id, "notes": notes},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            # Reset to open and unassign
+            self.db.conn.execute(
+                """
+                UPDATE issues
+                SET status = 'open', assignee = NULL, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (issue_id,),
+            )
+            self.db.conn.commit()
+
+            self.db.log_event(issue_id, None, "retry", {"notes": notes})
+
+            result = {
+                "issue_id": issue_id,
+                "status": "open",
+                "notes": notes,
+                "message": f"Reset issue {issue_id} to 'open' for retry",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Retrying issue {issue_id}"))
 
     def escalate(self, issue_id: str, reason: str = "", *, json_mode: bool = False):
         """Escalate an issue."""
-        result = self._run_tool(
-            "hive_escalate_issue",
-            {"issue_id": issue_id, "reason": reason},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            issue = self.db.get_issue(issue_id)
+            if not issue:
+                raise ValueError(f"Issue not found: {issue_id}")
+
+            self.db.update_issue_status(issue_id, "escalated")
+            self.db.log_event(issue_id, None, "escalated", {"reason": reason})
+
+            result = {
+                "issue_id": issue_id,
+                "status": "escalated",
+                "reason": reason,
+                "message": f"Escalated issue {issue_id}: {reason}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Escalated issue {issue_id}"))
 
     def molecule(
@@ -262,18 +485,57 @@ class HiveCLI:
             else:
                 print(f"Error: Invalid steps JSON: {e}", file=sys.stderr)
             sys.exit(1)
-        params = {"title": title, "description": description, "steps": steps}
-        if model:
-            params["model"] = model
-        if tags:
-            params["tags"] = [t.strip() for t in tags.split(",")]
 
-        result = self._run_tool(
-            "hive_create_molecule",
-            params,
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            tag_list = [t.strip() for t in tags.split(",")] if tags else None
+
+            # Create parent molecule issue
+            parent_id = self.db.create_issue(
+                title=title,
+                description=description,
+                issue_type="molecule",
+                project=self.project_name,
+                tags=tag_list,
+            )
+
+            # Map of step indices to issue IDs
+            step_map: Dict[int, str] = {}
+            created_steps = []
+
+            # Create all step issues
+            for i, step in enumerate(steps):
+                step_id = self.db.create_issue(
+                    title=step["title"],
+                    description=step.get("description", ""),
+                    priority=step.get("priority", 2),
+                    issue_type="step",
+                    project=self.project_name,
+                    parent_id=parent_id,
+                    model=model,
+                )
+                step_map[i] = step_id
+                created_steps.append({"index": i, "id": step_id, "title": step["title"]})
+
+            # Wire up dependencies
+            for i, step in enumerate(steps):
+                needs = step.get("needs", [])
+                for dep_idx in needs:
+                    if isinstance(dep_idx, int) and dep_idx in step_map:
+                        self.db.add_dependency(step_map[i], step_map[dep_idx], "blocks")
+
+            result = {
+                "molecule_id": parent_id,
+                "title": title,
+                "steps_count": len(steps),
+                "steps": created_steps,
+                "message": f"Created molecule {parent_id} with {len(steps)} steps",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", f"Created molecule {result.get('molecule_id', '')}"))
             for step in result.get("steps", []):
                 print(f"  Step {step['index']}: {step['id']} - {step['title']}")
@@ -287,22 +549,49 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Add a dependency between issues."""
-        result = self._run_tool(
-            "hive_add_dependency",
-            {"issue_id": issue_id, "depends_on": depends_on, "type": dep_type},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            # Verify both issues exist
+            if not self.db.get_issue(issue_id):
+                raise ValueError(f"Issue not found: {issue_id}")
+            if not self.db.get_issue(depends_on):
+                raise ValueError(f"Dependency not found: {depends_on}")
+
+            self.db.add_dependency(issue_id, depends_on, dep_type)
+
+            result = {
+                "issue_id": issue_id,
+                "depends_on": depends_on,
+                "type": dep_type,
+                "message": f"Added {dep_type} dependency: {issue_id} depends on {depends_on}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", "Added dependency"))
 
     def dep_remove(self, issue_id: str, depends_on: str, *, json_mode: bool = False):
         """Remove a dependency between issues."""
-        result = self._run_tool(
-            "hive_remove_dependency",
-            {"issue_id": issue_id, "depends_on": depends_on},
-            json_mode=json_mode,
-        )
-        if not json_mode and result:
+        try:
+            self.db.conn.execute(
+                "DELETE FROM dependencies WHERE issue_id = ? AND depends_on = ?",
+                (issue_id, depends_on),
+            )
+            self.db.conn.commit()
+
+            result = {
+                "issue_id": issue_id,
+                "depends_on": depends_on,
+                "message": f"Removed dependency: {issue_id} no longer depends on {depends_on}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(result.get("message", "Removed dependency"))
 
     def merges(self, status: Optional[str] = None, *, json_mode: bool = False):
@@ -333,8 +622,43 @@ class HiveCLI:
 
     def status(self, *, json_mode: bool = False):
         """Show orchestrator status."""
-        result = self._run_tool("hive_get_status", {}, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            # Count issues by status
+            cursor = self.db.conn.execute(
+                """
+                SELECT status, COUNT(*) as count
+                FROM issues
+                WHERE project = ?
+                GROUP BY status
+                """,
+                (self.project_name,),
+            )
+            status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+            # Get active agents
+            active_agents = self.db.get_active_agents()
+
+            # Get ready queue
+            ready = self.db.get_ready_queue(limit=10)
+
+            # Get merge queue stats
+            merge_stats = self.db.get_merge_queue_stats()
+
+            result = {
+                "project": self.project_name,
+                "issues": status_counts,
+                "total_issues": sum(status_counts.values()),
+                "active_agents": len(active_agents),
+                "ready_queue": len(ready),
+                "merge_queue": merge_stats,
+                "ready_issues": [{"id": i["id"], "title": i["title"]} for i in ready[:5]],
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print("\n=== Hive Status ===")
             print(f"\nProject: {result.get('project', self.project_name)}")
             print("\nIssues:")
@@ -365,11 +689,33 @@ class HiveCLI:
 
     def list_agents(self, status: Optional[str] = None, *, json_mode: bool = False):
         """List agents."""
-        params = {}
-        if status:
-            params["status"] = status
-        result = self._run_tool("hive_list_agents", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            query = "SELECT * FROM agents"
+            params = []
+
+            if status:
+                query += " WHERE status = ?"
+                params.append(status)
+
+            query += " ORDER BY created_at DESC"
+
+            cursor = self.db.conn.execute(query, params)
+            agents = [dict(row) for row in cursor.fetchall()]
+
+            # Enrich with current issue info
+            for agent in agents:
+                if agent.get("current_issue"):
+                    issue = self.db.get_issue(agent["current_issue"])
+                    if issue:
+                        agent["current_issue_title"] = issue.get("title", "unknown")
+
+            result = {"count": len(agents), "agents": agents}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             agents = result.get("agents", [])
             if not agents:
                 print("No agents found.")
@@ -382,8 +728,29 @@ class HiveCLI:
 
     def show_agent(self, agent_id: str, *, json_mode: bool = False):
         """Show agent details."""
-        result = self._run_tool("hive_get_agent", {"agent_id": agent_id}, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            cursor = self.db.conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Agent not found: {agent_id}")
+
+            agent = dict(row)
+
+            # Get current issue details
+            if agent.get("current_issue"):
+                issue = self.db.get_issue(agent["current_issue"])
+                agent["current_issue_details"] = issue
+
+            # Get recent events for this agent
+            agent["recent_events"] = self.db.get_events(agent_id=agent_id, limit=10)
+
+            result = agent
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(f"\nAgent: {result.get('id', agent_id)}")
             print(f"Name: {result.get('name', '')}")
             print(f"Status: {result.get('status', '')}")
@@ -405,15 +772,16 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Get events."""
-        params = {"limit": limit}
-        if issue_id:
-            params["issue_id"] = issue_id
-        if agent_id:
-            params["agent_id"] = agent_id
-        if event_type:
-            params["event_type"] = event_type
-        result = self._run_tool("hive_get_events", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            events = self.db.get_events(issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit)
+
+            result = {"count": len(events), "events": events}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             events = result.get("events", [])
             if not events:
                 print("No events found.")
@@ -444,11 +812,22 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Add a note to the knowledge base."""
-        params = {"content": content, "category": category}
-        if issue_id:
-            params["issue_id"] = issue_id
-        result = self._run_tool("hive_add_note", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            note_id = self.db.add_note(agent_id=None, issue_id=issue_id, content=content, category=category)
+
+            result = {
+                "note_id": note_id,
+                "content": content,
+                "category": category,
+                "issue_id": issue_id,
+                "message": f"Added note #{note_id}",
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             print(f"Added note #{result['note_id']} [{category}]")
 
     def list_notes(
@@ -460,13 +839,16 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """List notes from the knowledge base."""
-        params: dict = {"limit": limit}
-        if issue_id:
-            params["issue_id"] = issue_id
-        if category:
-            params["category"] = category
-        result = self._run_tool("hive_get_notes", params, json_mode=json_mode)
-        if not json_mode and result:
+        try:
+            notes = self.db.get_notes(issue_id=issue_id, category=category, limit=limit)
+
+            result = {"count": len(notes), "notes": notes}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
             notes = result.get("notes", [])
             if not notes:
                 print("No notes found.")
@@ -1176,18 +1558,6 @@ def main():
     stats_parser.add_argument("--model", type=str, help="Filter by model name")
     stats_parser.add_argument("--tag", type=str, help="Filter by tag")
 
-    # start command
-    start_parser = subparsers.add_parser("start", help="Start the hive daemon")
-    start_parser.add_argument(
-        "--foreground",
-        "-f",
-        action="store_true",
-        help="Run in foreground instead of daemon mode",
-    )
-
-    # stop command
-    subparsers.add_parser("stop", help="Stop the hive daemon")
-
     # daemon command
     daemon_parser = subparsers.add_parser("daemon", help="Manage orchestrator daemon")
     daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", help="Daemon command")
@@ -1397,12 +1767,6 @@ def main():
 
         elif args.command == "stats":
             cli.stats(model=args.model, tag=args.tag, json_mode=json_mode)
-
-        elif args.command == "start":
-            cli.start(foreground=args.foreground, json_mode=json_mode)
-
-        elif args.command == "stop":
-            cli.stop(json_mode=json_mode)
 
         elif args.command == "daemon":
             if args.daemon_command == "start":
