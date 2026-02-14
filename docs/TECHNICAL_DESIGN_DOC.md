@@ -1116,7 +1116,7 @@ This is a fundamental architectural choice: **the Mayor is the interface, not th
 - Monitors worker progress via `hive status`, `hive logs`, `hive show`
 - Handles escalations — reads failure events, decides to retry/rephrase/ask human
 - Answers questions about system state by querying the DB through CLI tools
-- Closes/cancels issues via `hive close`
+- Cancels issues via `hive cancel`, finalizes via `hive finalize`
 
 **What the Mayor does NOT do:**
 
@@ -1131,7 +1131,7 @@ The previous design had the Mayor emit `:::WORK_PLAN:::` blocks that the orchest
 
 - Create issues one at a time, with full control over titles and descriptions
 - Check the result of each operation (`hive show <id>`)
-- Correct mistakes immediately (`hive close <id>`, then re-create)
+- Correct mistakes immediately (`hive cancel <id>`, then re-create)
 - Query system state naturally as part of the conversation
 - Handle complex workflows (molecules, dependencies) incrementally
 
@@ -1198,7 +1198,7 @@ You have access to the `hive` CLI to manage the system:
   hive logs --agent <id>         # Events for specific agent
 
 ### Managing work
-  hive close <issue-id>          # Cancel an issue
+  hive cancel <issue-id>         # Cancel an issue
   hive ready                     # Show the ready queue (unblocked issues)
 
 ## WORKFLOW
@@ -1244,7 +1244,7 @@ Human ←→ Mayor session (interactive chat)
                       Worker sessions
 ```
 
-- The Mayor writes to the DB (via `hive create`, `hive close`)
+- The Mayor writes to the DB (via `hive create`, `hive cancel`)
 - The orchestrator reads from the DB (ready queue poll) and writes back (status updates, events)
 - The Mayor reads the orchestrator's state (via `hive status`, `hive logs`, `hive show`)
 - No RPC, no message passing, no structured output parsing — just shared DB state
@@ -1515,9 +1515,9 @@ With the Mayor as the user-facing interface, escalation is natural conversation 
 2. The Mayor sees this when checking `hive status` or `hive logs`
 3. The Mayor tells the human: "Issue w-a3f8 failed after 2 retries. Here's what happened..."
 4. The human and Mayor discuss next steps:
-   - Rephrase the issue → `hive close w-a3f8` + `hive create "better title" "clearer description"`
+   - Rephrase the issue → `hive cancel w-a3f8` + `hive create "better title" "clearer description"`
    - Break it down → create multiple smaller issues
-   - Give up → `hive close w-a3f8`
+   - Give up → `hive cancel w-a3f8`
 
 No `:::HUMAN_QUESTION:::` blocks, no special escalation protocol. The Mayor is already in conversation with the human — it just brings up the failure naturally.
 
