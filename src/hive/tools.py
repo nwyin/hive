@@ -484,3 +484,29 @@ class ToolExecutor:
         events = self.db.get_events(issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit)
 
         return {"count": len(events), "events": events}
+
+    def handle_hive_add_note(
+        self,
+        content: str,
+        issue_id: Optional[str] = None,
+        category: str = "discovery",
+    ) -> Dict[str, Any]:
+        """Add a note to the knowledge base."""
+        note_id = self.db.add_note(agent_id=None, issue_id=issue_id, content=content, category=category)
+        return {
+            "note_id": note_id,
+            "content": content,
+            "category": category,
+            "issue_id": issue_id,
+            "message": f"Added note #{note_id}",
+        }
+
+    def handle_hive_get_notes(
+        self,
+        issue_id: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Get notes from the knowledge base."""
+        notes = self.db.get_notes(issue_id=issue_id, category=category, limit=limit)
+        return {"count": len(notes), "notes": notes}

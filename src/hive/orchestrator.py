@@ -18,7 +18,9 @@ from .prompts import (
     assess_completion,
     build_system_prompt,
     build_worker_prompt,
+    read_notes_file,
     read_result_file,
+    remove_notes_file,
     remove_result_file,
 )
 from .sse import SSEClient
@@ -603,6 +605,9 @@ class Orchestrator:
             )
             self.active_agents[agent_id] = agent
 
+            # Gather notes for worker context
+            worker_notes = self._gather_notes_for_worker(issue_id)
+
             # Build and send prompt
             branch_name = f"agent/{agent_name}"
             prompt = build_worker_prompt(
@@ -611,6 +616,7 @@ class Orchestrator:
                 worktree_path=worktree_path,
                 branch_name=branch_name,
                 project=self.project_name,
+                notes=worker_notes,
             )
 
             system_prompt = build_system_prompt(
@@ -660,6 +666,33 @@ class Orchestrator:
             # Clean up
             remove_worktree(worktree_path)
             self.db.update_issue_status(issue_id, "failed")
+
+    def _gather_notes_for_worker(self, issue_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Gather relevant notes to inject into a worker's prompt.
+
+        Combines molecule-specific notes (if the issue is a step) with
+        recent project-wide notes, deduplicating by note ID.
+
+        Returns None if no notes are found (so build_worker_prompt skips the section).
+        """
+        seen_ids: set = set()
+        notes: List[Dict[str, Any]] = []
+
+        # Get molecule-scoped notes if this is a step
+        issue = self.db.get_issue(issue_id)
+        if issue and issue.get("parent_id"):
+            for note in self.db.get_notes_for_molecule(issue["parent_id"]):
+                if note["id"] not in seen_ids:
+                    seen_ids.add(note["id"])
+                    notes.append(note)
+
+        # Get recent project-wide notes
+        for note in self.db.get_recent_project_notes(limit=10):
+            if note["id"] not in seen_ids:
+                seen_ids.add(note["id"])
+                notes.append(note)
+
+        return notes if notes else None
 
     def _is_issue_canceled(self, issue_id: str) -> bool:
         """Check if an issue has been canceled in the database."""
@@ -809,6 +842,25 @@ class Orchestrator:
         """
         # Always clean up the result file if it exists
         remove_result_file(agent.worktree)
+
+        # Harvest notes (best-effort) — do this BEFORE the canceled check
+        # so even canceled/failed workers' discoveries are saved.
+        try:
+            notes_data = read_notes_file(agent.worktree)
+            if notes_data:
+                for note in notes_data:
+                    self.db.add_note(
+                        issue_id=agent.issue_id,
+                        agent_id=agent.agent_id,
+                        content=note.get("content", ""),
+                        category=note.get("category", "discovery"),
+                    )
+                self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
+                logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
+        except Exception as e:
+            logger.warning(f"Failed to harvest notes from {agent.name}: {e}")
+        finally:
+            remove_notes_file(agent.worktree)
 
         # Check if issue was canceled/finalized while the agent was working.
         # If so, don't overwrite the status — just clean up the session.
@@ -1037,6 +1089,13 @@ class Orchestrator:
             agent.session_id = new_session_id
             agent.issue_id = next_step["id"]
 
+            # Gather notes and completed steps for context
+            worker_notes = self._gather_notes_for_worker(next_step["id"])
+            completed_steps = None
+            if next_step.get("parent_id"):
+                completed_issues = self.db.get_completed_molecule_steps(next_step["parent_id"])
+                completed_steps = [f"{s['title']}: {(s.get('description') or '')[:100]}" for s in completed_issues]
+
             # Build and send prompt
             branch_name = f"agent/{agent.name}"
             prompt = build_worker_prompt(
@@ -1045,6 +1104,8 @@ class Orchestrator:
                 worktree_path=agent.worktree,
                 branch_name=branch_name,
                 project=self.project_name,
+                notes=worker_notes,
+                completed_steps=completed_steps,
             )
 
             system_prompt = build_system_prompt(

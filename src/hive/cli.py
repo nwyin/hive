@@ -423,6 +423,52 @@ class HiveCLI:
         """Mark an issue as canceled (alias for cancel)."""
         self.cancel(issue_id, json_mode=json_mode)
 
+    # ── Notes ─────────────────────────────────────────────────────────
+
+    def add_note(
+        self,
+        content: str,
+        issue_id: Optional[str] = None,
+        category: str = "discovery",
+        *,
+        json_mode: bool = False,
+    ):
+        """Add a note to the knowledge base."""
+        params = {"content": content, "category": category}
+        if issue_id:
+            params["issue_id"] = issue_id
+        result = self._run_tool("hive_add_note", params, json_mode=json_mode)
+        if not json_mode and result:
+            print(f"Added note #{result['note_id']} [{category}]")
+
+    def list_notes(
+        self,
+        issue_id: Optional[str] = None,
+        category: Optional[str] = None,
+        limit: int = 20,
+        *,
+        json_mode: bool = False,
+    ):
+        """List notes from the knowledge base."""
+        params: dict = {"limit": limit}
+        if issue_id:
+            params["issue_id"] = issue_id
+        if category:
+            params["category"] = category
+        result = self._run_tool("hive_get_notes", params, json_mode=json_mode)
+        if not json_mode and result:
+            notes = result.get("notes", [])
+            if not notes:
+                print("No notes found.")
+                return
+            print(f"\n{'ID':<6} {'Category':<12} {'Issue':<14} {'Content':<50}")
+            print("-" * 82)
+            for note in notes:
+                issue = note.get("issue_id") or "-"
+                content = (note.get("content") or "")[:50]
+                print(f"{note['id']:<6} {note['category']:<12} {str(issue):<14} {content}")
+            print(f"\nTotal: {len(notes)} notes")
+
     # ── Event log (tail-style, not tool-backed) ─────────────────────
 
     def _format_event(self, event: dict) -> str:
@@ -1081,6 +1127,27 @@ def main():
     watch_parser = subparsers.add_parser("watch", help="Stream live events from a worker's OpenCode session")
     watch_parser.add_argument("issue_id", help="Issue ID to watch")
 
+    # note command (add a note)
+    note_parser = subparsers.add_parser("note", help="Add a note to the knowledge base")
+    note_parser.add_argument("content", help="Note content")
+    note_parser.add_argument("--issue", dest="issue_id", help="Associate note with an issue ID")
+    note_parser.add_argument(
+        "--category",
+        choices=["discovery", "gotcha", "dependency", "pattern", "context"],
+        default="discovery",
+        help="Note category (default: discovery)",
+    )
+
+    # notes command (list notes)
+    notes_parser = subparsers.add_parser("notes", help="List notes from the knowledge base")
+    notes_parser.add_argument("--issue", dest="issue_id", help="Filter by issue ID")
+    notes_parser.add_argument(
+        "--category",
+        choices=["discovery", "gotcha", "dependency", "pattern", "context"],
+        help="Filter by category",
+    )
+    notes_parser.add_argument("--limit", type=int, default=20, help="Max notes to show (default: 20)")
+
     args = parser.parse_args()
 
     # Initialize database
@@ -1230,6 +1297,22 @@ def main():
 
         elif args.command == "watch":
             cli.watch(args.issue_id, json_mode=json_mode)
+
+        elif args.command == "note":
+            cli.add_note(
+                args.content,
+                issue_id=args.issue_id,
+                category=args.category,
+                json_mode=json_mode,
+            )
+
+        elif args.command == "notes":
+            cli.list_notes(
+                issue_id=args.issue_id,
+                category=args.category,
+                limit=args.limit,
+                json_mode=json_mode,
+            )
 
         else:
             parser.print_help()

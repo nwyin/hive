@@ -1044,6 +1044,61 @@ def test_get_recent_project_notes_empty(temp_db):
     assert notes == []
 
 
+# --- get_completed_molecule_steps tests ---
+
+
+def test_get_completed_molecule_steps(temp_db):
+    """Test get_completed_molecule_steps returns done/finalized child issues."""
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+
+    child1 = temp_db.create_issue("Step 1", description="First step", parent_id=parent_id, issue_type="step")
+    child2 = temp_db.create_issue("Step 2", description="Second step", parent_id=parent_id, issue_type="step")
+    child3 = temp_db.create_issue("Step 3", description="Third step", parent_id=parent_id, issue_type="step")
+
+    # Mark child1 done, child2 finalized, leave child3 open
+    temp_db.update_issue_status(child1, "done")
+    temp_db.update_issue_status(child2, "finalized")
+
+    steps = temp_db.get_completed_molecule_steps(parent_id)
+
+    assert len(steps) == 2
+    step_ids = [s["id"] for s in steps]
+    assert child1 in step_ids
+    assert child2 in step_ids
+    assert child3 not in step_ids
+
+    # Should be ordered by creation time
+    assert steps[0]["id"] == child1
+    assert steps[1]["id"] == child2
+
+    # Check fields present
+    assert steps[0]["title"] == "Step 1"
+    assert steps[0]["description"] == "First step"
+    assert steps[0]["status"] == "done"
+
+
+def test_get_completed_molecule_steps_empty(temp_db):
+    """Test get_completed_molecule_steps with no completed steps."""
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+    temp_db.create_issue("Step 1", parent_id=parent_id, issue_type="step")
+
+    steps = temp_db.get_completed_molecule_steps(parent_id)
+    assert steps == []
+
+
+def test_get_completed_molecule_steps_nonexistent(temp_db):
+    """Test get_completed_molecule_steps with non-existent parent."""
+    steps = temp_db.get_completed_molecule_steps("nonexistent")
+    assert steps == []
+
+
+def test_get_completed_molecule_steps_not_connected(temp_db):
+    """Test get_completed_molecule_steps raises error when not connected."""
+    temp_db.close()
+    with pytest.raises(RuntimeError, match="Database not connected"):
+        temp_db.get_completed_molecule_steps("test")
+
+
 def test_notes_database_not_connected_error(temp_db):
     """Test that notes methods raise error when database not connected."""
     # Close the connection

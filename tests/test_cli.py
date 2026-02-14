@@ -690,6 +690,111 @@ def test_cli_watch_no_session(temp_db, tmp_path, capsys):
     assert "has no active session" in captured.err
 
 
+# ── Notes CLI tests ─────────────────────────────────────────────
+
+
+def test_cli_add_note(temp_db, tmp_path, capsys):
+    """Test adding a note via CLI."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.add_note("Test discovery note")
+
+    captured = capsys.readouterr()
+    assert "Added note #" in captured.out
+    assert "[discovery]" in captured.out
+
+    # Verify note was stored
+    notes = temp_db.get_notes(limit=1)
+    assert len(notes) == 1
+    assert notes[0]["content"] == "Test discovery note"
+    assert notes[0]["category"] == "discovery"
+
+
+def test_cli_add_note_with_issue_and_category(temp_db, tmp_path, capsys):
+    """Test adding a note with issue and category."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    issue_id = temp_db.create_issue("Test issue", project=tmp_path.name)
+    cli.add_note("Watch out for X", issue_id=issue_id, category="gotcha")
+
+    captured = capsys.readouterr()
+    assert "[gotcha]" in captured.out
+
+    notes = temp_db.get_notes(issue_id=issue_id)
+    assert len(notes) == 1
+    assert notes[0]["category"] == "gotcha"
+    assert notes[0]["issue_id"] == issue_id
+
+
+def test_cli_add_note_json(temp_db, tmp_path, capsys):
+    """Test adding a note with JSON output."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.add_note("JSON note test", category="pattern", json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert "note_id" in data
+    assert data["content"] == "JSON note test"
+    assert data["category"] == "pattern"
+
+
+def test_cli_list_notes(temp_db, tmp_path, capsys):
+    """Test listing notes via CLI."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    temp_db.add_note(content="Note 1", category="discovery")
+    temp_db.add_note(content="Note 2", category="gotcha")
+    temp_db.add_note(content="Note 3", category="pattern")
+
+    cli.list_notes()
+
+    captured = capsys.readouterr()
+    assert "Note 1" in captured.out
+    assert "Note 2" in captured.out
+    assert "Note 3" in captured.out
+    assert "Total: 3 notes" in captured.out
+
+
+def test_cli_list_notes_empty(temp_db, tmp_path, capsys):
+    """Test listing notes when none exist."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.list_notes()
+
+    captured = capsys.readouterr()
+    assert "No notes found" in captured.out
+
+
+def test_cli_list_notes_filter_category(temp_db, tmp_path, capsys):
+    """Test listing notes filtered by category."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    temp_db.add_note(content="Discovery note", category="discovery")
+    temp_db.add_note(content="Gotcha note", category="gotcha")
+
+    cli.list_notes(category="gotcha")
+
+    captured = capsys.readouterr()
+    assert "Gotcha note" in captured.out
+    assert "Discovery note" not in captured.out
+    assert "Total: 1 notes" in captured.out
+
+
+def test_cli_list_notes_json(temp_db, tmp_path, capsys):
+    """Test listing notes with JSON output."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    temp_db.add_note(content="JSON list note", category="discovery")
+
+    cli.list_notes(json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["count"] == 1
+    assert data["notes"][0]["content"] == "JSON list note"
+
+
 @unittest.mock.patch("hive.cli.asyncio.run")
 def test_cli_watch_valid_issue(mock_asyncio_run, temp_db, tmp_path):
     """Test watch command with valid issue assignment."""

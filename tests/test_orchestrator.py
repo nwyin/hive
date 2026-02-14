@@ -771,6 +771,221 @@ async def test_merge_processor_loop_health_check(temp_db, tmp_path):
     assert orch.merge_processor.health_check.call_count >= 1
 
 
+# --- Notes harvest/inject tests ---
+
+
+@pytest.mark.asyncio
+async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
+    """Test that notes are harvested from worktree on agent completion."""
+    import json
+    from hive.opencode import OpenCodeClient
+    from hive.prompts import NOTES_FILE_NAME
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.get_messages = AsyncMock(return_value=[])
+    mock_opencode.abort_session = AsyncMock()
+    mock_opencode.delete_session = AsyncMock()
+
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test task", "Do something")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Create worktree dir and write notes file
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    notes_file = worktree / NOTES_FILE_NAME
+    notes_file.write_text(
+        json.dumps({"content": "The API requires auth tokens", "category": "discovery"})
+        + "\n"
+        + json.dumps({"content": "Don't use deprecated endpoint", "category": "gotcha"})
+        + "\n"
+    )
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(worktree),
+        session_id="session-123",
+        project="test",
+    )
+    orch.active_agents[agent_id] = agent
+
+    await orch.handle_agent_complete(agent)
+
+    # Verify notes were harvested into DB
+    notes = temp_db.get_notes(issue_id=issue_id)
+    assert len(notes) == 2
+    contents = {n["content"] for n in notes}
+    assert "The API requires auth tokens" in contents
+    assert "Don't use deprecated endpoint" in contents
+
+    # Verify notes file was cleaned up
+    assert not notes_file.exists()
+
+    # Verify harvest event was logged
+    events = temp_db.get_events(issue_id=issue_id, event_type="notes_harvested")
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_harvest_notes_no_file(temp_db, tmp_path):
+    """Test harvest is a no-op when no notes file exists."""
+    from hive.opencode import OpenCodeClient
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.get_messages = AsyncMock(return_value=[])
+    mock_opencode.abort_session = AsyncMock()
+    mock_opencode.delete_session = AsyncMock()
+
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Test task")
+    agent_id = temp_db.create_agent("test-agent")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(worktree),
+        session_id="session-123",
+        project="test",
+    )
+    orch.active_agents[agent_id] = agent
+
+    await orch.handle_agent_complete(agent)
+
+    # No notes should be in DB
+    notes = temp_db.get_notes(issue_id=issue_id)
+    assert len(notes) == 0
+
+    # No harvest event
+    events = temp_db.get_events(issue_id=issue_id, event_type="notes_harvested")
+    assert len(events) == 0
+
+
+def test_gather_notes_for_worker_with_molecule(temp_db, tmp_path):
+    """Test _gather_notes_for_worker combines molecule + project notes with dedup."""
+    from hive.opencode import OpenCodeClient
+
+    mock_opencode = MagicMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    # Create a molecule with steps
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+    step1_id = temp_db.create_issue("Step 1", parent_id=parent_id, issue_type="step")
+    step2_id = temp_db.create_issue("Step 2", parent_id=parent_id, issue_type="step")
+
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add molecule-scoped notes
+    note1_id = temp_db.add_note(issue_id=step1_id, agent_id=agent_id, content="Step 1 discovery", category="discovery")
+
+    # Add a project-wide note
+    note2_id = temp_db.add_note(content="Project-wide gotcha", category="gotcha")
+
+    # Gather notes for step2 (should see step1's note + project note)
+    notes = orch._gather_notes_for_worker(step2_id)
+
+    assert notes is not None
+    assert len(notes) == 2
+    note_ids = {n["id"] for n in notes}
+    assert note1_id in note_ids
+    assert note2_id in note_ids
+
+
+def test_gather_notes_for_worker_deduplicates(temp_db, tmp_path):
+    """Test _gather_notes_for_worker deduplicates by note ID."""
+    from hive.opencode import OpenCodeClient
+
+    mock_opencode = MagicMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    # Create a molecule with a step
+    parent_id = temp_db.create_issue("Parent molecule", issue_type="molecule")
+    step_id = temp_db.create_issue("Step 1", parent_id=parent_id, issue_type="step")
+
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add a note tied to the step — it will appear in both
+    # get_notes_for_molecule AND get_recent_project_notes
+    note_id = temp_db.add_note(issue_id=step_id, agent_id=agent_id, content="Shared note")
+
+    notes = orch._gather_notes_for_worker(step_id)
+
+    # Should only appear once despite being in both queries
+    assert notes is not None
+    ids = [n["id"] for n in notes]
+    assert ids.count(note_id) == 1
+
+
+def test_gather_notes_for_worker_no_notes(temp_db, tmp_path):
+    """Test _gather_notes_for_worker returns None when no notes exist."""
+    from hive.opencode import OpenCodeClient
+
+    mock_opencode = MagicMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Standalone task")
+    notes = orch._gather_notes_for_worker(issue_id)
+    assert notes is None
+
+
+def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
+    """Test _gather_notes_for_worker for a standalone issue (no parent)."""
+    from hive.opencode import OpenCodeClient
+
+    mock_opencode = MagicMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Standalone task")
+
+    # Add a project-wide note
+    note_id = temp_db.add_note(content="Project note", category="pattern")
+
+    notes = orch._gather_notes_for_worker(issue_id)
+    assert notes is not None
+    assert len(notes) == 1
+    assert notes[0]["id"] == note_id
+
+
 @pytest.mark.asyncio
 async def test_merge_processor_initialize_called_on_start(temp_db, tmp_path):
     """Test merge processor initialize is called during orchestrator start."""

@@ -991,6 +991,28 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_completed_molecule_steps(self, parent_id: str) -> List[Dict]:
+        """
+        Get completed/finalized sibling issues for a molecule, ordered by creation time.
+
+        Args:
+            parent_id: Parent molecule issue ID
+
+        Returns:
+            List of issue dicts with id, title, description, status
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+        rows = self.conn.execute(
+            """
+            SELECT id, title, description, status FROM issues
+            WHERE parent_id = ? AND status IN ('done', 'finalized')
+            ORDER BY created_at ASC
+            """,
+            (parent_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_recent_project_notes(self, limit: int = 10) -> List[Dict]:
         """
         Get recent project-wide notes plus recent cross-issue notes.
