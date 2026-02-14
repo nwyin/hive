@@ -296,6 +296,16 @@ uvx ruff check src/ tests/
 uvx ruff format --line-length 144 src/ tests/
 ```
 
+### Exploring the Database
+
+Use [Datasette](https://datasette.io/) to browse and query the Hive SQLite database in your browser:
+
+```bash
+datasette ~/.hive/hive.db
+```
+
+This opens a web UI at `http://127.0.0.1:8001` where you can inspect issues, agents, events, dependencies, and the merge queue. Datasette is included in the dev dependencies.
+
 ### Project Structure
 
 ```
