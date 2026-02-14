@@ -40,6 +40,8 @@ class MergeProcessor:
         self.project_path = str(Path(project_path).resolve())
         self.project_name = project_name
         self.refinery_session_id: Optional[str] = None
+        self._refinery_message_count: int = 0
+        self._refinery_token_estimate: int = 0
 
     async def shutdown(self):
         """Clean up the refinery session on shutdown."""
@@ -65,6 +67,10 @@ class MergeProcessor:
 
         session_id = self.refinery_session_id
         self.refinery_session_id = None  # Clear immediately to prevent reuse
+
+        # Reset counters
+        self._refinery_message_count = 0
+        self._refinery_token_estimate = 0
 
         # Best-effort abort and delete
         try:
@@ -240,8 +246,7 @@ class MergeProcessor:
             session_id = await self._ensure_refinery_session()
 
             # Record message count before sending (fence against stale results)
-            pre_send_messages = await self.opencode.get_messages(session_id, directory=self.project_path)
-            pre_send_count = len(pre_send_messages) if pre_send_messages else 0
+            pre_send_count = self._refinery_message_count
 
             # Build the refinery prompt
             prompt = build_refinery_prompt(
@@ -272,6 +277,11 @@ class MergeProcessor:
 
             # Wait for refinery to finish (poll session status)
             result = await self._wait_for_refinery(session_id, min_message_count=pre_send_count)
+
+            # Increment counters after successful refinery processing
+            self._refinery_message_count += 2  # one for the prompt sent, one for the response
+            # Estimate tokens from prompt length
+            self._refinery_token_estimate += len(prompt) // 4  # rough estimate for input
 
             # Process result
             if result["status"] == "merged":
@@ -462,62 +472,42 @@ class MergeProcessor:
         if not self.refinery_session_id:
             return
 
-        try:
-            # Get session messages to check token usage
-            messages = await self.opencode.get_messages(self.refinery_session_id, directory=self.project_path)
+        # Check local counters instead of fetching messages from API
+        should_cycle = False
+        if self._refinery_token_estimate > Config.REFINERY_TOKEN_THRESHOLD:  # 100,000
+            should_cycle = True
+        elif self._refinery_message_count > 20:
+            should_cycle = True
 
-            # Sum up token counts from message metadata
-            total_tokens = 0
-            message_count = 0
+        if should_cycle:
+            # Log the cycling event
+            self.db.log_event(
+                None,  # No specific issue
+                None,  # No specific agent
+                "refinery_session_cycled",
+                {
+                    "session_id": self.refinery_session_id,
+                    "token_count": self._refinery_token_estimate,
+                    "message_count": self._refinery_message_count,
+                    "threshold": Config.REFINERY_TOKEN_THRESHOLD,
+                },
+            )
 
-            for message in messages:
-                message_count += 1
-                metadata = message.get("metadata", {})
-                if "token_count" in metadata:
-                    total_tokens += metadata["token_count"]
-                elif "tokens" in metadata:
-                    # Handle different metadata formats
-                    total_tokens += metadata["tokens"]
+            # Abort and delete the current session
+            try:
+                await self.opencode.abort_session(self.refinery_session_id, directory=self.project_path)
+            except Exception:
+                pass  # Best effort
 
-            # If no token metadata available, use message count as proxy
-            # Rough heuristic: >20 messages suggests we should cycle
-            should_cycle = False
-            if total_tokens > 0:
-                should_cycle = total_tokens > Config.REFINERY_TOKEN_THRESHOLD
-            else:
-                should_cycle = message_count > 20
+            try:
+                await self.opencode.delete_session(self.refinery_session_id, directory=self.project_path)
+            except Exception:
+                pass  # Best effort
 
-            if should_cycle:
-                # Log the cycling event
-                self.db.log_event(
-                    None,  # No specific issue
-                    None,  # No specific agent
-                    "refinery_session_cycled",
-                    {
-                        "session_id": self.refinery_session_id,
-                        "token_count": total_tokens,
-                        "message_count": message_count,
-                        "threshold": Config.REFINERY_TOKEN_THRESHOLD,
-                    },
-                )
-
-                # Abort and delete the current session
-                try:
-                    await self.opencode.abort_session(self.refinery_session_id, directory=self.project_path)
-                except Exception:
-                    pass  # Best effort
-
-                try:
-                    await self.opencode.delete_session(self.refinery_session_id, directory=self.project_path)
-                except Exception:
-                    pass  # Best effort
-
-                # Reset session ID - next merge will create a fresh session
-                self.refinery_session_id = None
-
-        except Exception:
-            # If we can't check token usage, don't cycle
-            pass
+            # Reset session ID and counters - next merge will create a fresh session
+            self.refinery_session_id = None
+            self._refinery_message_count = 0
+            self._refinery_token_estimate = 0
 
     async def _ensure_refinery_session(self) -> str:
         """
@@ -548,4 +538,9 @@ class MergeProcessor:
             ],
         )
         self.refinery_session_id = session["id"]
+
+        # Reset counters for new session
+        self._refinery_message_count = 0
+        self._refinery_token_estimate = 0
+
         return self.refinery_session_id

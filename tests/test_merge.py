@@ -176,11 +176,11 @@ conflicts_resolved: 0
 
     # Mock refinery session with proper lifecycle:
     # get_session_status: first call returns "busy" (post-send check), then "idle" (wait loop)
-    # get_messages: first call returns [] (pre-send count), then refinery result
+    # get_messages: only called once in _wait_for_refinery to get result
     mock_opencode.create_session = AsyncMock(return_value={"id": "refinery-session-1"})
     mock_opencode.send_message_async = AsyncMock()
     mock_opencode.get_session_status = AsyncMock(side_effect=[{"type": "busy"}, {"type": "idle"}])
-    mock_opencode.get_messages = AsyncMock(side_effect=[[], refinery_messages])
+    mock_opencode.get_messages = AsyncMock(return_value=refinery_messages)
     mock_opencode.abort_session = AsyncMock()
     mock_opencode.delete_session = AsyncMock()
 
@@ -232,11 +232,11 @@ conflicts_resolved: 0
 
     # Mock refinery session with proper lifecycle:
     # get_session_status: first call returns "busy" (post-send check), then "idle" (wait loop)
-    # get_messages: first call returns [] (pre-send count), then refinery result
+    # get_messages: only called once in _wait_for_refinery to get result
     mock_opencode.create_session = AsyncMock(return_value={"id": "refinery-session-1"})
     mock_opencode.send_message_async = AsyncMock()
     mock_opencode.get_session_status = AsyncMock(side_effect=[{"type": "busy"}, {"type": "idle"}])
-    mock_opencode.get_messages = AsyncMock(side_effect=[[], refinery_messages])
+    mock_opencode.get_messages = AsyncMock(return_value=refinery_messages)
     mock_opencode.abort_session = AsyncMock()
     mock_opencode.delete_session = AsyncMock()
 
@@ -337,19 +337,10 @@ async def test_refinery_session_cycling_by_token_count(temp_db, mock_opencode):
     """Test refinery session is cycled when token threshold is exceeded."""
     mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
 
-    # Set up a refinery session
+    # Set up a refinery session with high token count
     mp.refinery_session_id = "test-session-123"
-
-    # Mock get_messages to return high token count
-    mock_opencode.get_messages = AsyncMock(
-        return_value=[
-            {
-                "metadata": {"token_count": 120000},  # Exceeds REFINERY_TOKEN_THRESHOLD (100000)
-                "parts": [{"type": "text", "text": "message 1"}],
-            },
-            {"metadata": {"token_count": 30000}, "parts": [{"type": "text", "text": "message 2"}]},
-        ]
-    )
+    mp._refinery_token_estimate = 120000  # Exceeds REFINERY_TOKEN_THRESHOLD (100000)
+    mp._refinery_message_count = 10  # Under message threshold
 
     # Mock abort and delete session calls
     mock_opencode.abort_session = AsyncMock()
@@ -360,6 +351,8 @@ async def test_refinery_session_cycling_by_token_count(temp_db, mock_opencode):
 
     # Verify session was cycled
     assert mp.refinery_session_id is None
+    assert mp._refinery_token_estimate == 0
+    assert mp._refinery_message_count == 0
     mock_opencode.abort_session.assert_called_once_with("test-session-123", directory=mp.project_path)
     mock_opencode.delete_session.assert_called_once_with("test-session-123", directory=mp.project_path)
 
@@ -373,7 +366,7 @@ async def test_refinery_session_cycling_by_token_count(temp_db, mock_opencode):
 
     details = json.loads(event["detail"])
     assert details["session_id"] == "test-session-123"
-    assert details["token_count"] == 150000  # 120000 + 30000
+    assert details["token_count"] == 120000  # Local counter value
     assert details["threshold"] == 100000
 
 
@@ -382,15 +375,12 @@ async def test_refinery_session_cycling_by_message_count(temp_db, mock_opencode)
     """Test refinery session is cycled when message count exceeds threshold (fallback)."""
     mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
 
-    # Set up a refinery session
+    # Set up a refinery session with high message count
     mp.refinery_session_id = "test-session-456"
+    mp._refinery_token_estimate = 50000  # Under token threshold
+    mp._refinery_message_count = 25  # More than 20 messages (our fallback threshold)
 
-    # Mock get_messages to return many messages without token metadata
-    messages = []
-    for i in range(25):  # More than 20 messages (our fallback threshold)
-        messages.append({"parts": [{"type": "text", "text": f"message {i}"}]})
-
-    mock_opencode.get_messages = AsyncMock(return_value=messages)
+    # Mock abort and delete session calls
     mock_opencode.abort_session = AsyncMock()
     mock_opencode.delete_session = AsyncMock()
 
@@ -399,6 +389,8 @@ async def test_refinery_session_cycling_by_message_count(temp_db, mock_opencode)
 
     # Verify session was cycled
     assert mp.refinery_session_id is None
+    assert mp._refinery_token_estimate == 0
+    assert mp._refinery_message_count == 0
     mock_opencode.abort_session.assert_called_once_with("test-session-456", directory=mp.project_path)
     mock_opencode.delete_session.assert_called_once_with("test-session-456", directory=mp.project_path)
 
