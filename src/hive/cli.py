@@ -433,7 +433,7 @@ class HiveCLI:
             )
             self.db.conn.commit()
 
-            self.db.log_event(issue_id, None, "retry", {"notes": notes})
+            self.db.log_event(issue_id, None, "manual_retry", {"notes": notes})
 
             result = {
                 "issue_id": issue_id,

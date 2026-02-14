@@ -338,6 +338,25 @@ def test_cli_retry_json(temp_db, tmp_path, capsys):
     assert data["status"] == "open"
 
 
+def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
+    """Test that manual retry logs 'manual_retry' event type, not 'retry'."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    # Create and fail an issue
+    issue_id = temp_db.create_issue("Failed task", project=tmp_path.name)
+    temp_db.update_issue_status(issue_id, "failed")
+
+    # Retry the issue manually
+    cli.retry(issue_id, notes="manual retry test")
+
+    # Verify the event type is 'manual_retry' and 'retry' count is 0
+    manual_retry_count = temp_db.count_events_by_type(issue_id, "manual_retry")
+    retry_count = temp_db.count_events_by_type(issue_id, "retry")
+
+    assert manual_retry_count == 1, "Should have exactly 1 manual_retry event"
+    assert retry_count == 0, "Should have 0 retry events (only manual_retry)"
+
+
 def test_cli_escalate(temp_db, tmp_path, capsys):
     """Test escalating an issue."""
     cli = HiveCLI(temp_db, str(tmp_path))
