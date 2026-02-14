@@ -769,6 +769,45 @@ class HiveCLI:
                 for event in events[:5]:
                     print(f"  [{event['created_at']}] {event['event_type']}")
 
+    def get_events(
+        self,
+        issue_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        limit: int = 20,
+        *,
+        json_mode: bool = False,
+    ):
+        """Get events."""
+        try:
+            events = self.db.get_events(issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit)
+
+            result = {"count": len(events), "events": events}
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
+            events = result.get("events", [])
+            if not events:
+                print("No events found.")
+                return
+            for event in events:
+                ts = event.get("created_at", "")
+                etype = event.get("event_type", "")
+                iss = event.get("issue_id") or "-"
+                agent = event.get("agent_id") or "-"
+                line = f"{ts}  {etype:<24s}  issue={iss:<10s}  agent={agent:<10s}"
+                if event.get("detail"):
+                    try:
+                        detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
+                        parts = [f"{k}={v}" for k, v in detail.items()]
+                        line += "  " + " ".join(parts)
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        line += f"  {event['detail']}"
+                print(line)
+
     # ── Notes ─────────────────────────────────────────────────────────
 
     def add_note(
@@ -872,12 +911,11 @@ class HiveCLI:
         n: int = 20,
         issue_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        event_type: Optional[str] = None,
         *,
         json_mode: bool = False,
     ):
         """Show event log, optionally tailing for new events."""
-        recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
+        recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id)
 
         if json_mode:
             if follow:
@@ -890,7 +928,7 @@ class HiveCLI:
                 try:
                     while True:
                         time.sleep(0.5)
-                        new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
+                        new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id)
                         for event in new_events:
                             print(json.dumps(self._event_to_json(event), default=str))
                             cursor = event["id"]
@@ -912,7 +950,7 @@ class HiveCLI:
         try:
             while True:
                 time.sleep(0.5)
-                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
+                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id)
                 for event in new_events:
                     print(self._format_event(event))
                     cursor = event["id"]
@@ -996,6 +1034,43 @@ class HiveCLI:
             print(
                 f"{model_name:<35} {r.get('type', ''):<10} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('failures', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
             )
+
+    # ── Web UI ────────────────────────────────────────────────────────
+
+    def ui(self, port: int = 8001, host: str = "127.0.0.1"):
+        """Launch datasette UI for exploring Hive data."""
+        import shutil
+
+        datasette_bin = shutil.which("datasette")
+        if not datasette_bin:
+            print("Error: datasette not installed. Install with: pip install datasette", file=sys.stderr)
+            print('Or: uv pip install "hive[ui]"', file=sys.stderr)
+            sys.exit(1)
+
+        db_path = Config.DB_PATH  # ~/.hive/hive.db
+        metadata_path = Path(__file__).parent / "datasette_metadata.json"
+
+        print(f"Launching Hive Explorer at http://{host}:{port}")
+        print(f"Database: {db_path}")
+        print("Press Ctrl+C to stop")
+
+        os.execvp(
+            datasette_bin,
+            [
+                "datasette",
+                "--immutable",
+                str(db_path),  # read-only mode — don't allow writes
+                "--metadata",
+                str(metadata_path),
+                "--host",
+                host,
+                "--port",
+                str(port),
+                "--setting",
+                "sql_time_limit_ms",
+                "5000",
+            ],
+        )
 
     # ── Daemon management ────────────────────────────────────────────
 
@@ -1359,7 +1434,6 @@ def main():
     # list command
     list_parser = subparsers.add_parser("list", help="List all issues")
     list_parser.add_argument("--status", help="Filter by status")
-    list_parser.add_argument("--todo", action="store_true", help="Show only actionable issues (excludes done/finalized/canceled)")
     list_parser.add_argument(
         "--sort",
         choices=["priority", "created", "updated", "status", "title"],
@@ -1377,6 +1451,7 @@ def main():
         dest="issue_type",
         help="Filter by issue type (task, bug, feature, step, molecule)",
     )
+    list_parser.add_argument("--todo", action="store_true", help="Show only actionable issues (excludes done/finalized/canceled)")
     list_parser.add_argument("--assignee", help="Filter by agent assignee")
     list_parser.add_argument("--limit", type=int, default=50, help="Max issues to show (default: 50)")
 
@@ -1454,8 +1529,15 @@ def main():
     agent_parser = subparsers.add_parser("agent", help="Show agent details")
     agent_parser.add_argument("agent_id", help="Agent ID")
 
+    # events command
+    events_parser = subparsers.add_parser("events", help="Show events")
+    events_parser.add_argument("--issue", help="Filter by issue ID")
+    events_parser.add_argument("--agent", help="Filter by agent ID")
+    events_parser.add_argument("--type", dest="event_type", help="Filter by event type")
+    events_parser.add_argument("--limit", type=int, default=20, help="Number of events (default: 20)")
+
     # logs command
-    logs_parser = subparsers.add_parser("logs", help="Show event log (use -f to follow)")
+    logs_parser = subparsers.add_parser("logs", help="Show event log (tail -f style)")
     logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow new events in real time")
     logs_parser.add_argument(
         "-n",
@@ -1466,7 +1548,6 @@ def main():
     )
     logs_parser.add_argument("--issue", help="Filter by issue ID")
     logs_parser.add_argument("--agent", help="Filter by agent ID")
-    logs_parser.add_argument("--type", dest="event_type", help="Filter by event type")
 
     # merges command
     merges_parser = subparsers.add_parser("merges", help="List merge queue entries")
@@ -1541,6 +1622,11 @@ def main():
         help="Filter by category",
     )
     notes_parser.add_argument("--limit", type=int, default=20, help="Max notes to show (default: 20)")
+
+    # ui command
+    ui_parser = subparsers.add_parser("ui", help="Launch web UI to explore Hive data")
+    ui_parser.add_argument("--port", type=int, default=8001, help="Port to serve on (default: 8001)")
+    ui_parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
 
     args = parser.parse_args()
 
@@ -1657,13 +1743,21 @@ def main():
         elif args.command == "agent":
             cli.show_agent(args.agent_id, json_mode=json_mode)
 
+        elif args.command == "events":
+            cli.get_events(
+                issue_id=args.issue,
+                agent_id=args.agent,
+                event_type=args.event_type,
+                limit=args.limit,
+                json_mode=json_mode,
+            )
+
         elif args.command == "logs":
             cli.logs(
                 follow=args.follow,
                 n=args.lines,
                 issue_id=args.issue,
                 agent_id=args.agent,
-                event_type=args.event_type,
                 json_mode=json_mode,
             )
 
@@ -1718,6 +1812,9 @@ def main():
                 limit=args.limit,
                 json_mode=json_mode,
             )
+
+        elif args.command == "ui":
+            cli.ui(port=args.port, host=args.host)
 
         else:
             parser.print_help()

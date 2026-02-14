@@ -478,6 +478,34 @@ def test_cli_agents_json(temp_db, tmp_path, capsys):
     assert data["agents"] == []
 
 
+def test_cli_events(temp_db, tmp_path, capsys):
+    """Test getting events."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    # Create an issue to generate events
+    temp_db.create_issue("Event test", project=tmp_path.name)
+
+    cli.get_events(limit=5)
+
+    captured = capsys.readouterr()
+    assert "created" in captured.out
+
+
+def test_cli_events_json(temp_db, tmp_path, capsys):
+    """Test getting events with JSON output."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    temp_db.create_issue("Event test", project=tmp_path.name)
+
+    cli.get_events(limit=5, json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert "count" in data
+    assert "events" in data
+    assert data["count"] >= 1
+
+
 def test_cli_logs(temp_db, tmp_path, capsys):
     """Test getting events via logs."""
     cli = HiveCLI(temp_db, str(tmp_path))
