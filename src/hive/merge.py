@@ -14,12 +14,12 @@ from .config import Config, WORKER_PERMISSIONS
 from .db import Database
 from .git import (
     GitWorktreeError,
-    abort_rebase,
-    delete_branch,
-    merge_to_main,
-    rebase_onto_main,
-    remove_worktree,
-    run_command_in_worktree,
+    abort_rebase_async,
+    delete_branch_async,
+    merge_to_main_async,
+    rebase_onto_main_async,
+    remove_worktree_async,
+    run_command_in_worktree_async,
 )
 from .opencode import OpenCodeClient, make_model_config
 from .prompts import build_refinery_prompt, read_notes_file, read_result_file, remove_notes_file, remove_result_file
@@ -78,6 +78,18 @@ class MergeProcessor:
 
     async def initialize(self):
         """Initialize the merge processor, including eager refinery session creation."""
+        # Reset any merge entries stuck in 'running' from a previous crash.
+        # Without this, a daemon crash mid-merge leaves the entry permanently stuck.
+        try:
+            cursor = self.db.conn.execute("SELECT COUNT(*) FROM merge_queue WHERE status = 'running'")
+            stuck_count = cursor.fetchone()[0]
+            if stuck_count > 0:
+                self.db.conn.execute("UPDATE merge_queue SET status = 'queued' WHERE status = 'running'")
+                self.db.conn.commit()
+                self.db.log_system_event("stuck_merges_reset", {"count": stuck_count})
+        except Exception:
+            pass  # Non-fatal
+
         try:
             # Pre-create refinery session so it's warm when first merge arrives
             await self._ensure_refinery_session()
@@ -165,19 +177,19 @@ class MergeProcessor:
         issue_id = entry["issue_id"]
         agent_id = entry.get("agent_id")
 
-        # Step 1: Rebase onto main
-        rebase_ok = rebase_onto_main(worktree)
+        # Step 1: Rebase onto main (in executor to avoid blocking event loop)
+        rebase_ok = await rebase_onto_main_async(worktree)
         if not rebase_ok:
             self.db.log_event(issue_id, agent_id, "rebase_conflict", {"branch": branch_name})
-            abort_rebase(worktree)
+            await abort_rebase_async(worktree)
             return (False, None)
 
         self.db.log_event(issue_id, agent_id, "rebase_success", {"branch": branch_name})
 
-        # Step 2: Run tests (if configured)
+        # Step 2: Run tests (if configured, in executor to avoid blocking event loop)
         test_output = None
         if Config.TEST_COMMAND:
-            test_ok, test_output = run_command_in_worktree(worktree, Config.TEST_COMMAND)
+            test_ok, test_output = await run_command_in_worktree_async(worktree, Config.TEST_COMMAND)
             if not test_ok:
                 self.db.log_event(
                     issue_id,
@@ -189,9 +201,9 @@ class MergeProcessor:
 
             self.db.log_event(issue_id, agent_id, "tests_passed", {"command": Config.TEST_COMMAND})
 
-        # Step 3: Merge to main (ff-only)
+        # Step 3: Merge to main (ff-only, in executor to avoid blocking event loop)
         try:
-            merge_to_main(self.project_path, branch_name)
+            await merge_to_main_async(self.project_path, branch_name)
         except GitWorktreeError as e:
             self.db.log_event(
                 issue_id,
@@ -465,17 +477,17 @@ class MergeProcessor:
             if session_id:
                 await self.opencode.cleanup_session(session_id, directory=entry.get("worktree"))
 
-        # Remove worktree
+        # Remove worktree (in executor to avoid blocking event loop)
         if entry.get("worktree"):
             try:
-                remove_worktree(entry["worktree"])
+                await remove_worktree_async(entry["worktree"])
             except GitWorktreeError:
                 pass  # Best-effort cleanup
 
-        # Delete branch
+        # Delete branch (in executor to avoid blocking event loop)
         if entry.get("branch_name"):
             try:
-                delete_branch(self.project_path, entry["branch_name"], force=True)
+                await delete_branch_async(self.project_path, entry["branch_name"], force=True)
             except (GitWorktreeError, FileNotFoundError, OSError):
                 pass  # Best-effort cleanup
 

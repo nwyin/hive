@@ -169,8 +169,8 @@ async def test_mechanical_merge_rebase_conflict(merge_entry_with_worktree, temp_
 
     mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
 
-    # Patch rebase_onto_main to simulate rebase conflict
-    with patch("hive.merge.rebase_onto_main", return_value=False):
+    # Patch rebase_onto_main_async to simulate rebase conflict
+    with patch("hive.merge.rebase_onto_main_async", new_callable=AsyncMock, return_value=False):
         with patch("hive.merge.asyncio.sleep", new_callable=AsyncMock):
             with patch("hive.merge.Config") as mock_config:
                 mock_config.TEST_COMMAND = None
@@ -218,8 +218,8 @@ async def test_mechanical_merge_test_failure(merge_entry_with_worktree, temp_db,
 
     mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
 
-    # Patch run_command_in_worktree to simulate test failure and Config
-    with patch("hive.merge.run_command_in_worktree", return_value=(False, "FAILED test_foo.py")):
+    # Patch run_command_in_worktree_async to simulate test failure and Config
+    with patch("hive.merge.run_command_in_worktree_async", new_callable=AsyncMock, return_value=(False, "FAILED test_foo.py")):
         with patch("hive.merge.asyncio.sleep", new_callable=AsyncMock):
             with patch("hive.merge.Config") as mock_config:
                 mock_config.TEST_COMMAND = "pytest"

@@ -1,5 +1,6 @@
 """Git worktree management for agent sandboxes."""
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -287,3 +288,51 @@ def get_commit_hash(worktree_path: str) -> Optional[str]:
         return result.stdout.strip()
     except subprocess.CalledProcessError:
         return None
+
+
+# --- Async wrappers ---
+# These run blocking git operations in a thread executor to avoid
+# blocking the asyncio event loop. Use these from async code instead
+# of calling the sync versions directly.
+
+
+async def create_worktree_async(project_path: str, agent_name: str, base_branch: str = "main") -> str:
+    """Async wrapper for create_worktree. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, create_worktree, project_path, agent_name, base_branch)
+
+
+async def remove_worktree_async(worktree_path: str) -> bool:
+    """Async wrapper for remove_worktree. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, remove_worktree, worktree_path)
+
+
+async def rebase_onto_main_async(worktree_path: str, main_branch: str = "main") -> bool:
+    """Async wrapper for rebase_onto_main. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, rebase_onto_main, worktree_path, main_branch)
+
+
+async def abort_rebase_async(worktree_path: str):
+    """Async wrapper for abort_rebase. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, abort_rebase, worktree_path)
+
+
+async def merge_to_main_async(project_path: str, branch_name: str, main_branch: str = "main"):
+    """Async wrapper for merge_to_main. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, merge_to_main, project_path, branch_name, main_branch)
+
+
+async def run_command_in_worktree_async(worktree_path: str, cmd: str, timeout: int = 300) -> tuple:
+    """Async wrapper for run_command_in_worktree. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, run_command_in_worktree, worktree_path, cmd, timeout)
+
+
+async def delete_branch_async(project_path: str, branch_name: str, force: bool = False):
+    """Async wrapper for delete_branch. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, delete_branch, project_path, branch_name, force)

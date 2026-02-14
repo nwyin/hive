@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import Config, WORKER_PERMISSIONS
 from .db import Database
-from .git import create_worktree, get_commit_hash, remove_worktree
+from .git import create_worktree_async, get_commit_hash, remove_worktree_async
 from .merge import MergeProcessor
 from .ids import generate_id
 from .models import AgentIdentity, CompletionResult
@@ -81,6 +81,11 @@ class Orchestrator:
 
         # Running flag
         self.running = False
+
+        # Guard against double-handling: tracks agent_ids currently being
+        # processed by handle_agent_complete or handle_stalled_agent. Prevents
+        # interleaving across await points from causing duplicate processing.
+        self._handling_agents: set[str] = set()
 
         # Degraded mode state
         self._opencode_healthy = True
@@ -291,10 +296,10 @@ class Orchestrator:
                         {"reason": "stale agent, retry budget exhausted — marking failed"},
                     )
 
-            # Clean up worktree
+            # Clean up worktree (in executor to avoid blocking event loop)
             if worktree:
                 try:
-                    remove_worktree(worktree)
+                    await remove_worktree_async(worktree)
                 except Exception:
                     pass
 
@@ -476,10 +481,10 @@ class Orchestrator:
             {"reason": "issue canceled by user, session aborted"},
         )
 
-        # Clean up worktree
+        # Clean up worktree (in executor to avoid blocking event loop)
         if agent.worktree:
             try:
-                remove_worktree(agent.worktree)
+                await remove_worktree_async(agent.worktree)
             except Exception:
                 pass
 
@@ -595,9 +600,9 @@ class Orchestrator:
             metadata={"issue_id": issue_id},
         )
 
-        # Create git worktree
+        # Create git worktree (in executor to avoid blocking event loop)
         try:
-            worktree_path = create_worktree(str(self.project_path), agent_name)
+            worktree_path = await create_worktree_async(str(self.project_path), agent_name)
         except Exception as e:
             self.db.log_event(
                 issue_id,
@@ -605,13 +610,16 @@ class Orchestrator:
                 "worktree_error",
                 {"error": str(e)},
             )
+            # Mark the orphaned agent as failed so it doesn't linger in 'idle'
+            self.db.conn.execute("UPDATE agents SET status = 'failed' WHERE id = ?", (agent_id,))
+            self.db.conn.commit()
             return
 
         # Atomic claim
         claimed = self.db.claim_issue(issue_id, agent_id)
         if not claimed:
             # Someone else claimed it first, clean up
-            remove_worktree(worktree_path)
+            await remove_worktree_async(worktree_path)
             return
 
         # Create OpenCode session
@@ -708,7 +716,7 @@ class Orchestrator:
                 {"error": str(e)},
             )
             # Clean up
-            remove_worktree(worktree_path)
+            await remove_worktree_async(worktree_path)
             self.db.update_issue_status(issue_id, "failed")
 
     def _gather_notes_for_worker(self, issue_id: str) -> Optional[List[Dict[str, Any]]]:
@@ -775,13 +783,17 @@ class Orchestrator:
         Args:
             agent: Agent identity
         """
+        # Snapshot the session_id we're monitoring. The agent object may be
+        # mutated by cycle_agent_to_next_step during molecule processing,
+        # and we must clean up OUR session's event, not the new one.
+        my_session_id = agent.session_id
         try:
-            event = self.session_status_events.get(agent.session_id)
+            event = self.session_status_events.get(my_session_id)
             if not event:
                 return
 
             # Record initial activity
-            self._session_last_activity[agent.session_id] = datetime.now()
+            self._session_last_activity[my_session_id] = datetime.now()
 
             # Poll loop: check for completion or inactivity
             check_interval = min(30, Config.LEASE_DURATION // 4)
@@ -807,7 +819,7 @@ class Orchestrator:
                         break
 
                     # Check if there's been recent activity
-                    last_activity = self._session_last_activity.get(agent.session_id, datetime.now())
+                    last_activity = self._session_last_activity.get(my_session_id, datetime.now())
                     elapsed = (datetime.now() - last_activity).total_seconds()
 
                     if elapsed > Config.LEASE_DURATION:
@@ -830,10 +842,11 @@ class Orchestrator:
                 {"error": str(e)},
             )
         finally:
-            # Clean up
-            if agent.session_id in self.session_status_events:
-                del self.session_status_events[agent.session_id]
-            self._session_last_activity.pop(agent.session_id, None)
+            # Clean up using the snapshotted session_id, not agent.session_id
+            # which may have been mutated by cycle_agent_to_next_step.
+            if my_session_id in self.session_status_events:
+                del self.session_status_events[my_session_id]
+            self._session_last_activity.pop(my_session_id, None)
 
     async def _cleanup_session(self, agent: AgentIdentity):
         """Abort and delete an agent's opencode session.
@@ -862,123 +875,134 @@ class Orchestrator:
             logger.debug(f"Skipping completion handling for {agent.name} — already removed from active agents")
             return
 
-        # Always clean up the result file if it exists
-        remove_result_file(agent.worktree)
-
-        # Harvest notes (best-effort) — do this BEFORE the canceled check
-        # so even canceled/failed workers' discoveries are saved.
-        try:
-            notes_data = read_notes_file(agent.worktree)
-            if notes_data:
-                for note in notes_data:
-                    self.db.add_note(
-                        issue_id=agent.issue_id,
-                        agent_id=agent.agent_id,
-                        content=note.get("content", ""),
-                        category=note.get("category", "discovery"),
-                    )
-                self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
-                logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
-        except Exception as e:
-            logger.warning(f"Failed to harvest notes from {agent.name}: {e}")
-        finally:
-            remove_notes_file(agent.worktree)
-
-        # Check if issue was canceled/finalized while the agent was working.
-        # If so, don't overwrite the status — just clean up the session.
-        current_issue = self.db.get_issue(agent.issue_id)
-        if current_issue and current_issue.get("status") in ("canceled", "finalized"):
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "agent_complete_skipped",
-                {"reason": f"issue already {current_issue['status']}, cleaning up session"},
-            )
-            await self._cleanup_session(agent)
-            if agent.agent_id in self.active_agents:
-                self._unregister_agent(agent.agent_id)
+        # Guard: skip if another handler is already processing this agent.
+        # This prevents double-handling when SSE error handler and monitor_agent
+        # interleave across await points.
+        if agent.agent_id in self._handling_agents:
+            logger.debug(f"Skipping completion handling for {agent.name} — already being handled")
             return
+        self._handling_agents.add(agent.agent_id)
 
-        # Get messages from session
         try:
-            messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
+            # Always clean up the result file if it exists
+            remove_result_file(agent.worktree)
 
-            # Extract and log token usage from messages
-            self._log_token_usage(agent, messages)
+            # Harvest notes (best-effort) — do this BEFORE the canceled check
+            # so even canceled/failed workers' discoveries are saved.
+            try:
+                notes_data = read_notes_file(agent.worktree)
+                if notes_data:
+                    for note in notes_data:
+                        self.db.add_note(
+                            issue_id=agent.issue_id,
+                            agent_id=agent.agent_id,
+                            content=note.get("content", ""),
+                            category=note.get("category", "discovery"),
+                        )
+                    self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
+                    logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
+            except Exception as e:
+                logger.warning(f"Failed to harvest notes from {agent.name}: {e}")
+            finally:
+                remove_notes_file(agent.worktree)
 
-            # Assess completion — file_result takes priority over message parsing
-            result = assess_completion(messages, file_result=file_result)
-
-            if result.success:
-                # Mark issue as done
-                self.db.update_issue_status(agent.issue_id, "done")
-
-                # Get commit hash if available
-                commit_hash = result.git_commit or get_commit_hash(agent.worktree)
-
-                # Enqueue to merge queue
-                self.db.conn.execute(
-                    """
-                    INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        agent.issue_id,
-                        agent.agent_id,
-                        self.project_name,
-                        agent.worktree,
-                        f"agent/{agent.name}",
-                    ),
-                )
-                self.db.conn.commit()
-
+            # Check if issue was canceled/finalized while the agent was working.
+            # If so, don't overwrite the status — just clean up the session.
+            current_issue = self.db.get_issue(agent.issue_id)
+            if current_issue and current_issue.get("status") in ("canceled", "finalized"):
                 self.db.log_event(
                     agent.issue_id,
                     agent.agent_id,
-                    "completed",
-                    {
-                        "summary": result.summary,
-                        "commit": commit_hash,
-                        "artifacts": result.artifacts,
-                    },
+                    "agent_complete_skipped",
+                    {"reason": f"issue already {current_issue['status']}, cleaning up session"},
                 )
-
-                # Check if this was a step in a molecule
-                issue = self.db.get_issue(agent.issue_id)
-                if issue and issue.get("parent_id"):
-                    # This is a molecule step - check for next step
-                    next_step = self.db.get_next_ready_step(issue["parent_id"])
-
-                    if next_step:
-                        # Session-cycle to next step (abort old session inside)
-                        await self.cycle_agent_to_next_step(agent, next_step)
-                        return  # Don't remove from active agents yet
-
-                # No more steps or not a molecule - clean up session and release agent
                 await self._cleanup_session(agent)
                 if agent.agent_id in self.active_agents:
                     self._unregister_agent(agent.agent_id)
+                return
 
-            else:
-                # Handle failure with retry escalation chain
-                await self._handle_agent_failure(agent, result)
+            # Get messages from session
+            try:
+                messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
 
+                # Extract and log token usage from messages
+                self._log_token_usage(agent, messages)
+
+                # Assess completion — file_result takes priority over message parsing
+                result = assess_completion(messages, file_result=file_result)
+
+                if result.success:
+                    # Mark issue as done
+                    self.db.update_issue_status(agent.issue_id, "done")
+
+                    # Get commit hash if available
+                    commit_hash = result.git_commit or get_commit_hash(agent.worktree)
+
+                    # Enqueue to merge queue
+                    self.db.conn.execute(
+                        """
+                        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            agent.issue_id,
+                            agent.agent_id,
+                            self.project_name,
+                            agent.worktree,
+                            f"agent/{agent.name}",
+                        ),
+                    )
+                    self.db.conn.commit()
+
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "completed",
+                        {
+                            "summary": result.summary,
+                            "commit": commit_hash,
+                            "artifacts": result.artifacts,
+                        },
+                    )
+
+                    # Check if this was a step in a molecule
+                    issue = self.db.get_issue(agent.issue_id)
+                    if issue and issue.get("parent_id"):
+                        # This is a molecule step - check for next step
+                        next_step = self.db.get_next_ready_step(issue["parent_id"])
+
+                        if next_step:
+                            # Session-cycle to next step (abort old session inside)
+                            await self.cycle_agent_to_next_step(agent, next_step)
+                            return  # Don't remove from active agents yet
+
+                    # No more steps or not a molecule - clean up session and release agent
+                    await self._cleanup_session(agent)
+                    if agent.agent_id in self.active_agents:
+                        self._unregister_agent(agent.agent_id)
+
+                else:
+                    # Handle failure with retry escalation chain
+                    await self._handle_agent_failure(agent, result)
+
+                    # Clean up session and release agent
+                    await self._cleanup_session(agent)
+                    if agent.agent_id in self.active_agents:
+                        self._unregister_agent(agent.agent_id)
+
+            except Exception as e:
+                self.db.log_event(
+                    agent.issue_id,
+                    agent.agent_id,
+                    "completion_error",
+                    {"error": str(e)},
+                )
                 # Clean up session and release agent
                 await self._cleanup_session(agent)
                 if agent.agent_id in self.active_agents:
                     self._unregister_agent(agent.agent_id)
-
-        except Exception as e:
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "completion_error",
-                {"error": str(e)},
-            )
-            # Clean up session and release agent
-            await self._cleanup_session(agent)
-            if agent.agent_id in self.active_agents:
-                self._unregister_agent(agent.agent_id)
+        finally:
+            self._handling_agents.discard(agent.agent_id)
 
     async def _handle_agent_failure(self, agent: AgentIdentity, result):
         """
@@ -1188,45 +1212,54 @@ class Orchestrator:
             logger.debug(f"Skipping stall handling for {agent.name} — already removed from active agents")
             return
 
-        self.db.log_event(
-            agent.issue_id,
-            agent.agent_id,
-            "stalled",
-            {"lease_expired": True},
-        )
+        # Guard: skip if another handler is already processing this agent
+        if agent.agent_id in self._handling_agents:
+            logger.debug(f"Skipping stall handling for {agent.name} — already being handled")
+            return
+        self._handling_agents.add(agent.agent_id)
 
-        # Abort and delete the session
-        await self._cleanup_session(agent)
-
-        # Mark agent as failed so it's not picked up again
-        self.db.conn.execute(
-            """
-            UPDATE agents
-            SET status = 'failed',
-                current_issue = NULL,
-                session_id = NULL
-            WHERE id = ?
-            """,
-            (agent.agent_id,),
-        )
-        self.db.conn.commit()
-
-        # Route through escalation chain (retry → agent_switch → escalate)
-        # instead of unconditionally resetting to open, which caused an
-        # infinite spawn loop for issues whose workers always stall.
-        current_issue = self.db.get_issue(agent.issue_id)
-        if current_issue and current_issue.get("status") == "in_progress":
-            stall_result = CompletionResult(
-                success=False,
-                reason="Agent stalled (lease expired, no activity)",
-                summary="Worker became unresponsive",
+        try:
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "stalled",
+                {"lease_expired": True},
             )
-            await self._handle_agent_failure(agent, stall_result)
 
-        # Clean up worktree
+            # Abort and delete the session
+            await self._cleanup_session(agent)
+
+            # Mark agent as failed so it's not picked up again
+            self.db.conn.execute(
+                """
+                UPDATE agents
+                SET status = 'failed',
+                    current_issue = NULL,
+                    session_id = NULL
+                WHERE id = ?
+                """,
+                (agent.agent_id,),
+            )
+            self.db.conn.commit()
+
+            # Route through escalation chain (retry → agent_switch → escalate)
+            # instead of unconditionally resetting to open, which caused an
+            # infinite spawn loop for issues whose workers always stall.
+            current_issue = self.db.get_issue(agent.issue_id)
+            if current_issue and current_issue.get("status") == "in_progress":
+                stall_result = CompletionResult(
+                    success=False,
+                    reason="Agent stalled (lease expired, no activity)",
+                    summary="Worker became unresponsive",
+                )
+                await self._handle_agent_failure(agent, stall_result)
+        finally:
+            self._handling_agents.discard(agent.agent_id)
+
+        # Clean up worktree (in executor to avoid blocking event loop)
         if agent.worktree:
             try:
-                remove_worktree(agent.worktree)
+                await remove_worktree_async(agent.worktree)
             except Exception:
                 pass  # Best-effort cleanup
 

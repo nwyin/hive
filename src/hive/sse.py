@@ -67,6 +67,8 @@ class SSEClient:
         Connect to SSE stream and start consuming events.
 
         This method will run until stop() is called or the connection fails.
+        Note: self.running must be set by the caller (connect_with_reconnect
+        or direct usage). We do NOT reset it here to avoid defeating stop().
         """
         if self.global_events:
             url = f"{self.base_url}/global/event"
@@ -82,7 +84,6 @@ class SSEClient:
             encoded = base64.b64encode(credentials.encode()).decode()
             headers["Authorization"] = f"Basic {encoded}"
 
-        self.running = True
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)
         self.session = aiohttp.ClientSession(timeout=timeout)
 
@@ -149,6 +150,7 @@ class SSEClient:
             max_retries: Maximum retry attempts (-1 for infinite)
             retry_delay: Seconds to wait between retries
         """
+        self.running = True  # Set once here, not in connect()
         retries = 0
         while self.running and (max_retries < 0 or retries < max_retries):
             try:
