@@ -8,7 +8,7 @@ _Living document tracking implementation status, delivered features, post-mortem
 
 ## Implementation Status
 
-### Completed (Phases 1-7)
+### Completed (Phases 1-8)
 
 - **Phase 1**: Database foundation, OpenCode client, SSE consumer, single worker loop
 - **Phase 2**: Multi-worker pool, Queen Bee TUI, session cycling, permission unblocker, daemon mode
@@ -16,9 +16,10 @@ _Living document tracking implementation status, delivered features, post-mortem
 - **Phase 4**: Merge queue processor with two-tier approach (mechanical + Refinery LLM)
 - **Phase 5**: Session cleanup, triple completion detection, stale agent reconciliation, prompt templates, per-issue model config, CLI enhancements, retry escalation chain (3-tier: retry → agent switch → escalate), degraded mode with exponential backoff recovery, context cycling for Refinery sessions
 - **Phase 6**: Structured logging (rotating file handler, all print() → logger.\*), capability-based routing (project/type/keyword scoring), cost tracking (`hive costs` command with token aggregation), `hive watch <issue_id>` for live worker monitoring
-- **Phase 7** (partial): Long-lived refinery session, dependency race fix, inter-agent knowledge transfer (Notes system)
+- **Phase 7**: Long-lived refinery session, dependency race fix, inter-agent knowledge transfer (Notes system), bidirectional reconciliation on startup, O(1) reverse lookup maps for session/issue routing, local counter tracking for refinery sessions
+- **Phase 8** (complexity cleanup): Full audit of 11 unnecessary complexity items from `docs/COMPLEXITY.md` — all resolved. Removed ToolExecutor indirection (544 lines deleted), simplified completion detection (removed triple detection and heuristic fallbacks in favor of file-based + SSE), deduplicated session cleanup pattern, removed agent capability scoring, fixed error detection (`'5' in error_msg` bug), removed token estimation fallback, removed duplicate CLI entry points, DRY'd repetitive query patterns
 
-**Status**: Fully functional multi-agent orchestrator with 167+ passing unit tests across 15 modules + 3 prompt templates
+**Status**: Fully functional multi-agent orchestrator with 231 passing unit tests across 15 modules + 3 prompt templates
 
 See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-by-phase roadmap checklist.
 
@@ -79,20 +80,27 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 ### Human Interface (CLI)
 
-- 20+ commands: create, list, ready, show, update, cancel, finalize, retry, escalate, molecule, dep, agents, agent, events, close, logs, status, merges, costs, watch, note, notes, start, daemon, queen
+- 25+ commands: create, list, ready, show, update, cancel, finalize, retry, escalate, molecule, dep, agents, agent, events, logs, status, stats, merges, costs, watch, note, notes, daemon (start/stop/restart/logs), queen, init, ui
+- All commands under a single `HiveCLI` class with direct DB calls (no ToolExecutor indirection)
+- `hive --json` flag on all commands for programmatic/machine-readable output
 - `hive --json logs -f` for live event tailing (JSONL in `--json` mode)
 - `hive list --sort --reverse --type --assignee --limit` for flexible filtering
 - `hive create --model` / `hive update --model` for per-issue model config
+- `hive create --tags` / `hive update --tags` for issue tagging
 - `hive merges` for merge queue visibility
 - `hive status` with merge queue stats
 - `hive watch <issue-id>`: Live SSE streaming from worker sessions
+- `hive ui`: Datasette integration for browsing the DB in a web UI
 
 ### Resilience
 
 - Retry escalation chain: 3-tier (retry same agent MAX_RETRIES=2 → switch agent MAX_AGENT_SWITCHES=2 → escalate to human)
+- Stall detection routes through escalation chain (prevents infinite spawn loops — see post-mortem below)
 - Degraded mode: `_opencode_healthy` flag, health check with exponential backoff (5s→60s cap)
 - Context cycling for Refinery: token threshold (100K) or message count (>20)
 - Long-lived refinery session with eager creation, health checks, auto-restart, stale-result fence
+- Bidirectional reconciliation on daemon restart: cross-references DB agents with live OpenCode sessions, cleans up ghost agents and orphan sessions
+- Git worktree retry logic: exponential backoff on transient `invalid reference` and `index.lock` errors
 
 ### Operational Maturity
 
@@ -103,25 +111,28 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 ### Quality
 
-- 167+ unit tests (100% passing)
+- 231 unit tests (100% passing, 13 deselected integration tests)
 - 15 modules + 3 prompt templates, ~6,500 lines production code
-- 12 test files, ~4,500 lines test code
+- 13 test files, ~5,300 lines test code
+- Lint-clean with `ruff` (line-length=144)
 
 ---
 
 ## Open Questions
 
-1. **Completion verification depth**: The structured completion signal (Section 9.5 of design doc) and the Refinery's test gate catch many issues, but not semantic errors. Options: secondary review agent, git diff size heuristics, mandatory test coverage.
+1. **Scale ceiling**: SQLite WAL mode is good for ~30 concurrent readers. If we need 100+ agents, when and how do we migrate to Postgres? The thin-server architecture makes this swap straightforward.
 
-2. **Scale ceiling**: SQLite WAL mode is good for ~30 concurrent readers. If we need 100+ agents, when and how do we migrate to Postgres? The thin-server architecture makes this swap straightforward.
+2. **Cost management**: With Queen + Refinery + N workers running concurrently, token costs can spike. Budget caps and graceful degradation when approaching limits are not yet implemented.
 
-3. **Cost management**: With Queen + Refinery + N workers running concurrently, token costs can spike. Budget caps and graceful degradation when approaching limits are not yet implemented.
+3. **Multiple OpenCode servers**: A single OpenCode server might bottleneck at many concurrent sessions. Should the orchestrator manage multiple server instances, or does OpenCode scale sufficiently within a single process?
 
-4. **Multiple OpenCode servers**: A single OpenCode server might bottleneck at many concurrent sessions. Should the orchestrator manage multiple server instances, or does OpenCode scale sufficiently within a single process?
+4. **OpenCode is an external TypeScript dependency.** Hive requires a running OpenCode server (`opencode serve`) which is a TypeScript binary from the `anomalyco/opencode` repo — not a Python package. The Python SDK (`opencode-ai` on PyPI) is client-only. This means hive cannot be fully self-contained as a `uv tool install`. To make hive truly standalone, we'd need to reimplement OpenCode's headless LLM session management in pure Python: session lifecycle (create/abort/delete), multi-session multiplexing, SSE event streaming, permission handling, and the Anthropic API integration. Until then, users must install the `opencode` binary separately and run `opencode serve` (or have `hive start` auto-launch it as a managed subprocess).
 
-5. **OpenCode is an external TypeScript dependency.** Hive requires a running OpenCode server (`opencode serve`) which is a TypeScript binary from the `anomalyco/opencode` repo — not a Python package. The Python SDK (`opencode-ai` on PyPI) is client-only. This means hive cannot be fully self-contained as a `uv tool install`. To make hive truly standalone, we'd need to reimplement OpenCode's headless LLM session management in pure Python: session lifecycle (create/abort/delete), multi-session multiplexing, SSE event streaming, permission handling, and the Anthropic API integration. Until then, users must install the `opencode` binary separately and run `opencode serve` (or have `hive start` auto-launch it as a managed subprocess).
+5. **Git worktree contention**: Concurrent `git worktree add` commands occasionally fail with `fatal: invalid reference: main`. Current workaround is retry-with-backoff, but the root cause is not fully understood (possibly packed-refs rewriting, loose ref gc, or worktree metadata races). See TODO in `git.py`.
 
 ### Resolved Questions
+
+- **Completion verification depth**: Simplified in Phase 8. Removed triple detection and heuristic fallbacks. Now uses file-based `.hive-result.jsonl` (deterministic) + SSE `session.status → idle` (real-time) + session polling fallback. The Refinery's test gate catches integration issues.
 
 - **Agent-to-agent knowledge transfer**: Notes system implemented. Workers write `.hive-notes.jsonl`, orchestrator harvests on completion, injects relevant notes into future worker prompts. Queen can add project-wide notes via `hive note`.
 
@@ -130,6 +141,8 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 - **Queen scope**: The Queen is the user-facing interface. Its scope is defined by the conversation, not by the orchestrator. Context managed by OpenCode's built-in compaction and fresh sessions (state is in the DB).
 
 - **Refinery worktree management**: Refinery session is scoped to the main project directory but operates on worker worktrees by `cd`-ing into them. No dedicated worktree needed.
+
+- **Infinite spawn loops**: Solved via universal retry budget enforcement. All code paths that transition issues back to `open` now check the retry budget (INV-1). See post-mortem below.
 
 ---
 
@@ -197,3 +210,39 @@ WHERE (status = 'open' AND assignee IS NOT NULL)
 ### Lessons
 
 This bug reveals a class of error in orchestration systems: **multiple code paths that transition the same state machine, with different subsets of the transition logic.** The escalation logic was implemented correctly in one place but not applied uniformly across stall, reconciliation, and shutdown paths.
+
+---
+
+## Phase 8: Complexity Cleanup (2026-02-14)
+
+A full audit of the codebase (documented in `docs/COMPLEXITY.md`) identified 11 items of unnecessary complexity. All were resolved in a single session:
+
+| # | Item | Resolution |
+|---|------|-----------|
+| 1 | **ToolExecutor indirection** — `tools.py` (544 lines) was a needless abstraction layer between CLI and DB | Deleted `tools.py`. Inlined all operations into `HiveCLI` class with direct DB calls. CLI went from dispatch-through-tools to direct execution. |
+| 2 | **Session cleanup deduplication** — 4 identical abort+delete patterns across orchestrator, merge, shutdown | Extracted `opencode.cleanup_session()` method, replaced all inline patterns |
+| 3 | **Agent capability scoring** — `get_agent_capability_scores()` in db.py did complex SQL joins for routing that was never meaningfully used | Removed entirely. Worker routing is now simple: create new agent per issue. |
+| 4/5 | **Completion detection** — Triple detection (SSE + file + polling) with complex heuristic fallbacks | Simplified to file-based `.hive-result.jsonl` + SSE idle detection + polling fallback. Removed heuristic message parsing. |
+| 6 | **Permission constants** — Hardcoded permission lists duplicated across files | Consolidated into `config.py` as `WORKER_PERMISSIONS` |
+| 7 | **Error detection bug** — `'5' in error_msg` matched any string containing '5', not just '5xx errors' | Fixed to check `error_msg.startswith('5')` on the status code |
+| 8 | **Token estimation fallback** — Estimated tokens from `len(text) // 4` when metadata unavailable | Removed. If no metadata, no usage is logged. |
+| 9 | **Duplicate CLI entry points** — `start`/`stop` existed as both top-level and under `daemon` subcommand | Removed top-level duplicates. All daemon ops under `hive daemon start/stop/restart/logs` |
+| 10 | **Repetitive query patterns** — `get_events_since` and `get_recent_events` had near-identical SQL | DRY'd into shared `_query_events` helper with conditions pattern |
+| 11 | **Worktree removal** — Complex path validation and error handling | Simplified to single `git worktree remove --force` with best-effort cleanup |
+
+### Additional fixes during cleanup
+
+- **Schema migration bug**: `CREATE INDEX ... ON issues(tags)` was in `SCHEMA` SQL, but `tags` column is added via migration. Moved index creation into `_migrate_if_needed()`.
+- **Daemon start command**: `daemon.py` spawned `hive.cli ... start --foreground` but the CLI refactor moved `start` under `daemon start`. Fixed the Popen command.
+- **Git worktree contention**: Added retry logic (4 attempts, 1s exponential backoff) for transient `invalid reference: main` errors during concurrent worktree creation.
+- **Stale branch cleanup**: Removed 336 accumulated `agent/*` branches from previous sessions.
+
+### Metrics
+
+| Metric | Before | After |
+|--------|--------|-------|
+| `tools.py` | 544 lines | Deleted |
+| `cli.py` | ~1200 lines (+ tools.py dispatch) | ~1820 lines (self-contained) |
+| Test count | 167 passing | 231 passing |
+| Test files | 12 | 13 |
+| Production code | ~6,500 lines | ~6,500 lines (net neutral: deleted tools.py, expanded cli.py) |

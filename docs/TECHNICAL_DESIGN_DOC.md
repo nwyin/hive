@@ -188,7 +188,7 @@ With a central DB and single orchestrator process:
 
 ## 5. SQLite Schema
 
-Six core tables. Everything else is derived.
+Seven core tables (including `notes`). Everything else is derived.
 
 **Key principle: Events are source of truth, status columns are cache.** Operational transitions are recorded as immutable events in the `events` table. The `status` column on `issues` and `agents` is a denormalized cache for fast queries. On recovery, you can always rebuild current state by replaying the event log. This means the `status` columns are optimistic — if they drift (e.g., crash during a transition), the event log is authoritative.
 
@@ -308,15 +308,20 @@ CREATE INDEX idx_mq_status ON merge_queue(status);
 CREATE INDEX idx_mq_project ON merge_queue(project);
 
 ----------------------------------------------------------------------
--- LABELS: denormalized tags for fast filtering
+-- NOTES: inter-agent knowledge transfer (see Section 16)
 ----------------------------------------------------------------------
-CREATE TABLE labels (
-    entity_type TEXT NOT NULL,                -- issue | agent | engine
-    entity_id   TEXT NOT NULL,
-    label       TEXT NOT NULL,                -- e.g. "failed-by:agent-toast", "mode:degraded", "lang:go"
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (entity_type, entity_id, label)
+CREATE TABLE IF NOT EXISTS notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    TEXT REFERENCES issues(id),
+    agent_id    TEXT REFERENCES agents(id),
+    category    TEXT NOT NULL DEFAULT 'discovery',  -- discovery|gotcha|dependency|pattern|context
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_notes_issue ON notes(issue_id);
+CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category);
+CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
 ```
 
 ### ID Generation
@@ -1633,23 +1638,25 @@ GROUP BY i.type, i.project;
 ```
 
 ```sql
--- Capability-based routing: who's best at Go work?
+-- Capability-based routing: who's best at tasks tagged 'go'?
 SELECT
     e.agent_id,
     COUNT(*) as go_tasks_completed,
     AVG(julianday(e.created_at) - julianday(e_claim.created_at)) * 24 as avg_hours
 FROM events e
 JOIN issues i ON e.issue_id = i.id
-JOIN labels l ON l.entity_id = i.id AND l.label = 'go'
 LEFT JOIN events e_claim ON e_claim.issue_id = i.id
     AND e_claim.agent_id = e.agent_id
     AND e_claim.event_type = 'claimed'
 WHERE e.event_type = 'done'
+  AND i.tags LIKE '%go%'
 GROUP BY e.agent_id
 ORDER BY go_tasks_completed DESC, avg_hours ASC;
 ```
 
 No special infrastructure. The CV is an emergent property of the event log.
+
+> **Implementation note**: The original design included a `labels` table for tagging entities, but this was never implemented. Instead, the `issues` table has a `tags` TEXT column (comma-separated) added via migration, and capability-based routing was simplified to direct SQL joins on events+issues. The `labels` abstraction added indirection without clear benefit.
 
 ---
 
@@ -1807,3 +1814,13 @@ The Hive notes system takes a simpler approach:
 | Complexity | High (routing, inbox, ACK) | Low (write file, read DB) |
 
 The notes system is sufficient for the current use case: sharing discoveries and gotchas across sequential workers on related issues. If real-time inter-agent messaging becomes needed (e.g., two workers coordinating on a shared resource), a Gas Town-style channel system can be layered on top without replacing the notes infrastructure.
+
+### Design Decisions
+
+**Why harvest before the canceled check?** A worker that gets canceled externally may still have written useful notes about what it discovered before cancellation. By harvesting first, we capture all knowledge regardless of the issue's terminal state.
+
+**Why a shared `_gather_notes_for_worker` helper?** Both `spawn_worker` and `cycle_agent_to_next_step` need the same logic: molecule notes + project notes, deduped. A single helper prevents divergence and makes the injection logic easy to evolve.
+
+**Why no note TTL/expiration?** Notes could accumulate over time, but the `limit` parameter on queries already prevents unbounded growth in prompt injection. Cleanup can be added later if the table gets large.
+
+**Why no content-based deduplication?** ID-based dedup (when combining molecule + project notes) is sufficient. Content-based dedup adds complexity for minimal gain.
