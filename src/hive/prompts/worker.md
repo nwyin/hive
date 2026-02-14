@@ -54,6 +54,15 @@ you commit and write the completion signal IMMEDIATELY. Do NOT:
 - If your worktree lacks dependencies, install them here
 - Verify with `pwd` if uncertain
 
+### The Invariant Check
+Before writing ANY code, spend a moment identifying invariants:
+- What preconditions does this code assume?
+- What postconditions must it guarantee?
+- What state must remain consistent across this change?
+Write these as assertions in the code where appropriate, AND as test cases.
+If you can't name at least one invariant, you don't understand the task yet —
+re-read the description.
+
 ### Escalate and Move On
 If you are blocked for more than 2-3 attempts at the same problem, STOP.
 The system is async — no human is going to unblock you interactively.
@@ -61,6 +70,34 @@ The system is async — no human is going to unblock you interactively.
 2. Include what you tried and what failed
 3. Write the completion signal with status "blocked"
 4. Do NOT spin. Do NOT wait for human input. Escalate and stop.
+
+## TESTING CONTRACT
+
+You are not done when the code works. You are done when the code is TESTED.
+
+### The Testing Discipline
+1. **Read existing tests first** — understand the test patterns, fixtures, and conventions
+   before writing your own. Match the style.
+2. **Write tests for every behavioral change** — new function? Test it. Bug fix? Write a
+   regression test that fails without your fix. Refactor? Existing tests must pass unchanged.
+3. **Think in invariants** — before writing code, identify properties that must ALWAYS hold:
+   - What should never be None/null that wasn't before?
+   - What ordering/uniqueness/bounds must be maintained?
+   - What error conditions must be handled and how?
+   - What side effects must (or must not) occur?
+4. **Test the boundaries** — don't just test the happy path:
+   - Empty inputs, None values, zero-length collections
+   - Maximum/minimum values for numeric inputs
+   - Concurrent access if applicable
+   - Error/exception paths
+5. **Run tests and they must pass** — `tests_run` in your completion signal must be `true`
+   for any issue that touches code. If tests fail and you cannot fix them, signal `blocked`.
+
+### What "tested" means by issue type
+- **feature**: New test file or test functions covering the happy path + at least 2 edge cases
+- **bugfix**: Regression test that reproduces the original bug + confirms the fix
+- **refactor**: All existing tests pass with zero modifications (unless API changed, which should be in the spec)
+- **cleanup/docs/config**: Existing tests pass (no new tests required)
 
 ## INSTRUCTIONS
 
@@ -129,14 +166,16 @@ last thing you do.
 The file must contain a single JSON line:
 
 ```json
-{"status": "success", "summary": "one-line summary", "files_changed": ["src/foo.py"], "tests_run": true, "blockers": [], "artifacts": [{"type": "git_commit", "value": "abc1234"}]}
+{"status": "success", "summary": "one-line summary", "files_changed": ["src/foo.py"], "tests_added": ["tests/test_foo.py::test_retry_on_429", "tests/test_foo.py::test_no_retry_on_400"], "tests_run": true, "test_command": "python -m pytest tests/test_foo.py -v", "blockers": [], "artifacts": [{"type": "git_commit", "value": "abc1234"}]}
 ```
 
 Field details:
 - **status**: "success", "failure", or "blocked"
 - **summary**: A concise one-line summary of what was done
 - **files_changed**: Array of file paths modified (relative to worktree root)
+- **tests_added**: Array of test identifiers added or modified. Empty array only for docs/config/cleanup issues.
 - **tests_run**: Boolean — whether you ran tests
+- **test_command**: The exact command used to run tests, so the refinery can re-run it
 - **blockers**: Array of strings describing blockers (empty if none)
 - **artifacts**: Array of objects like `{"type": "git_commit", "value": "<sha>"}`
 

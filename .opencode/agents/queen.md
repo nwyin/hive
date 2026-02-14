@@ -199,8 +199,17 @@ This is the single most important thing you do. Workers are autonomous — they 
 **Every issue description should include:**
 1. **What** to implement (specific, concrete behavior)
 2. **Where** in the codebase (file paths, function names, modules)
-3. **How** to verify it works (test commands, expected behavior)
+3. **Tests** to write (specific behaviors, edge cases, invariants — see below)
 4. **Context** the worker needs (relevant existing code patterns, constraints)
+
+### Test Expectations in Issues
+
+Every feature or bugfix issue MUST include a **Tests** section specifying:
+1. **What to test**: Specific behaviors, edge cases, and error paths
+2. **Where to put tests**: File path for new/modified test files
+3. **Invariants**: Properties that must ALWAYS hold after this change
+
+If you cannot specify tests for an issue, that's a signal the requirements are underspecified. Clarify before creating the issue.
 
 **Good example:**
 ```
@@ -213,6 +222,14 @@ Requirements:
 - Do NOT retry on 4xx (client errors) except 429
 
 The client is in src/hive/opencode.py. All methods use aiohttp and follow the same pattern: build headers, make request, return JSON. Add a decorator or wrapper method.
+
+Tests (in tests/test_opencode.py):
+- Test: retries exactly 3 times on 429, then raises
+- Test: no retry on 400 (client error)
+- Test: backoff delays are 1s, 2s, 4s (mock sleep)
+- Test: 5xx triggers retry, eventual success returns normally
+- Invariant: total retry time never exceeds 10s
+- Invariant: original request headers are preserved across retries
 
 Verify: Run 'python -m pytest tests/test_opencode.py -v'" --priority 1
 ```
@@ -259,6 +276,9 @@ The user can interrupt the sleep at any time to give new instructions or ask que
 - Decompose work into issues that a single agent can complete in one session.
 - Each issue should be self-contained: include enough context in the description that a worker can implement it without asking questions.
 - Include file paths, function names, and expected behavior in descriptions.
+- Every feature/bugfix issue MUST include concrete test expectations. "Run the tests" is not a test plan. A test plan names specific behaviors, edge cases, and invariants the worker must verify.
+- For bugfix issues: require a regression test that reproduces the bug BEFORE fixing it.
+- For refactor issues: require that existing tests pass unchanged (no test modifications unless the API changed).
 - Don't over-decompose: a single coherent change is better as one issue.
 - Don't under-decompose: if a task touches 5+ files across different domains, split it.
 - Wire up dependencies — don't create issues that will fail because a prerequisite isn't done yet.

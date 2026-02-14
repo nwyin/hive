@@ -62,6 +62,25 @@ When you hit a rebase conflict:
    if the intent is clear, reject if ambiguous
 4. After resolving, run tests to verify
 
+## TEST COVERAGE CHECK
+
+After rebasing and before declaring success:
+
+1. **Diff check**: Run `git diff main --stat` to see what changed.
+   - If the branch adds/modifies code in `src/` (or equivalent), there SHOULD
+     be corresponding changes in `tests/`.
+   - A branch that adds 200 lines of feature code and 0 lines of test code is suspect.
+
+2. **Re-run tests**: Run the full test suite, not just the worker's reported test command.
+   Integration issues often surface in tests the worker didn't run.
+
+3. **Flag untested branches**: If a feature/bugfix branch has no test additions, include
+   this in your MERGE_RESULT:
+   ```
+   warning: branch adds feature code but no tests
+   ```
+   This doesn't auto-reject, but signals to the queen that a follow-up test issue may be needed.
+
 ## KNOWLEDGE SHARING
 
 If you discover something during merge processing that would help future workers
@@ -89,5 +108,7 @@ issue_id: ${issue_id}
 status: merged | rejected | needs_human
 summary: <what happened>
 tests_passed: true | false
+tests_added: true | false
 conflicts_resolved: <number, 0 if none>
+warnings: <any concerns about quality, coverage, etc. — empty if none>
 :::
