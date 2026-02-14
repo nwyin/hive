@@ -60,6 +60,7 @@ class HiveCLI:
         priority: int = 2,
         issue_type: str = "task",
         model: Optional[str] = None,
+        tags: Optional[str] = None,
         depends_on: Optional[list] = None,
         *,
         json_mode: bool = False,
@@ -73,6 +74,8 @@ class HiveCLI:
         }
         if model:
             params["model"] = model
+        if tags:
+            params["tags"] = [t.strip() for t in tags.split(",")]
         if depends_on:
             params["depends_on"] = depends_on
 
@@ -85,6 +88,8 @@ class HiveCLI:
             print(f"Created issue: {result['issue_id']}")
             print(f"  Title: {title}")
             print(f"  Priority: {priority}")
+            if result.get("tags"):
+                print(f"  Tags: {', '.join(result['tags'])}")
             if depends_on:
                 print(f"  Depends on: {', '.join(depends_on)}")
         return result.get("issue_id") if result else None
@@ -132,6 +137,8 @@ class HiveCLI:
             print(f"Priority: {issue['priority']}")
             print(f"Type: {issue['type']}")
             print(f"Assignee: {issue['assignee'] or 'None'}")
+            if issue.get("tags"):
+                print(f"Tags: {', '.join(issue['tags'])}")
             if issue.get("model"):
                 print(f"Model: {issue['model']}")
             print(f"Created: {issue['created_at']}")
@@ -174,6 +181,7 @@ class HiveCLI:
         priority: Optional[int] = None,
         status: Optional[str] = None,
         model: Optional[str] = None,
+        tags: Optional[str] = None,
         *,
         json_mode: bool = False,
     ):
@@ -189,6 +197,8 @@ class HiveCLI:
             params["status"] = status
         if model is not None:
             params["model"] = model
+        if tags is not None:
+            params["tags"] = [t.strip() for t in tags.split(",")]
         result = self._run_tool("hive_update_issue", params, json_mode=json_mode)
         if not json_mode and result:
             print(result.get("message", f"Updated issue {issue_id}"))
@@ -239,6 +249,7 @@ class HiveCLI:
         description: str = "",
         steps_json: str = "[]",
         model: Optional[str] = None,
+        tags: Optional[str] = None,
         *,
         json_mode: bool = False,
     ):
@@ -254,6 +265,8 @@ class HiveCLI:
         params = {"title": title, "description": description, "steps": steps}
         if model:
             params["model"] = model
+        if tags:
+            params["tags"] = [t.strip() for t in tags.split(",")]
 
         result = self._run_tool(
             "hive_create_molecule",
@@ -1004,6 +1017,12 @@ def main():
         action="append",
         help="Issue ID this depends on (can be repeated: --depends-on w-abc --depends-on w-def)",
     )
+    create_parser.add_argument(
+        "--tags",
+        type=str,
+        default=None,
+        help="Comma-separated tags (e.g. refactor,python,small)",
+    )
 
     # list command
     list_parser = subparsers.add_parser("list", help="List all issues")
@@ -1043,6 +1062,7 @@ def main():
     update_parser.add_argument("--priority", type=int, help="New priority (0-4)")
     update_parser.add_argument("--status", help="New status")
     update_parser.add_argument("--model", help="New model")
+    update_parser.add_argument("--tags", type=str, help="Comma-separated tags (e.g. refactor,python,small)")
 
     # cancel command
     cancel_parser = subparsers.add_parser("cancel", help="Cancel an issue")
@@ -1073,6 +1093,7 @@ def main():
         "--model",
         help="Model to use for this molecule (overrides global WORKER_MODEL)",
     )
+    molecule_parser.add_argument("--tags", type=str, help="Comma-separated tags (e.g. refactor,python,small)")
 
     # dep command
     dep_parser = subparsers.add_parser("dep", help="Manage dependencies")
@@ -1245,6 +1266,7 @@ def main():
                 args.priority,
                 args.issue_type,
                 model=getattr(args, "model", None),
+                tags=getattr(args, "tags", None),
                 depends_on=getattr(args, "depends_on", None),
                 json_mode=json_mode,
             )
@@ -1274,6 +1296,7 @@ def main():
                 priority=args.priority,
                 status=args.status,
                 model=getattr(args, "model", None),
+                tags=getattr(args, "tags", None),
                 json_mode=json_mode,
             )
 
@@ -1295,6 +1318,7 @@ def main():
                 description=args.description,
                 steps_json=args.steps,
                 model=getattr(args, "model", None),
+                tags=getattr(args, "tags", None),
                 json_mode=json_mode,
             )
 

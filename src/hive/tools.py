@@ -3,9 +3,10 @@
 The ToolExecutor class provides all database operations used by the CLI.
 """
 
+import json
 from typing import Any, Dict, List, Optional
 
-from .db import Database
+from .db import Database, validate_tags
 
 
 class ToolExecutor:
@@ -51,6 +52,7 @@ class ToolExecutor:
         type: str = "task",
         project: Optional[str] = None,
         model: Optional[str] = None,
+        tags: Optional[list] = None,
         depends_on: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Create a new issue, optionally with dependencies wired atomically."""
@@ -61,6 +63,7 @@ class ToolExecutor:
             issue_type=type,
             project=project or self.project_name,
             model=model,
+            tags=tags,
         )
 
         # Wire dependencies immediately so the issue can't be claimed before they exist
@@ -74,6 +77,7 @@ class ToolExecutor:
             "issue_id": issue_id,
             "title": title,
             "status": "open",
+            "tags": tags or [],
             "depends_on": deps_added,
             "message": f"Created issue {issue_id}: {title}",
         }
@@ -123,7 +127,18 @@ class ToolExecutor:
         params.append(str(limit))
 
         cursor = self.db.conn.execute(query, params)
-        issues = [dict(row) for row in cursor.fetchall()]
+        issues = []
+        for row in cursor.fetchall():
+            issue_dict = dict(row)
+            # Parse tags from JSON
+            if issue_dict.get("tags"):
+                try:
+                    issue_dict["tags"] = json.loads(issue_dict["tags"])
+                except (json.JSONDecodeError, TypeError):
+                    issue_dict["tags"] = []
+            else:
+                issue_dict["tags"] = []
+            issues.append(issue_dict)
 
         return {"count": len(issues), "issues": issues}
 
@@ -160,8 +175,18 @@ class ToolExecutor:
         # Get recent events
         events = self.db.get_events(issue_id=issue_id, limit=10)
 
+        # Parse tags from JSON
+        issue_dict = dict(issue)
+        if issue_dict.get("tags"):
+            try:
+                issue_dict["tags"] = json.loads(issue_dict["tags"])
+            except (json.JSONDecodeError, TypeError):
+                issue_dict["tags"] = []
+        else:
+            issue_dict["tags"] = []
+
         return {
-            "issue": issue,
+            "issue": issue_dict,
             "dependencies": dependencies,
             "dependents": dependents,
             "recent_events": events,
@@ -175,6 +200,7 @@ class ToolExecutor:
         priority: Optional[int] = None,
         status: Optional[str] = None,
         model: Optional[str] = None,
+        tags: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Update issue fields."""
         issue = self.db.get_issue(issue_id)
@@ -199,6 +225,10 @@ class ToolExecutor:
         if model is not None:
             updates.append("model = ?")
             params.append(model)
+        if tags is not None:
+            validated_tags = validate_tags(tags)
+            updates.append("tags = ?")
+            params.append(json.dumps(validated_tags))
 
         if updates:
             query = f"UPDATE issues SET {', '.join(updates)}, updated_at = datetime('now') WHERE id = ?"
@@ -234,6 +264,7 @@ class ToolExecutor:
         description: str = "",
         project: Optional[str] = None,
         model: Optional[str] = None,
+        tags: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Create a multi-step molecule workflow."""
         # Create parent molecule issue
@@ -242,6 +273,7 @@ class ToolExecutor:
             description=description,
             issue_type="molecule",
             project=project or self.project_name,
+            tags=tags,
         )
 
         # Map of step indices to issue IDs

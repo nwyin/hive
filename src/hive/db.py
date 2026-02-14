@@ -13,6 +13,40 @@ from .ids import generate_id
 logger = logging.getLogger(__name__)
 
 
+# Allowed tag values. Validated at creation time but stored as free-form JSON
+# so the set can grow without a migration.
+ALLOWED_TAGS = {
+    # Task type
+    "refactor",
+    "bugfix",
+    "feature",
+    "test",
+    "docs",
+    "cleanup",
+    "config",
+    # Language
+    "python",
+    "typescript",
+    "javascript",
+    "sql",
+    "shell",
+    "markdown",
+    # Complexity
+    "small",
+    "medium",
+    "large",
+}
+
+
+def validate_tags(tags: list[str]) -> list[str]:
+    """Validate and normalize tags. Raises ValueError for unknown tags."""
+    normalized = [t.lower().strip() for t in tags]
+    unknown = set(normalized) - ALLOWED_TAGS
+    if unknown:
+        raise ValueError(f"Unknown tags: {unknown}. Allowed: {sorted(ALLOWED_TAGS)}")
+    return sorted(set(normalized))  # dedupe and sort for consistency
+
+
 # SQL schema definition
 SCHEMA = """
 -- WAL mode for concurrent reads during writes
@@ -34,6 +68,7 @@ CREATE TABLE IF NOT EXISTS issues (
     parent_id   TEXT REFERENCES issues(id),
     project     TEXT,
     model       TEXT,
+    tags        TEXT,  -- JSON array of tag strings
     metadata    TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -44,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status);
 CREATE INDEX IF NOT EXISTS idx_issues_assignee ON issues(assignee);
 CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
 CREATE INDEX IF NOT EXISTS idx_issues_project ON issues(project);
+CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags);
 
 ----------------------------------------------------------------------
 -- DEPENDENCIES: edges in the work DAG
@@ -188,6 +224,14 @@ class Database:
                 if "duplicate column name" not in str(e).lower():
                     raise
 
+        # Add tags column if missing
+        cursor = self.conn.execute("PRAGMA table_info(issues)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "tags" not in columns:
+            self.conn.execute("ALTER TABLE issues ADD COLUMN tags TEXT")
+            self.conn.commit()
+            logger.info("Added tags column to issues table")
+
     def create_issue(
         self,
         title: str,
@@ -197,6 +241,7 @@ class Database:
         project: str = "",
         parent_id: Optional[str] = None,
         model: Optional[str] = None,
+        tags: Optional[list[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
@@ -210,6 +255,7 @@ class Database:
             project: Project/repo name
             parent_id: Parent issue ID (for molecules)
             model: Model to use for this issue (overrides global WORKER_MODEL)
+            tags: List of tags for the issue (validated against ALLOWED_TAGS)
             metadata: Additional metadata dict
 
         Returns:
@@ -218,11 +264,17 @@ class Database:
         issue_id = generate_id("w")
         metadata_json = json.dumps(metadata) if metadata else None
 
+        # Validate and serialize tags
+        tags_json = None
+        if tags:
+            validated_tags = validate_tags(tags)
+            tags_json = json.dumps(validated_tags)
+
         with self.transaction() as conn:
             conn.execute(
                 """
-                INSERT INTO issues (id, title, description, priority, type, project, parent_id, model, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO issues (id, title, description, priority, type, project, parent_id, model, tags, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     issue_id,
@@ -233,6 +285,7 @@ class Database:
                     project,
                     parent_id,
                     model,
+                    tags_json,
                     metadata_json,
                 ),
             )
