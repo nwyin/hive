@@ -971,6 +971,22 @@ class Database:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def check_molecule_complete(self, parent_id: str) -> bool:
+        """
+        Check if all child issues of a molecule are complete.
+
+        Args:
+            parent_id: Parent molecule issue ID
+
+        Returns:
+            True if all children are done/finalized/canceled, False otherwise
+        """
+        cursor = self.conn.execute(
+            "SELECT COUNT(*) FROM issues WHERE parent_id = ? AND status NOT IN ('done', 'finalized', 'canceled')",
+            (parent_id,),
+        )
+        return cursor.fetchone()[0] == 0
+
     def get_recent_project_notes(self, limit: int = 10) -> List[Dict]:
         """
         Get recent project-wide notes plus recent cross-issue notes.

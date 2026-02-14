@@ -392,6 +392,21 @@ class MergeProcessor:
             {"merged_at": now},
         )
 
+        # Check if this issue has a parent (part of a molecule)
+        issue = self.db.get_issue(entry["issue_id"])
+        if issue and issue.get("parent_id"):
+            parent_id = issue["parent_id"]
+            # Check if all children of the parent are now complete
+            if self.db.check_molecule_complete(parent_id):
+                # Mark parent molecule as done
+                self.db.update_issue_status(parent_id, "done")
+                self.db.log_event(
+                    parent_id,
+                    None,
+                    "molecule_complete",
+                    {"completed_at": now},
+                )
+
         # Tear down worktree, session, and agent
         await self._teardown_after_finalize(entry)
 
