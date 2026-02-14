@@ -62,6 +62,24 @@ When you hit a rebase conflict:
    if the intent is clear, reject if ambiguous
 4. After resolving, run tests to verify
 
+## KNOWLEDGE SHARING
+
+If you discover something during merge processing that would help future workers
+or refineries, write it to `.hive-notes.jsonl` in the worktree root
+(${worktree_path}/.hive-notes.jsonl). One JSON object per line:
+
+```json
+{"category": "gotcha", "content": "Branch conflicted on src/db.py imports — multiple workers adding to the same import block"}
+{"category": "pattern", "content": "Test fixtures in conftest.py are order-sensitive — new tests must not reuse DB state"}
+```
+
+This is especially valuable for:
+- Recurring conflict patterns (e.g., "two branches both modified the CLI dispatch block")
+- Integration issues that individual workers can't see from their isolated worktrees
+- Test failures caused by interactions between changes from different branches
+
+Keep notes brief and actionable. This is optional — only write if genuinely useful.
+
 ## COMPLETION SIGNAL
 
 After processing, output this as the LAST thing in your response:

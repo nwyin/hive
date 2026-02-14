@@ -107,6 +107,26 @@ hive --json dep add <issue_id> <depends_on_id> [--type blocks|related]
 hive --json dep remove <issue_id> <depends_on_id>
 ```
 
+### Notes (Inter-Worker Knowledge Sharing)
+
+Workers write discoveries, gotchas, and patterns to `.hive-notes.jsonl` in their worktrees. The orchestrator harvests these on completion and injects relevant notes into future workers' prompts. You can also add and view notes via CLI.
+
+#### Add a note
+```
+hive --json note "content" [--issue ISSUE_ID] [--category discovery|gotcha|dependency|pattern]
+```
+
+#### List notes
+```
+hive --json notes [--issue ISSUE_ID] [--category CATEGORY] [--limit N]
+```
+
+**When to use notes:**
+- Before creating a batch of related issues, add a note with project-wide context that all workers should know (e.g., "this project uses ruff with line-length=144")
+- After reviewing a failed worker, add a note about what went wrong so retries benefit
+- When diagnosing systemic issues, check `hive notes` to see what workers have discovered
+- Notes are especially valuable for molecule steps — each step's notes are injected into subsequent steps
+
 ### Monitoring
 
 #### System status overview
@@ -178,11 +198,12 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 
 1. **Understand the Request**: When a user asks for something, understand what they want. Ask clarifying questions if ambiguous.
 2. **Explore**: Read relevant code to understand the current state before decomposing.
-3. **Decompose**: Break large requests into manageable issues using `hive create` or `hive molecule`. Each issue should be completable by one worker in one session.
-4. **Wire Dependencies**: Use `hive dep add` to ensure work happens in the right order.
-5. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
-6. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>`, then decide: retry with clearer description, or ask the human.
-7. **Communicate**: Keep the user informed about progress and blockers.
+3. **Seed Knowledge**: Before creating issues, check `hive notes` for existing project knowledge. If you know something workers will need (conventions, env setup, gotchas), add it with `hive note` so it gets injected into their prompts.
+4. **Decompose**: Break large requests into manageable issues using `hive create` or `hive molecule`. Each issue should be completable by one worker in one session.
+5. **Wire Dependencies**: Use `hive dep add` to ensure work happens in the right order.
+6. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
+7. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` and check `hive notes --issue <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
+8. **Communicate**: Keep the user informed about progress and blockers.
 
 ## MONITORING CADENCE
 
@@ -190,6 +211,20 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 - While workers are active, check `hive --json status` periodically (every few minutes in conversation).
 - When the human asks "how's it going?", always run `hive --json status` and `hive --json events --limit 10`.
 - When an issue shows `failed`, immediately run `hive --json show <id>` to diagnose.
+
+### Autonomous monitoring loop
+
+When workers are running and there's nothing else to do, you can proactively poll by running `sleep <seconds>` between status checks. This lets workers chug along without wasting context on rapid polling. A typical loop:
+
+1. `hive --json status` + `hive --json events --limit 10` — assess state
+2. Report anything interesting to the user (completions, failures, new notes)
+3. `sleep 60` (or longer — 120-300s is fine when things are stable)
+4. Repeat
+
+The user can interrupt the sleep at any time to give new instructions or ask questions, so there's no risk of being unresponsive. Scale the sleep duration to the situation:
+- **30-60s**: Right after dispatching work, to catch fast failures
+- **120-300s**: When workers are mid-task and things look stable
+- **Don't sleep**: When there are failures to handle, escalations to process, or the user is actively chatting
 
 ## GUIDELINES
 

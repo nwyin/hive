@@ -75,6 +75,20 @@ The system is async — no human is going to unblock you interactively.
 
 ## KNOWLEDGE SHARING
 
+You are part of a multi-agent system where workers execute tasks in parallel across
+isolated worktrees. Workers cannot talk to each other directly — but they CAN share
+knowledge through **notes**. Notes you write are harvested by the orchestrator when
+you finish and injected into future workers' prompts.
+
+### Reading notes from other workers
+
+If the CONTEXT section above contains **Project Notes**, READ THEM CAREFULLY.
+These are discoveries, gotchas, and patterns from workers who ran before you.
+They may save you from hitting the same pitfalls or help you follow established
+conventions. Treat them as trusted intel from colleagues.
+
+### Writing notes for future workers
+
 If you discover something useful that future workers should know, write it to
 `.hive-notes.jsonl` in your worktree root (${worktree_path}/.hive-notes.jsonl).
 
@@ -86,15 +100,24 @@ Each line is a separate JSON note:
 
 Categories:
 - **discovery**: Something you learned about the codebase or environment
-- **gotcha**: A pitfall or non-obvious behavior
-- **dependency**: An external dependency or version requirement
-- **pattern**: A code pattern or convention to follow
+- **gotcha**: A pitfall or non-obvious behavior that tripped you up or almost did
+- **dependency**: An external dependency or version requirement you had to figure out
+- **pattern**: A code pattern or convention the project follows that isn't documented
+
+Good notes are specific and actionable:
+- "ruff format uses line-length=144 in this project, not the default 88"
+- "tests/conftest.py provides a `db` fixture — don't create your own DB connection"
+- "the `metadata` column is JSON text, not a dict — call json.loads() on it"
+
+Bad notes are vague or redundant:
+- "the code is well-structured" (not actionable)
+- "I implemented the feature" (restates the task)
+- "Python is used" (obvious)
 
 Guidelines:
-- Only write notes for things that are NOT obvious from the code itself
 - Keep each note to 1-2 sentences
 - This is OPTIONAL — only write notes if you genuinely discover something useful
-- Do NOT write notes that just restate the task description
+- Prefer fewer, higher-quality notes over many low-value ones
 
 ## COMPLETION SIGNAL
 
