@@ -112,6 +112,8 @@ class HiveCLI:
                 print(f"  Depends on: {', '.join(depends_on)}")
         return result.get("issue_id")
 
+    _DONE_STATUSES = ("done", "finalized", "canceled")
+
     def list_issues(
         self,
         status: Optional[str] = None,
@@ -120,6 +122,7 @@ class HiveCLI:
         issue_type: Optional[str] = None,
         assignee: Optional[str] = None,
         limit: int = 50,
+        todo: bool = False,
         *,
         json_mode: bool = False,
     ):
@@ -128,7 +131,11 @@ class HiveCLI:
             query = "SELECT * FROM issues WHERE project = ?"
             params: List[Any] = [self.project_name]
 
-            if status:
+            if todo:
+                placeholders = ",".join("?" for _ in self._DONE_STATUSES)
+                query += f" AND status NOT IN ({placeholders})"
+                params.extend(self._DONE_STATUSES)
+            elif status:
                 query += " AND status = ?"
                 params.append(status)
             if assignee:
@@ -1352,6 +1359,7 @@ def main():
     # list command
     list_parser = subparsers.add_parser("list", help="List all issues")
     list_parser.add_argument("--status", help="Filter by status")
+    list_parser.add_argument("--todo", action="store_true", help="Show only actionable issues (excludes done/finalized/canceled)")
     list_parser.add_argument(
         "--sort",
         choices=["priority", "created", "updated", "status", "title"],
@@ -1586,6 +1594,7 @@ def main():
                 issue_type=args.issue_type,
                 assignee=args.assignee,
                 limit=args.limit,
+                todo=args.todo,
                 json_mode=json_mode,
             )
 
