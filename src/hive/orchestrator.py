@@ -744,31 +744,16 @@ class Orchestrator:
         except Exception:
             return False
 
-    def _poll_result_file(self, agent: AgentIdentity) -> Optional[Dict[str, Any]]:
-        """Check if a .hive-result.jsonl file exists in the agent's worktree.
-
-        This is a file-based completion signal that workers write before
-        emitting the :::COMPLETION text signal. It provides a deterministic,
-        filesystem-based detection mechanism that doesn't depend on SSE
-        events or session polling.
-
-        Args:
-            agent: Agent identity with worktree path
-
-        Returns:
-            Parsed result dict if the file exists and is valid, None otherwise.
-        """
-        return read_result_file(agent.worktree)
-
     async def monitor_agent(self, agent: AgentIdentity):
         """
         Monitor an agent until completion.
 
-        Uses a triple detection strategy:
+        Uses dual detection strategy:
         1. SSE events: `session.status` → `idle` sets an asyncio.Event immediately
-        2. File-based: polls for .hive-result.jsonl in the worktree (deterministic)
-        3. Polling fallback: every check_interval, polls `get_session_status` directly
+        2. Polling fallback: every check_interval, polls `get_session_status` directly
            to catch idle transitions that were missed by SSE (reconnect gaps, etc.)
+
+        After idle is detected, reads the result file for structured completion data.
 
         Also checks periodically if the issue was canceled, and if so,
         aborts the session immediately.
@@ -776,7 +761,6 @@ class Orchestrator:
         Args:
             agent: Agent identity
         """
-        file_result = None
         try:
             event = self.session_status_events.get(agent.session_id)
             if not event:
@@ -796,19 +780,12 @@ class Orchestrator:
                         # Issue was canceled while agent was working.
                         # cancel_agent_for_issue already handled cleanup + set the event.
                         return
-                    # Also check for result file on SSE completion
-                    file_result = self._poll_result_file(agent)
                     break
                 except asyncio.TimeoutError:
                     # Check if the issue was canceled
                     if self._is_issue_canceled(agent.issue_id):
                         await self.cancel_agent_for_issue(agent.issue_id)
                         return
-
-                    # File-based completion: check for .hive-result.jsonl
-                    file_result = self._poll_result_file(agent)
-                    if file_result is not None:
-                        break
 
                     # Polling fallback: directly check if the session went idle.
                     # This catches cases where the SSE event was missed.
@@ -824,6 +801,9 @@ class Orchestrator:
                         await self.handle_stalled_agent(agent)
                         return
                     # Otherwise, keep waiting — worker is active
+
+            # AFTER idle detected, read result file for structured data
+            file_result = read_result_file(agent.worktree)
 
             # Agent finished, assess completion
             await self.handle_agent_complete(agent, file_result=file_result)

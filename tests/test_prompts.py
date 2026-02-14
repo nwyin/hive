@@ -66,62 +66,39 @@ def test_build_system_prompt():
     assert "approval" in prompt.lower()
 
 
-def test_assess_completion_structured_success():
-    """Test assessing completion with structured success signal."""
-    messages = [
-        {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": """I've completed the task.
+def test_assess_completion_file_result_success():
+    """Test assessing completion with file-based result (success)."""
+    messages = []  # Messages are now ignored
+    file_result = {
+        "status": "success",
+        "summary": "Implemented authentication middleware",
+        "files_changed": ["auth/middleware.py", "tests/test_auth.py"],
+        "tests_run": True,
+        "blockers": [],
+        "artifacts": [{"type": "git_commit", "value": "abc123def456"}, {"type": "test_result", "value": "pass"}],
+    }
 
-:::COMPLETION
-status: success
-summary: Implemented authentication middleware
-files_changed: 3
-tests_run: yes
-blockers: none
-artifacts:
-  - type: git_commit
-    value: abc123def456
-  - type: test_result
-    value: pass
-:::""",
-                }
-            ]
-        }
-    ]
-
-    result = assess_completion(messages)
+    result = assess_completion(messages, file_result=file_result)
 
     assert result.success is True
     assert result.summary == "Implemented authentication middleware"
-    assert result.git_commit == "abc123def456"
+    assert result.artifacts["git_commit"] == "abc123def456"
     assert result.artifacts["test_result"] == "pass"
 
 
-def test_assess_completion_structured_blocked():
-    """Test assessing completion with structured blocked signal."""
-    messages = [
-        {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": """I'm blocked.
+def test_assess_completion_file_result_blocked():
+    """Test assessing completion with file-based result (blocked)."""
+    messages = []  # Messages are now ignored
+    file_result = {
+        "status": "blocked",
+        "summary": "Cannot proceed without database schema",
+        "files_changed": [],
+        "tests_run": False,
+        "blockers": ["Missing database schema definition"],
+        "artifacts": [],
+    }
 
-:::COMPLETION
-status: blocked
-summary: Cannot proceed without database schema
-files_changed: 0
-tests_run: no
-blockers: Missing database schema definition
-:::""",
-                }
-            ]
-        }
-    ]
-
-    result = assess_completion(messages)
+    result = assess_completion(messages, file_result=file_result)
 
     assert result.success is False
     assert "Missing database schema definition" in result.reason
@@ -276,110 +253,58 @@ def test_parse_merge_result_no_signal():
     assert result["status"] == "needs_human"
 
 
-def test_assess_completion_heuristic_tool_error():
-    """Test heuristic tool error detection."""
-    messages = [
-        {
-            "parts": [
-                {"type": "text", "text": "Running tests..."},
-                {
-                    "type": "tool",
-                    "tool": "bash",
-                    "state": {"status": "error", "output": "npm test failed"},
-                },
-            ]
-        }
-    ]
+def test_assess_completion_no_file_result():
+    """Test behavior when no file result is provided - should fail."""
+    messages = [{"parts": [{"type": "text", "text": "I've completed the task successfully."}]}]
 
     result = assess_completion(messages)
 
     assert result.success is False
-    assert "Tool errors" in result.reason
+    assert "Worker did not write completion signal" in result.reason
 
 
-def test_assess_completion_heuristic_success():
-    """Test heuristic success detection."""
-    messages = [
-        {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": "I've successfully implemented the feature and all tests are passing. Changes committed.",
-                }
-            ]
-        }
-    ]
+def test_assess_completion_file_result_failure():
+    """Test assessing completion with file-based result (failure)."""
+    messages = []  # Messages are now ignored
+    file_result = {
+        "status": "failure",
+        "summary": "Tests failed after implementation",
+        "files_changed": ["src/feature.py"],
+        "tests_run": True,
+        "blockers": ["Unit tests are failing", "Integration test timeout"],
+        "artifacts": [],
+    }
 
-    result = assess_completion(messages)
+    result = assess_completion(messages, file_result=file_result)
 
-    assert result.success is True
-
-
-def test_assess_completion_optimistic_default():
-    """Test optimistic default when no clear signals."""
-    messages = [
-        {
-            "parts": [
-                {"type": "text", "text": "Work complete."},
-            ]
-        }
-    ]
-
-    result = assess_completion(messages)
-
-    # Should assume success by default
-    assert result.success is True
+    assert result.success is False
+    assert "Unit tests are failing; Integration test timeout" in result.reason
 
 
-def test_assess_completion_empty_messages():
-    """Test handling empty messages."""
+def test_assess_completion_file_result_unknown_status():
+    """Test handling unknown status in file result."""
+    messages = []  # Messages are now ignored
+    file_result = {
+        "status": "unknown",
+        "summary": "Something went wrong",
+        "files_changed": [],
+        "tests_run": False,
+        "blockers": [],
+        "artifacts": [],
+    }
+
+    result = assess_completion(messages, file_result=file_result)
+
+    assert result.success is False
+    assert "Worker reported status: unknown" in result.reason
+
+
+def test_assess_completion_empty_messages_no_file():
+    """Test handling empty messages with no file result."""
     result = assess_completion([])
 
     assert result.success is False
-    assert "No messages" in result.reason
-
-
-def test_assess_completion_malformed_yaml():
-    """Test handling malformed YAML in completion signal."""
-    messages = [
-        {
-            "parts": [
-                {
-                    "type": "text",
-                    "text": """:::COMPLETION
-status: success
-  invalid: yaml: structure::
-summary: This will fail to parse
-:::
-
-But I did complete the task.""",
-                }
-            ]
-        }
-    ]
-
-    result = assess_completion(messages)
-
-    # Should fall back to heuristics
-    assert result.success is True  # "complete the task" triggers success
-
-
-def test_assess_completion_multiple_text_parts():
-    """Test handling multiple text parts in a message."""
-    messages = [
-        {
-            "parts": [
-                {"type": "text", "text": "First part. "},
-                {"type": "text", "text": "I am blocked by missing dependencies."},
-                {"type": "tool", "tool": "bash", "state": {"status": "completed"}},
-            ]
-        }
-    ]
-
-    result = assess_completion(messages)
-
-    assert result.success is False
-    assert "Blocker detected" in result.reason
+    assert "Worker did not write completion signal" in result.reason
 
 
 # --- Notes functionality tests ---

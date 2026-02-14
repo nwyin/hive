@@ -16,8 +16,6 @@ RESULT_FILE_NAME = ".hive-result.jsonl"
 # Filename for notes file
 NOTES_FILE_NAME = ".hive-notes.jsonl"
 
-# Regex for parsing structured completion signal
-COMPLETION_RE = re.compile(r":::COMPLETION\s*\n(.*?):::", re.DOTALL)
 
 # Regex for parsing merge result signal
 MERGE_RESULT_RE = re.compile(r":::MERGE_RESULT\s*\n(.*?):::", re.DOTALL)
@@ -144,13 +142,12 @@ def assess_completion(
     file_result: Optional[Dict[str, Any]] = None,
 ) -> CompletionResult:
     """
-    Assess completion based on file-based result, structured signal, or heuristics.
+    Assess completion based on file-based result only.
 
     Args:
-        messages: List of message dicts from OpenCode session
+        messages: List of message dicts from OpenCode session (unused, kept for compatibility)
         file_result: Optional parsed result from .hive-result.jsonl file.
-            If provided, used directly to construct CompletionResult (skips
-            message parsing and heuristics).
+            If provided, used directly to construct CompletionResult.
 
     Returns:
         CompletionResult with success status, reason, and artifacts
@@ -185,102 +182,11 @@ def assess_completion(
             artifacts=artifacts,
         )
 
-    if not messages:
-        return CompletionResult(
-            success=False,
-            reason="No messages in session",
-            summary="",
-        )
-
-    # Get the last message
-    last = messages[-1]
-    parts = last.get("parts", [])
-
-    # Extract all text from the last message
-    text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
-    text = " ".join(text_parts)
-
-    # Try to parse structured completion signal
-    match = COMPLETION_RE.search(text)
-    if match:
-        try:
-            payload = yaml.safe_load(match.group(1))
-            status = payload.get("status", "unknown")
-            artifacts_list = payload.get("artifacts", [])
-
-            # Convert artifacts list to dict
-            artifacts = {}
-            if isinstance(artifacts_list, list):
-                for artifact in artifacts_list:
-                    if isinstance(artifact, dict):
-                        art_type = artifact.get("type")
-                        art_value = artifact.get("value")
-                        if art_type:
-                            artifacts[art_type] = art_value
-
-            return CompletionResult(
-                success=(status == "success"),
-                reason=payload.get("blockers", "none") if status != "success" else "",
-                summary=payload.get("summary", ""),
-                artifacts=artifacts,
-            )
-        except (yaml.YAMLError, KeyError, TypeError):
-            # Malformed completion signal, fall through to heuristics
-            pass
-
-    # Fallback: heuristic assessment
-    text_lower = text.lower()
-
-    # Check for blocker signals
-    blocker_signals = [
-        "blocked by",
-        "cannot proceed",
-        "need help",
-        "unable to",
-        "escalating",
-        "stuck on",
-        "waiting for",
-        "requires human",
-    ]
-    if any(signal in text_lower for signal in blocker_signals):
-        return CompletionResult(
-            success=False,
-            reason="Blocker detected in message",
-            summary=text[:200],  # First 200 chars as summary
-        )
-
-    # Check for tool errors in the last message
-    tool_errors = [p for p in parts if p.get("type") == "tool" and p.get("state", {}).get("status") == "error"]
-    if tool_errors:
-        error_details = "; ".join(p.get("state", {}).get("output", "Unknown error")[:100] for p in tool_errors)
-        return CompletionResult(
-            success=False,
-            reason=f"Tool errors: {error_details}",
-            summary="Task incomplete due to tool errors",
-        )
-
-    # Check for success indicators
-    success_signals = [
-        "committed",
-        "changes committed",
-        "implementation complete",
-        "task complete",
-        "all tests passing",
-        "successfully implemented",
-    ]
-    if any(signal in text_lower for signal in success_signals):
-        return CompletionResult(
-            success=True,
-            reason="",
-            summary=text[:200],
-        )
-
-    # Default: assume success if no blocker detected
-    # (optimistic interpretation — agent finished without explicit signal)
+    # No file result = worker didn't write completion signal = failure
     return CompletionResult(
-        success=True,
-        reason="",
-        summary="Task appears complete (no explicit completion signal)",
+        success=False,
+        reason="Worker did not write completion signal (.hive-result.jsonl)",
+        summary="",
     )
 
 
