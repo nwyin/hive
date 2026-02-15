@@ -464,19 +464,20 @@ class Database:
         return dict(row) if row else None
 
     def update_issue_status(self, issue_id: str, status: str):
-        """Update issue status."""
+        """Update issue status. Clears assignee when setting to 'open' (INV-2)."""
         with self.transaction() as conn:
             conn.execute(
                 """
                 UPDATE issues
                 SET status = ?,
+                    assignee = CASE WHEN ? = 'open' THEN NULL ELSE assignee END,
                     updated_at = datetime('now'),
                     closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'failed')
                                      THEN datetime('now')
                                      ELSE closed_at END
                 WHERE id = ?
                 """,
-                (status, status, issue_id),
+                (status, status, status, issue_id),
             )
             self.log_event(issue_id, None, f"status_{status}", {"status": status}, commit=False)
 
