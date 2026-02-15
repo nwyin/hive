@@ -130,6 +130,8 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 5. **Git worktree contention**: Concurrent `git worktree add` commands occasionally fail with `fatal: invalid reference: main`. Current workaround is retry-with-backoff, but the root cause is not fully understood (possibly packed-refs rewriting, loose ref gc, or worktree metadata races). See TODO in `git.py`.
 
+6. **Worker session visibility**: The Claude WS backend (`claude_ws.py`) holds live worker sessions in memory but doesn't expose them for inspection. There's no way to peek at a worker's conversation transcript, see what tools it's calling, or monitor progress beyond event-level signals (`worker_started`, `completed`). A `GET /sessions` HTTP endpoint on the backend's aiohttp app would allow `hive watch` to show live worker activity, and could feed a richer TUI dashboard. Currently the only observability into active workers is `hive agents` (DB state) and `hive logs -f` (events).
+
 ### Resolved Questions
 
 - **Completion verification depth**: Simplified in Phase 8. Removed triple detection and heuristic fallbacks. Now uses file-based `.hive-result.jsonl` (deterministic) + SSE `session.status → idle` (real-time) + session polling fallback. The Refinery's test gate catches integration issues.
