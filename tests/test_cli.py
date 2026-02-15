@@ -973,3 +973,59 @@ def test_hidden_commands_in_epilog(capsys):
     captured = capsys.readouterr()
     assert "advanced commands:" in captured.out
     assert "hive <command> -h" in captured.out
+
+
+# ── Smart no-args tests ────────────────────────────────────────
+
+
+def test_smart_noargs_no_issues_no_config(temp_db, tmp_path, capsys):
+    """Test bare hive with no issues and no .hive.toml shows getting-started guide."""
+    from hive.cli import _smart_noargs
+
+    cli = HiveCLI(temp_db, str(tmp_path))
+    _smart_noargs(cli, tmp_path, tmp_path.name)
+
+    captured = capsys.readouterr()
+    assert "Get started:" in captured.out
+    assert "hive setup" in captured.out
+    assert "hive create" in captured.out
+
+
+def test_smart_noargs_no_issues_with_config(temp_db, tmp_path, capsys):
+    """Test bare hive with config but no issues shows abbreviated guide."""
+    from hive.cli import _smart_noargs
+
+    (tmp_path / ".hive.toml").write_text("[hive]\n")
+    cli = HiveCLI(temp_db, str(tmp_path))
+    _smart_noargs(cli, tmp_path, tmp_path.name)
+
+    captured = capsys.readouterr()
+    assert "No issues yet" in captured.out
+    assert "hive create" in captured.out
+    assert "hive setup" not in captured.out
+
+
+def test_smart_noargs_issues_no_daemon(temp_db, tmp_path, capsys):
+    """Test bare hive with issues but no daemon shows status + start hint."""
+    from hive.cli import _smart_noargs
+
+    temp_db.create_issue("Test issue", project=tmp_path.name)
+    cli = HiveCLI(temp_db, str(tmp_path))
+    _smart_noargs(cli, tmp_path, tmp_path.name)
+
+    captured = capsys.readouterr()
+    assert "Hive Status" in captured.out
+    assert "hive start" in captured.out
+
+
+def test_smart_noargs_json_new_project(temp_db, tmp_path, capsys):
+    """Test bare hive with --json and no issues."""
+    from hive.cli import _smart_noargs
+
+    cli = HiveCLI(temp_db, str(tmp_path))
+    _smart_noargs(cli, tmp_path, tmp_path.name, json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["state"] == "new_project"
+    assert data["total_issues"] == 0

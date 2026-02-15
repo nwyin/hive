@@ -1578,6 +1578,51 @@ def _do_setup(project_path: Path, project_name: str, *, json_mode: bool = False)
     print("  4. hive queen                           — launch Queen Bee TUI")
 
 
+def _smart_noargs(cli: HiveCLI, project_path: Path, project_name: str, *, json_mode: bool = False):
+    """Show context-appropriate output when hive is run with no arguments."""
+    daemon = cli._make_daemon()
+    daemon_status = daemon.status()
+
+    # Count issues
+    cursor = cli.db.conn.execute("SELECT COUNT(*) FROM issues WHERE project = ?", (project_name,))
+    total_issues = cursor.fetchone()[0]
+
+    if daemon_status["running"]:
+        # Daemon is running — show live status
+        cli.status(json_mode=json_mode)
+        return
+
+    if total_issues == 0:
+        # No issues, no daemon — getting started guide
+        if json_mode:
+            print(json.dumps({"state": "new_project", "daemon_running": False, "total_issues": 0}))
+        else:
+            print(f"Hive — {project_name}")
+            print()
+            if not (project_path / ".hive.toml").exists():
+                print("  Get started:")
+                print("    1. hive setup                           — configure this project")
+                print("    2. hive create 'title' 'description'   — create an issue")
+                print("    3. hive start                           — start the daemon")
+                print("    4. hive status                          — check progress")
+            else:
+                print("  No issues yet. Get started:")
+                print("    1. hive create 'title' 'description'   — create an issue")
+                print("    2. hive start                           — start the daemon")
+                print("    3. hive status                          — check progress")
+            print()
+            print("  Run hive -h for all commands.")
+        return
+
+    # Issues exist but daemon stopped
+    if json_mode:
+        print(json.dumps({"state": "daemon_stopped", "daemon_running": False, "total_issues": total_issues}))
+    else:
+        cli.status(json_mode=False)
+        print()
+        print("  Daemon is not running. Start with: hive start")
+
+
 _EPILOG = """\
 advanced commands:
   update, cancel, finalize, retry, escalate, molecule, dep, ready,
@@ -2081,7 +2126,7 @@ def main():
             cli.doctor(fix=getattr(args, "fix", False), json_mode=json_mode)
 
         else:
-            parser.print_help()
+            _smart_noargs(cli, project_path, project_name, json_mode=json_mode)
 
     finally:
         db.close()
