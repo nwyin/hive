@@ -1017,6 +1017,47 @@ class HiveCLI:
                     total = tokens["input_tokens"] + tokens["output_tokens"]
                     print(f"{model}: {total:,} tokens")
 
+    def doctor(self, *, json_mode: bool = False):
+        """Run system health checks."""
+        from .doctor import run_all_checks
+
+        results = run_all_checks(self.db)
+
+        if json_mode:
+            output = [
+                {
+                    "id": r.id,
+                    "status": r.status,
+                    "description": r.description,
+                    "details": r.details,
+                }
+                for r in results
+            ]
+            print(json.dumps(output, indent=2))
+            return
+
+        # Table output
+        print(f"\n{'ID':<8} {'Status':<8} {'Description':<60}")
+        print("-" * 76)
+        for result in results:
+            status_display = result.status.upper()
+            print(f"{result.id:<8} {status_display:<8} {result.description[:60]}")
+
+        # Summary
+        failures = sum(1 for r in results if r.status == "fail")
+        warnings = sum(1 for r in results if r.status == "warn")
+
+        print()
+        if failures > 0 or warnings > 0:
+            parts = []
+            if failures > 0:
+                parts.append(f"{failures} failure(s)")
+            if warnings > 0:
+                parts.append(f"{warnings} warning(s)")
+            print(f"Summary: {', '.join(parts)}")
+        else:
+            print("Summary: All checks passed")
+
     def stats(self, model=None, tag=None, group_by="tag", json_mode=False):
         results = self.db.get_model_performance(model=model, tag=tag, group_by=group_by)
         if json_mode:
@@ -1669,6 +1710,9 @@ def main():
     ui_parser.add_argument("--port", type=int, default=8001, help="Port to serve on (default: 8001)")
     ui_parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
 
+    # doctor command
+    subparsers.add_parser("doctor", help="Run system health checks")
+
     args = parser.parse_args()
 
     # ── Project auto-detection + layered config ──────────────────────
@@ -1863,6 +1907,9 @@ def main():
 
         elif args.command == "ui":
             cli.ui(port=args.port, host=args.host)
+
+        elif args.command == "doctor":
+            cli.doctor(json_mode=json_mode)
 
         else:
             parser.print_help()
