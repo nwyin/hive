@@ -119,17 +119,23 @@ ORDER BY i.priority ASC, i.created_at ASC;
 
 No scheduler service. No priority queue. No task router. When a blocking issue reaches `done` (worker finished) or `finalized` (merged), its dependents automatically become ready on the next query.
 
-### 3.2 Three-Layer Agent Lifecycle
+### 3.2 Ephemeral Agent Lifecycle
 
-Gas Town's decomposition of agent state into three layers with independent lifecycles is the key to crash recovery. We keep it, but adapt the implementation:
+Gas Town decomposed agent state into three layers (Identity, Sandbox, Session) with independent lifecycles. We originally kept the same decomposition, but in practice **agent identity proved unnecessary**.
 
-| Layer        | Gas Town                                | This System                                    |
-| ------------ | --------------------------------------- | ---------------------------------------------- |
-| **Identity** | Agent bead in Dolt, CV chain            | Row in `agents` table, events accumulate as CV |
-| **Sandbox**  | Git worktree, managed by `gt` CLI       | Git worktree, managed by orchestrator          |
-| **Session**  | Claude Code in tmux, managed by Witness | OpenCode session via HTTP API                  |
+`spawn_worker()` always creates a fresh agent with a random ID — no agent is ever reused. The result was thousands of idle agent rows accumulating as garbage. The original intent (long-lived identities that build a CV over time) never materialized because the unit of analysis for performance tracking is **model × issue type → outcome**, not agent identity.
 
-The invariant is the same: sessions are ephemeral and cycle frequently. Sandboxes survive session restarts. Identity is permanent.
+**Current design:** Agents are ephemeral. They exist only while executing work.
+
+| Layer        | Gas Town                                | This System                                                    |
+| ------------ | --------------------------------------- | -------------------------------------------------------------- |
+| **Identity** | Agent bead in Dolt, CV chain            | Ephemeral row in `agents` table; deleted after merge/cleanup   |
+| **Sandbox**  | Git worktree, managed by `gt` CLI       | Git worktree, managed by orchestrator                          |
+| **Session**  | Claude Code in tmux, managed by Witness | Backend session via HTTP API                                   |
+
+The agent ID serves as a **correlation key** during execution (linking events, notes, and merge entries within a single run) but has no meaningful identity beyond that. The `model` field is denormalized onto key events (`worker_started`, `completed`, `incomplete`, `agent_switch`) so the events table is self-contained for all analytics queries — no join to `agents` needed.
+
+Agent rows are deleted after successful merge and purged on daemon startup (idle/failed leftovers from previous runs). The `agent_id` columns in `events`, `notes`, and `merge_queue` are retained as correlation keys but have no FK constraint — events outlive agents by design.
 
 ### 3.3 Push-Based Execution (Propulsion Principle)
 
@@ -155,7 +161,23 @@ Molecules as data — multi-step workflows where each step is a trackable work i
 
 ### 3.5 Capability Ledger
 
-Every issue an agent closes is an event in the `events` table. Over time this accumulates into a CV. "Which agent is best at Go work?" becomes a SQL query over the events table joined with issue metadata. This is an emergent property of the work ledger — no special infrastructure needed.
+Every issue completion is recorded as an event with the `model` denormalized into the event detail JSON. "Which model is best at Go work?" becomes a SQL query over the events table joined with issue metadata — no join to the (ephemeral) agents table needed.
+
+```sql
+-- Model performance by issue type
+SELECT
+    json_extract(e.detail, '$.model') as model,
+    i.type,
+    COUNT(*) FILTER (WHERE e.event_type = 'completed') as successes,
+    COUNT(*) FILTER (WHERE e.event_type IN ('incomplete', 'failed')) as failures
+FROM events e
+JOIN issues i ON e.issue_id = i.id
+WHERE e.event_type IN ('completed', 'incomplete')
+  AND json_extract(e.detail, '$.model') IS NOT NULL
+GROUP BY model, i.type;
+```
+
+This is an emergent property of the event log — no special infrastructure needed.
 
 ---
 
@@ -256,7 +278,7 @@ CREATE TABLE dependencies (
 );
 
 ----------------------------------------------------------------------
--- AGENTS: persistent identity layer
+-- AGENTS: ephemeral execution identity (deleted after merge/cleanup)
 ----------------------------------------------------------------------
 CREATE TABLE agents (
     id          TEXT PRIMARY KEY,              -- "agent-toast"
@@ -275,13 +297,14 @@ CREATE TABLE agents (
 
 ----------------------------------------------------------------------
 -- EVENTS: append-only audit trail / capability ledger (source of truth)
+-- agent_id is a correlation key, not a live FK — events outlive agents
 ----------------------------------------------------------------------
 CREATE TABLE events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_id    TEXT REFERENCES issues(id),
-    agent_id    TEXT REFERENCES agents(id),
+    agent_id    TEXT,              -- correlation key (no FK — events outlive agents)
     event_type  TEXT NOT NULL,    -- created|claimed|done|finalized|failed|escalated|retry|merged|...
-    detail      TEXT,             -- JSON: old/new values, comments, artifacts, etc.
+    detail      TEXT,             -- JSON: old/new values, comments, artifacts, model, etc.
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -295,7 +318,7 @@ CREATE INDEX idx_events_type ON events(event_type);
 CREATE TABLE merge_queue (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_id    TEXT NOT NULL REFERENCES issues(id),
-    agent_id    TEXT REFERENCES agents(id),   -- worker who completed the work
+    agent_id    TEXT,                          -- correlation key (no FK — may outlive agent)
     project     TEXT NOT NULL,
     worktree    TEXT NOT NULL,                 -- path to the branch worktree
     branch_name TEXT NOT NULL,
@@ -313,7 +336,7 @@ CREATE INDEX idx_mq_project ON merge_queue(project);
 CREATE TABLE IF NOT EXISTS notes (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_id    TEXT REFERENCES issues(id),
-    agent_id    TEXT REFERENCES agents(id),
+    agent_id    TEXT,              -- correlation key (no FK — notes outlive agents)
     category    TEXT NOT NULL DEFAULT 'discovery',  -- discovery|gotcha|dependency|pattern|context
     content     TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -492,9 +515,9 @@ Each active agent maps 1:1 to an OpenCode session:
 
 ```
 Agent "toast"
-  ├── Identity: agents table row (permanent)
+  ├── Identity: agents table row (ephemeral — deleted after merge)
   ├── Sandbox:  ~/work/polecats/toast/ (git worktree)
-  └── Session:  OpenCode session_01JM... (ephemeral)
+  └── Session:  backend session (ephemeral)
 ```
 
 **Creating an agent session:**
@@ -993,8 +1016,8 @@ If you are blocked for more than 2-3 attempts at the same problem:
 3. Do NOT wait for human input — signal the blocker and stop
 
 ### Quality Contract
-Your work is recorded in a permanent capability ledger. Every completion builds
-your track record. Execute with care — but execute. Do not over-engineer or
+Your work is recorded in the capability ledger. Every completion builds
+your model's track record. Execute with care — but execute. Do not over-engineer or
 gold-plate. Implement what was asked, verify it works, commit, and stop.
 
 ## INSTRUCTIONS
@@ -1682,15 +1705,30 @@ def reconcile_on_startup():
 
 ---
 
-## 14. Capability Ledger (Emergent CVs)
+## 14. Capability Ledger (Model-Based Analytics)
 
-Every event is recorded with an `agent_id`. Over time, this builds a per-agent work history:
+Agents are ephemeral — they're created for a single issue and deleted after merge. The unit of analysis for performance tracking is **model × issue type → outcome**, not agent identity.
+
+The `model` is denormalized onto key events (`worker_started`, `completed`, `incomplete`, `agent_switch`) so the events table is self-contained for all analytics queries. No join to the agents table is needed.
 
 ```sql
--- Agent CV: what has agent "toast" done?
+-- Model performance by issue type
 SELECT
+    json_extract(e.detail, '$.model') as model,
     i.type,
-    i.project,
+    COUNT(*) FILTER (WHERE e.event_type = 'completed') as successes,
+    COUNT(*) FILTER (WHERE e.event_type IN ('incomplete', 'failed')) as failures
+FROM events e
+JOIN issues i ON e.issue_id = i.id
+WHERE e.event_type IN ('completed', 'incomplete')
+  AND json_extract(e.detail, '$.model') IS NOT NULL
+GROUP BY model, i.type;
+```
+
+```sql
+-- Which model is best at tasks tagged 'python'?
+SELECT
+    json_extract(e.detail, '$.model') as model,
     COUNT(*) as completed,
     AVG(julianday(e.created_at) - julianday(e_claim.created_at)) * 24 as avg_hours
 FROM events e
@@ -1698,29 +1736,14 @@ JOIN issues i ON e.issue_id = i.id
 LEFT JOIN events e_claim ON e_claim.issue_id = i.id
     AND e_claim.agent_id = e.agent_id
     AND e_claim.event_type = 'claimed'
-WHERE e.agent_id = 'agent-toast'
-  AND e.event_type = 'done'
-GROUP BY i.type, i.project;
+WHERE e.event_type = 'completed'
+  AND i.tags LIKE '%python%'
+  AND json_extract(e.detail, '$.model') IS NOT NULL
+GROUP BY model
+ORDER BY completed DESC, avg_hours ASC;
 ```
 
-```sql
--- Capability-based routing: who's best at tasks tagged 'go'?
-SELECT
-    e.agent_id,
-    COUNT(*) as go_tasks_completed,
-    AVG(julianday(e.created_at) - julianday(e_claim.created_at)) * 24 as avg_hours
-FROM events e
-JOIN issues i ON e.issue_id = i.id
-LEFT JOIN events e_claim ON e_claim.issue_id = i.id
-    AND e_claim.agent_id = e.agent_id
-    AND e_claim.event_type = 'claimed'
-WHERE e.event_type = 'done'
-  AND i.tags LIKE '%go%'
-GROUP BY e.agent_id
-ORDER BY go_tasks_completed DESC, avg_hours ASC;
-```
-
-No special infrastructure. The CV is an emergent property of the event log.
+No special infrastructure. The CV is an emergent property of the event log, keyed by model rather than agent identity.
 
 ---
 
