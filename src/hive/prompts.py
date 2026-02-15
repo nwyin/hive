@@ -46,6 +46,82 @@ def get_prompt_version(template_name: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 
+def build_retry_context(db, issue_id: str) -> Optional[str]:
+    """
+    Build retry context by querying previous failure events for an issue.
+
+    Args:
+        db: Database instance
+        issue_id: Issue ID to query events for
+
+    Returns:
+        Formatted retry context as markdown string, or None if no failures found
+    """
+    # Query for different types of failure events
+    incomplete_events = db.get_events(issue_id=issue_id, event_type="incomplete")
+    merge_rejected_events = db.get_events(issue_id=issue_id, event_type="merge_rejected")
+    stalled_events = db.get_events(issue_id=issue_id, event_type="stalled")
+
+    # Collect failure descriptions
+    failures = []
+
+    # Process incomplete events
+    for event in incomplete_events:
+        detail = event.get("detail", {})
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except json.JSONDecodeError:
+                detail = {}
+
+        reason = detail.get("reason", "Unknown reason")
+        summary = detail.get("summary", "")
+
+        if summary:
+            failures.append(f"**Attempt failed**: {reason} — {summary}")
+        else:
+            failures.append(f"**Attempt failed**: {reason}")
+
+    # Process merge_rejected events
+    for event in merge_rejected_events:
+        detail = event.get("detail", {})
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except json.JSONDecodeError:
+                detail = {}
+
+        summary = detail.get("summary", "Merge was rejected")
+        failures.append(f"**Merge rejected**: {summary}")
+
+    # Process stalled events (similar structure to incomplete)
+    for event in stalled_events:
+        detail = event.get("detail", {})
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except json.JSONDecodeError:
+                detail = {}
+
+        reason = detail.get("reason", "Agent stalled")
+        summary = detail.get("summary", "")
+
+        if summary:
+            failures.append(f"**Attempt stalled**: {reason} — {summary}")
+        else:
+            failures.append(f"**Attempt stalled**: {reason}")
+
+    # Return formatted context if any failures found
+    if failures:
+        failures_text = "\n".join(f"- {failure}" for failure in failures)
+        return f"""## Prior Attempts
+This issue has been attempted before. Previous attempts failed:
+{failures_text}
+Address these specific failure reasons. Do not repeat the same mistakes."""
+
+    return None
+
+
 def build_worker_prompt(
     agent_name: str,
     issue: Dict[str, Any],
@@ -54,6 +130,7 @@ def build_worker_prompt(
     project: str,
     completed_steps: Optional[List[str]] = None,
     notes: Optional[List[Dict[str, Any]]] = None,
+    retry_context: Optional[str] = None,
 ) -> str:
     """
     Build the worker prompt for an issue.
@@ -66,6 +143,7 @@ def build_worker_prompt(
         project: Project name
         completed_steps: List of completed step summaries (for molecules)
         notes: List of note dicts from other workers
+        retry_context: Optional retry context from previous failures
 
     Returns:
         Formatted worker prompt string
@@ -96,6 +174,11 @@ def build_worker_prompt(
             note_lines.append(f"- [{category}] {content} (from {source})")
         notes_section = "\n\n### Project Notes (from other workers)\n" + "\n".join(note_lines)
 
+    # Build retry section
+    retry_section = ""
+    if retry_context:
+        retry_section = f"\n\n{retry_context}"
+
     template_str = _load_template("worker")
     return Template(template_str).safe_substitute(
         agent_name=agent_name,
@@ -105,6 +188,7 @@ def build_worker_prompt(
         context=context,
         completed_section=completed_section,
         notes_section=notes_section,
+        retry_section=retry_section,
         worktree_path=worktree_path,
     )
 

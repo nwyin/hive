@@ -3,6 +3,7 @@
 from hive.prompts import (
     assess_completion,
     build_refinery_prompt,
+    build_retry_context,
     build_system_prompt,
     build_worker_prompt,
     get_prompt_version,
@@ -446,3 +447,175 @@ def test_worker_started_event_includes_prompt_version(temp_db):
     assert isinstance(prompt_version, str)
     assert len(prompt_version) == 12
     assert re.match(r"[0-9a-f]{12}", prompt_version)
+
+
+# --- Retry context tests ---
+
+
+def test_build_retry_context_no_events(temp_db):
+    """Test build_retry_context with no events returns None."""
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is None
+
+
+def test_build_retry_context_with_failures(temp_db):
+    """Test build_retry_context formats incomplete events."""
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add incomplete event
+    incomplete_detail = {"reason": "tests failed", "summary": "Unit tests are failing in auth module", "model": "claude-sonnet-4"}
+    temp_db.log_event(issue_id, agent_id, "incomplete", incomplete_detail)
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "## Prior Attempts" in result
+    assert "Previous attempts failed:" in result
+    assert "**Attempt failed**: tests failed — Unit tests are failing in auth module" in result
+    assert "Address these specific failure reasons" in result
+    assert "Do not repeat the same mistakes" in result
+
+
+def test_build_retry_context_with_rejection(temp_db):
+    """Test build_retry_context formats merge_rejected events."""
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add merge_rejected event
+    rejection_detail = {"summary": "Code quality issues found during review"}
+    temp_db.log_event(issue_id, agent_id, "merge_rejected", rejection_detail)
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "## Prior Attempts" in result
+    assert "**Merge rejected**: Code quality issues found during review" in result
+
+
+def test_build_retry_context_with_stalled_events(temp_db):
+    """Test build_retry_context formats stalled events."""
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add stalled event
+    stalled_detail = {"reason": "Agent became unresponsive", "summary": "No progress for 30 minutes"}
+    temp_db.log_event(issue_id, agent_id, "stalled", stalled_detail)
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "## Prior Attempts" in result
+    assert "**Attempt stalled**: Agent became unresponsive — No progress for 30 minutes" in result
+
+
+def test_build_retry_context_mixed_events(temp_db):
+    """Test build_retry_context with multiple different failure types."""
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add different types of events
+    temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "compilation error", "summary": "Syntax error in main.py"})
+    temp_db.log_event(issue_id, agent_id, "merge_rejected", {"summary": "Missing test coverage"})
+    temp_db.log_event(issue_id, agent_id, "stalled", {"reason": "timeout", "summary": ""})
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "## Prior Attempts" in result
+    assert "**Attempt failed**: compilation error — Syntax error in main.py" in result
+    assert "**Merge rejected**: Missing test coverage" in result
+    assert "**Attempt stalled**: timeout" in result
+
+
+def test_build_retry_context_string_detail(temp_db):
+    """Test build_retry_context handles string detail fields correctly."""
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add event with string detail (will be JSON stringified by db.log_event)
+    incomplete_detail = {"reason": "connection error", "summary": "API unreachable"}
+    temp_db.log_event(issue_id, agent_id, "incomplete", incomplete_detail)
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "**Attempt failed**: connection error — API unreachable" in result
+
+
+def test_build_retry_context_malformed_detail(temp_db):
+    """Test build_retry_context handles malformed detail gracefully."""
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Manually insert event with malformed JSON detail
+    temp_db.conn.execute(
+        "INSERT INTO events (issue_id, agent_id, event_type, detail) VALUES (?, ?, ?, ?)", (issue_id, agent_id, "incomplete", "invalid json")
+    )
+    temp_db.conn.commit()
+
+    result = build_retry_context(temp_db, issue_id)
+
+    assert result is not None
+    assert "**Attempt failed**: Unknown reason" in result
+
+
+def test_build_worker_prompt_with_retry_context():
+    """Test that retry context appears in worker prompt."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+    retry_context = """## Prior Attempts
+This issue has been attempted before. Previous attempts failed:
+- **Attempt failed**: tests failed — Unit tests failing
+Address these specific failure reasons. Do not repeat the same mistakes."""
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+        retry_context=retry_context,
+    )
+
+    assert "## Prior Attempts" in prompt
+    assert "Previous attempts failed:" in prompt
+    assert "**Attempt failed**: tests failed — Unit tests failing" in prompt
+    assert "Address these specific failure reasons" in prompt
+
+    # Verify it appears between notes_section and BEHAVIORAL CONTRACT
+    context_index = prompt.find("## CONTEXT")
+    behavioral_index = prompt.find("## BEHAVIORAL CONTRACT")
+    retry_index = prompt.find("## Prior Attempts")
+
+    assert context_index < retry_index < behavioral_index
+
+
+def test_build_worker_prompt_without_retry_context():
+    """Test that worker prompt works normally without retry context."""
+    issue = {"title": "Test Issue", "description": "Test description"}
+
+    prompt = build_worker_prompt(
+        agent_name="test-agent",
+        issue=issue,
+        worktree_path="/tmp/worktree",
+        branch_name="agent/test-agent",
+        project="test-project",
+        retry_context=None,
+    )
+
+    assert "## Prior Attempts" not in prompt
+    assert "Previous attempts failed" not in prompt

@@ -15,6 +15,7 @@ from .models import AgentIdentity, CompletionResult
 from .opencode import OpenCodeClient, make_model_config
 from .prompts import (
     assess_completion,
+    build_retry_context,
     build_system_prompt,
     build_worker_prompt,
     get_prompt_version,
@@ -700,6 +701,9 @@ class Orchestrator:
             # Gather notes for worker context
             worker_notes = self._gather_notes_for_worker(issue_id)
 
+            # Build retry context
+            retry_context = build_retry_context(self.db, issue_id)
+
             # Build and send prompt
             branch_name = f"agent/{agent_name}"
             prompt = build_worker_prompt(
@@ -709,6 +713,7 @@ class Orchestrator:
                 branch_name=branch_name,
                 project=self.project_name,
                 notes=worker_notes,
+                retry_context=retry_context,
             )
 
             system_prompt = build_system_prompt(
@@ -1252,6 +1257,9 @@ class Orchestrator:
                 completed_issues = self.db.get_completed_molecule_steps(next_step["parent_id"])
                 completed_steps = [f"{s['title']}: {(s.get('description') or '')[:100]}" for s in completed_issues]
 
+            # Build retry context
+            retry_context = build_retry_context(self.db, next_step["id"])
+
             # Build and send prompt
             branch_name = f"agent/{agent.name}"
             prompt = build_worker_prompt(
@@ -1262,6 +1270,7 @@ class Orchestrator:
                 project=self.project_name,
                 notes=worker_notes,
                 completed_steps=completed_steps,
+                retry_context=retry_context,
             )
 
             system_prompt = build_system_prompt(
