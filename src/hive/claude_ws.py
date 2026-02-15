@@ -121,7 +121,7 @@ class ClaudeWSBackend:
                 "",
                 cwd=directory,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
             self.sessions[session_id].process = proc
             logger.info(f"Spawned claude CLI (pid={proc.pid}) for session {session_id}, model={resolved_model}")
@@ -130,9 +130,17 @@ class ClaudeWSBackend:
         try:
             await asyncio.wait_for(self.sessions[session_id].connected.wait(), timeout=30)
         except asyncio.TimeoutError:
-            logger.error(f"Timeout waiting for CLI to connect for session {session_id}")
+            # Capture stderr for diagnostics
+            stderr_output = ""
+            if proc.stderr:
+                try:
+                    stderr_bytes = await asyncio.wait_for(proc.stderr.read(4096), timeout=2)
+                    stderr_output = stderr_bytes.decode(errors="replace").strip()
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            logger.error(f"Timeout waiting for CLI to connect for session {session_id}. stderr: {stderr_output or '(empty)'}")
             await self.delete_session(session_id)
-            raise RuntimeError(f"Claude CLI failed to connect within 30s for session {session_id}")
+            raise RuntimeError(f"Claude CLI failed to connect within 30s for session {session_id}. stderr: {stderr_output or '(empty)'}")
 
         return {"id": session_id, "title": title, "directory": directory}
 
