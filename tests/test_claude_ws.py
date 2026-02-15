@@ -402,11 +402,13 @@ async def test_send_message_async_sends_user_message(backend):
     session_id = "test-session"
     ws_mock = AsyncMock()
     ws_mock.closed = False
-    backend.sessions[session_id] = SessionState(
+    session = SessionState(
         ws=ws_mock,
         cli_session_id="cli-123",
         initialized=True,
     )
+    session.connected.set()  # Already initialized
+    backend.sessions[session_id] = session
 
     await backend.send_message_async(
         session_id,
@@ -428,11 +430,19 @@ async def test_send_message_with_system_prompt_initializes(backend):
     session_id = "test-session"
     ws_mock = AsyncMock()
     ws_mock.closed = False
-    backend.sessions[session_id] = SessionState(
+    session = SessionState(
         ws=ws_mock,
         cli_session_id="cli-123",
         initialized=False,
     )
+    backend.sessions[session_id] = session
+
+    # Simulate CLI sending system/init shortly after user message is sent
+    async def simulate_init():
+        await asyncio.sleep(0.05)
+        session.connected.set()
+
+    asyncio.create_task(simulate_init())
 
     with patch("hive.claude_ws.asyncio.sleep", new_callable=AsyncMock):
         await backend.send_message_async(

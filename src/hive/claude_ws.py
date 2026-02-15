@@ -40,7 +40,8 @@ class SessionState:
     messages: list = field(default_factory=list)
     result: Optional[dict] = None
     total_usage: dict = field(default_factory=dict)
-    connected: asyncio.Event = field(default_factory=asyncio.Event)
+    ws_connected: asyncio.Event = field(default_factory=asyncio.Event)  # WS handshake done
+    connected: asyncio.Event = field(default_factory=asyncio.Event)  # system/init received
     initialized: bool = False
 
 
@@ -126,9 +127,9 @@ class ClaudeWSBackend:
             self.sessions[session_id].process = proc
             logger.info(f"Spawned claude CLI (pid={proc.pid}) for session {session_id}, model={resolved_model}")
 
-        # Wait for WS connection + system/init (with timeout)
+        # Wait for WebSocket connection (not system/init — that requires a user message first)
         try:
-            await asyncio.wait_for(self.sessions[session_id].connected.wait(), timeout=30)
+            await asyncio.wait_for(self.sessions[session_id].ws_connected.wait(), timeout=30)
         except asyncio.TimeoutError:
             # Capture stderr for diagnostics
             stderr_output = ""
@@ -138,7 +139,7 @@ class ClaudeWSBackend:
                     stderr_output = stderr_bytes.decode(errors="replace").strip()
                 except (asyncio.TimeoutError, Exception):
                     pass
-            logger.error(f"Timeout waiting for CLI to connect for session {session_id}. stderr: {stderr_output or '(empty)'}")
+            logger.error(f"Timeout waiting for CLI WS connection for session {session_id}. stderr: {stderr_output or '(empty)'}")
             await self.delete_session(session_id)
             raise RuntimeError(f"Claude CLI failed to connect within 30s for session {session_id}. stderr: {stderr_output or '(empty)'}")
 
@@ -169,7 +170,8 @@ class ClaudeWSBackend:
                 text = part.get("text", "")
                 break
 
-        # Send user message
+        # Send user message — the CLI responds with system/init after the
+        # first user message, so we send first, then wait for init.
         await self._ws_send(
             session_id,
             {
@@ -180,6 +182,14 @@ class ClaudeWSBackend:
             },
         )
         session.status = "busy"
+
+        # Wait for system/init if this is the first message
+        if not session.connected.is_set():
+            try:
+                await asyncio.wait_for(session.connected.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout waiting for system/init from session {session_id}")
+                raise RuntimeError(f"CLI did not send system/init within 30s for session {session_id}")
 
     async def get_session_status(self, session_id: str, directory: Optional[str] = None) -> Dict[str, Any]:
         """Return tracked status from WS messages."""
@@ -301,7 +311,8 @@ class ClaudeWSBackend:
             return ws
 
         session.ws = ws
-        logger.debug(f"CLI connected for session {session_id}")
+        session.ws_connected.set()
+        logger.info(f"CLI WebSocket connected for session {session_id}")
 
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
@@ -318,7 +329,7 @@ class ClaudeWSBackend:
         # Connection closed
         if session_id in self.sessions:
             self.sessions[session_id].ws = None
-            logger.debug(f"CLI disconnected for session {session_id}")
+            logger.info(f"CLI disconnected for session {session_id}")
 
         return ws
 
@@ -333,7 +344,7 @@ class ClaudeWSBackend:
         if msg_type == "system" and msg.get("subtype") == "init":
             session.cli_session_id = msg.get("session_id")
             session.connected.set()
-            logger.debug(f"Session {session_id} initialized (cli_session={session.cli_session_id})")
+            logger.info(f"Session {session_id} initialized (cli_session={session.cli_session_id})")
 
         elif msg_type == "assistant":
             session.messages.append(msg)
