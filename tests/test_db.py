@@ -1047,46 +1047,38 @@ def test_notes_database_not_connected_error(temp_db):
 
 @pytest.fixture
 def db_with_model_events(temp_db):
-    """Create a DB with issues and model events for performance testing."""
+    """Create a DB with issues that have model set for performance testing."""
     db = temp_db
 
     # Issue 1: completed with sonnet, tagged python+bugfix
-    id1 = db.create_issue(title="Fix login", project="test", issue_type="bug", tags=["python", "bugfix"])
-    db.log_event(id1, None, "worker_started", {"model": "claude-sonnet-4-5-20250929"})
-    db.log_event(id1, None, "tokens_used", {"input_tokens": 1000, "output_tokens": 500})
-    db.log_event(id1, None, "completed", {"model": "claude-sonnet-4-5-20250929"})
+    id1 = db.create_issue(title="Fix login", project="test", issue_type="bug", model="claude-sonnet-4-5-20250929", tags=["python", "bugfix"])
+    db.log_event(id1, None, "tokens_used", {"input_tokens": 1000, "output_tokens": 500, "model": "claude-sonnet-4-5-20250929"})
     db.conn.execute("UPDATE issues SET status = 'done' WHERE id = ?", (id1,))
 
     # Issue 2: failed with opus, tagged javascript+feature
-    id2 = db.create_issue(title="Add dashboard", project="test", issue_type="feature", tags=["javascript", "feature"])
-    db.log_event(id2, None, "worker_started", {"model": "claude-opus-4-6"})
-    db.log_event(id2, None, "tokens_used", {"input_tokens": 2000, "output_tokens": 800})
-    db.log_event(id2, None, "incomplete", {"model": "claude-opus-4-6"})
+    id2 = db.create_issue(title="Add dashboard", project="test", issue_type="feature", model="claude-opus-4-6", tags=["javascript", "feature"])
+    db.log_event(id2, None, "tokens_used", {"input_tokens": 2000, "output_tokens": 800, "model": "claude-opus-4-6"})
     db.conn.execute("UPDATE issues SET status = 'failed' WHERE id = ?", (id2,))
 
     # Issue 3: completed with sonnet, tagged javascript
-    id3 = db.create_issue(title="Fix button", project="test", issue_type="bug", tags=["javascript"])
-    db.log_event(id3, None, "worker_started", {"model": "claude-sonnet-4-5-20250929"})
-    db.log_event(id3, None, "completed", {"model": "claude-sonnet-4-5-20250929"})
+    id3 = db.create_issue(title="Fix button", project="test", issue_type="bug", model="claude-sonnet-4-5-20250929", tags=["javascript"])
     db.conn.execute("UPDATE issues SET status = 'done' WHERE id = ?", (id3,))
 
     # Issue 4: no tags
-    id4 = db.create_issue(title="Misc task", project="test", issue_type="task")
-    db.log_event(id4, None, "worker_started", {"model": "claude-opus-4-6"})
-    db.log_event(id4, None, "completed", {"model": "claude-opus-4-6"})
+    id4 = db.create_issue(title="Misc task", project="test", issue_type="task", model="claude-opus-4-6")
     db.conn.execute("UPDATE issues SET status = 'done' WHERE id = ?", (id4,))
 
     db.conn.commit()
     return db
 
 
-def test_model_performance_extracts_model_from_events(db_with_model_events):
-    """Model should come from events, not the (ephemeral) agents table."""
+def test_model_performance_reads_model_from_issue(db_with_model_events):
+    """Model should come from issues.model column."""
     results = db_with_model_events.get_model_performance(group_by="type")
     models = {r["model"] for r in results}
     assert "claude-sonnet-4-5-20250929" in models
     assert "claude-opus-4-6" in models
-    assert None not in models
+    assert "unknown" not in models
 
 
 def test_model_performance_group_by_tag(db_with_model_events):

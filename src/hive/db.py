@@ -1073,15 +1073,6 @@ class Database:
 
         Returns aggregated stats: model, group label, success/failure counts, retries, tokens, duration.
         """
-        model_subquery = """COALESCE(
-            (SELECT json_extract(em.detail, '$.model')
-             FROM events em
-             WHERE em.issue_id = i.id
-               AND em.event_type IN ('completed', 'incomplete', 'worker_started', 'tokens_used')
-               AND json_extract(em.detail, '$.model') IS NOT NULL
-             ORDER BY em.id DESC LIMIT 1),
-            i.model)"""
-
         if group_by == "tag":
             group_col = "COALESCE(jt.value, 'untagged')"
             group_alias = "tag"
@@ -1096,7 +1087,7 @@ class Database:
 
         query = f"""
             SELECT
-                {model_subquery} as model,
+                COALESCE(i.model, 'unknown') as model,
                 {group_col} as {group_alias},
                 COUNT(DISTINCT i.id) as issue_count,
                 SUM(CASE WHEN i.status IN ('done', 'finalized') THEN 1 ELSE 0 END) as successes,
@@ -1113,7 +1104,7 @@ class Database:
         """
         params: list = []
         if model:
-            query += f" AND {model_subquery} = ?"
+            query += " AND i.model = ?"
             params.append(model)
         if tag:
             query += " AND i.tags LIKE ?"
