@@ -118,21 +118,24 @@ def temp_git_repo(tmp_path):
 async def integration_orchestrator(fake_server, temp_db, temp_git_repo):
     """Create a fully wired Orchestrator for integration testing."""
     from hive.orchestrator import Orchestrator
+    from hive.opencode import OpenCodeClient
 
     # Patch Config to use fake server and set other testing values
     with patch.object(Config, "OPENCODE_URL", fake_server.url), patch.object(Config, "MAX_AGENTS", 1), patch.object(Config, "POLL_INTERVAL", 1):
-        orchestrator = Orchestrator(project_path=str(temp_git_repo), project_name="test-project", db=temp_db)
+        # Create OpenCode client with explicit fake server URL
+        async with OpenCodeClient(base_url=fake_server.url) as opencode_client:
+            orchestrator = Orchestrator(
+                project_path=str(temp_git_repo), project_name="test-project", db=temp_db, opencode_client=opencode_client
+            )
 
-        # Initialize the orchestrator
-        await orchestrator.initialize()
+            yield orchestrator
 
-        yield orchestrator
-
-        # Cleanup
-        try:
-            await orchestrator.shutdown()
-        except Exception:
-            pass
+            # Cleanup - orchestrator doesn't have shutdown method either
+            # Just clean up any active agents
+            try:
+                orchestrator.active_agents.clear()
+            except Exception:
+                pass
 
 
 def write_hive_result(
