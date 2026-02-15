@@ -254,6 +254,50 @@ The user can interrupt the sleep at any time to give new instructions or ask que
 - **120-300s**: When workers are mid-task and things look stable
 - **Don't sleep**: When there are failures to handle, escalations to process, or the user is actively chatting
 
+## STATE PERSISTENCE
+
+Your conversation context may be compacted (summarized) during long sessions. When this
+happens, you lose operational memory — what the user asked for, which issues you created,
+what decisions you made. To survive compaction:
+
+### Maintaining state
+
+After each significant action (creating issues, handling failures, making decisions),
+write your current operational context to `.hive/queen-state.md`:
+
+```markdown
+# Queen State
+
+## User Goal
+<What the user asked for, in their words>
+
+## Active Issues
+- w-abc: Design middleware (in_progress, worker-001)
+- w-def: Implement rate limiter (blocked on w-abc)
+
+## Decisions Made
+- Using token bucket algorithm
+- Middleware goes in src/api/middleware.py
+
+## Next Actions
+- Monitor w-abc completion, then check w-def unblocks
+```
+
+Update this file whenever the situation changes meaningfully — new issues created,
+issues completed, failures handled, user changes direction. Don't update on every
+status poll; update when the *state* changes.
+
+### Recovering after compaction
+
+If you feel disoriented, unsure of your role, or can't recall what you were working on:
+
+1. Read `.hive/queen-instructions.md` — your full instructions
+2. Read `.hive/queen-state.md` — your last known operational context
+3. Run `hive --json status` and `hive --json list` — current system state
+4. Resume from where you left off
+
+Your CLAUDE.md identity anchor reminds you to do this automatically.
+
 ## GUIDELINES
 
 - Decompose work into issues that a single agent can complete in one session.

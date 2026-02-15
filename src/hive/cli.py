@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -1351,28 +1352,105 @@ class HiveCLI:
         print("Launching Queen Bee TUI (OpenCode)...\n")
         os.execvp(cmd[0], cmd)
 
-    def _queen_claude(self):
-        """Launch Queen Bee as an interactive Claude CLI session."""
+    # Sentinel markers for the Queen identity block in CLAUDE.md
+    _QUEEN_SENTINEL_START = "<!-- HIVE-QUEEN-SESSION-START -->"
+    _QUEEN_SENTINEL_END = "<!-- HIVE-QUEEN-SESSION-END -->"
+
+    def _queen_write_identity_files(self) -> tuple[Path, Path]:
+        """Write Queen identity files for compaction persistence.
+
+        Returns (claude_md_path, instructions_path) for cleanup.
+        """
         from .prompts import _load_template
 
+        queen_prompt = _load_template("queen")
+
+        # Write full instructions to .hive/ so Queen can re-read after compaction
+        hive_dir = self.project_path / ".hive"
+        hive_dir.mkdir(exist_ok=True)
+        instructions_path = hive_dir / "queen-instructions.md"
+        instructions_path.write_text(queen_prompt)
+
+        # Write condensed identity anchor to .claude/CLAUDE.md (re-read every turn)
+        claude_dir = self.project_path / ".claude"
+        claude_dir.mkdir(exist_ok=True)
+        claude_md = claude_dir / "CLAUDE.md"
+
+        queen_block = (
+            f"\n{self._QUEEN_SENTINEL_START}\n"
+            "# HIVE QUEEN BEE — ACTIVE SESSION\n"
+            "You are the Queen Bee coordinator. You do NOT write code — you plan, decompose, and monitor.\n"
+            "Full instructions: `.hive/queen-instructions.md` — re-read if your context feels incomplete.\n"
+            "Operational state: `.hive/queen-state.md` — re-read to recall what you were working on.\n"
+            "Always use `hive --json` for CLI commands. The daemon runs in background.\n"
+            f"{self._QUEEN_SENTINEL_END}\n"
+        )
+
+        existing = claude_md.read_text() if claude_md.exists() else ""
+        if self._QUEEN_SENTINEL_START not in existing:
+            claude_md.write_text(existing + queen_block)
+
+        return claude_md, instructions_path
+
+    def _queen_cleanup_identity_files(self, claude_md: Path, instructions_path: Path):
+        """Remove Queen identity files written for the session."""
+        # Strip queen block from CLAUDE.md
+        if claude_md.exists():
+            content = claude_md.read_text()
+            start = content.find(self._QUEEN_SENTINEL_START)
+            if start != -1:
+                end = content.find(self._QUEEN_SENTINEL_END)
+                if end != -1:
+                    end += len(self._QUEEN_SENTINEL_END)
+                    # Consume trailing newline if present
+                    if end < len(content) and content[end] == "\n":
+                        end += 1
+                    cleaned = (content[:start] + content[end:]).rstrip("\n")
+                    if cleaned.strip():
+                        claude_md.write_text(cleaned + "\n")
+                    else:
+                        claude_md.unlink()
+
+        # Remove instructions file
+        instructions_path.unlink(missing_ok=True)
+
+        # Remove state file (ephemeral per-session)
+        state_file = self.project_path / ".hive" / "queen-state.md"
+        state_file.unlink(missing_ok=True)
+
+    def _queen_claude(self):
+        """Launch Queen Bee as an interactive Claude CLI session."""
         # Claude CLI refuses to launch inside another Claude Code session.
         # Since the queen is a top-level interactive session (not nested), clear the guard.
         os.environ.pop("CLAUDECODE", None)
 
-        queen_prompt = _load_template("queen")
+        # Write identity files for compaction persistence
+        claude_md, instructions_path = self._queen_write_identity_files()
+
+        # Short system prompt — full instructions are in the file
+        short_prompt = "You are the Hive Queen Bee coordinator. Read .hive/queen-instructions.md for your full instructions now."
+
         claude_cmd = os.environ.get("CLAUDE_CMD", "claude")
         cmd = [
             claude_cmd,
             "--model",
             Config.DEFAULT_MODEL,
             "--append-system-prompt",
-            queen_prompt,
+            short_prompt,
             "--allowedTools",
             "Bash(hive:*) Bash(git:*) Bash(ls:*) Bash(find:*) Bash(rg:*) Read Edit Write",
         ]
 
         print("Launching Queen Bee TUI (Claude CLI)...\n")
-        os.execvp(cmd[0], cmd)
+
+        # Use subprocess.run (not os.execvp) so we can clean up identity files on exit
+        try:
+            result = subprocess.run(cmd)
+            sys.exit(result.returncode)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._queen_cleanup_identity_files(claude_md, instructions_path)
 
     def watch(self, issue_id: str, *, json_mode: bool = False):
         """Watch live events from a worker's OpenCode session."""
