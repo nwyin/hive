@@ -450,8 +450,8 @@ class MergeProcessor:
             parent_id = issue["parent_id"]
             # Check if all children of the parent are now complete
             if self.db.check_molecule_complete(parent_id):
-                # Mark parent molecule as done
-                self.db.update_issue_status(parent_id, "done")
+                # Mark parent molecule as finalized (all steps merged, nothing left to do)
+                self.db.update_issue_status(parent_id, "finalized")
                 self.db.log_event(
                     parent_id,
                     None,

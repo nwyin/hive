@@ -769,7 +769,7 @@ async def test_send_to_refinery_harvests_notes(tmp_path, temp_db, mock_opencode)
 
 @pytest.mark.asyncio
 async def test_finalize_issue_molecule_completion(temp_db, mock_opencode, git_repo):
-    """Test that finalizing all steps of a molecule marks the parent as done."""
+    """Test that finalizing all steps of a molecule marks the parent as finalized."""
     # Create a parent molecule issue
     parent_id = temp_db.create_issue(title="Molecule Task", project="test")
 
@@ -833,10 +833,10 @@ async def test_finalize_issue_molecule_completion(temp_db, mock_opencode, git_re
     # Mark second step as done before finalizing
     temp_db.update_issue_status(step2_id, "done")
 
-    # Finalize second step - parent should now be done
+    # Finalize second step - parent should now be finalized (nothing left to merge)
     await mp._finalize_issue(entry2)
     parent = temp_db.get_issue(parent_id)
-    assert parent["status"] == "done"
+    assert parent["status"] == "finalized"
 
     # Verify molecule_complete event was logged for the parent
     cursor = temp_db.conn.execute("SELECT * FROM events WHERE issue_id = ? AND event_type = 'molecule_complete'", (parent_id,))
