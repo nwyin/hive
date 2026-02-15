@@ -1202,7 +1202,14 @@ class HiveCLI:
     # ── Queen Bee TUI ─────────────────────────────────────────────────
 
     def queen(self):
-        """Launch Queen Bee TUI attached to the opencode server."""
+        """Launch Queen Bee TUI using the configured backend."""
+        if Config.BACKEND == "claude-ws":
+            self._queen_claude()
+        else:
+            self._queen_opencode()
+
+    def _queen_opencode(self):
+        """Launch Queen Bee via OpenCode TUI."""
         opencode_cmd = os.environ.get("OPENCODE_CMD", "opencode")
         cmd = [
             opencode_cmd,
@@ -1212,7 +1219,30 @@ class HiveCLI:
             str(self.project_path),
         ]
 
-        print("Launching Queen Bee TUI...\n")
+        print("Launching Queen Bee TUI (OpenCode)...\n")
+        os.execvp(cmd[0], cmd)
+
+    def _queen_claude(self):
+        """Launch Queen Bee as an interactive Claude CLI session."""
+        from .prompts import _load_template
+
+        # Claude CLI refuses to launch inside another Claude Code session.
+        # Since the queen is a top-level interactive session (not nested), clear the guard.
+        os.environ.pop("CLAUDECODE", None)
+
+        queen_prompt = _load_template("queen")
+        claude_cmd = os.environ.get("CLAUDE_CMD", "claude")
+        cmd = [
+            claude_cmd,
+            "--model",
+            Config.DEFAULT_MODEL,
+            "--append-system-prompt",
+            queen_prompt,
+            "--allowedTools",
+            "Bash(hive:*) Bash(git:*) Bash(ls:*) Bash(find:*) Bash(rg:*) Read Edit Write",
+        ]
+
+        print("Launching Queen Bee TUI (Claude CLI)...\n")
         os.execvp(cmd[0], cmd)
 
     def watch(self, issue_id: str, *, json_mode: bool = False):
