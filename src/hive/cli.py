@@ -1578,9 +1578,44 @@ def _do_setup(project_path: Path, project_name: str, *, json_mode: bool = False)
     print("  4. hive queen                           — launch Queen Bee TUI")
 
 
+_EPILOG = """\
+advanced commands:
+  update, cancel, finalize, retry, escalate, molecule, dep, ready,
+  agents, agent, events, logs, merges, costs, stats, metrics,
+  daemon, watch, note, notes, ui
+
+Run `hive <command> -h` for details on any command.
+"""
+
+# Commands shown in `hive -h`
+_ESSENTIAL_COMMANDS = {"setup", "create", "list", "show", "status", "start", "stop", "queen", "doctor"}
+
+
+class _HiveHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Custom formatter that hides non-essential subcommands."""
+
+    def _format_action(self, action):
+        if isinstance(action, argparse._SubParsersAction):
+            # Filter choices to only essential commands
+            orig_choices = action._choices_actions
+            action._choices_actions = [a for a in orig_choices if a.dest in _ESSENTIAL_COMMANDS]
+            result = super()._format_action(action)
+            action._choices_actions = orig_choices
+            return result
+        return super()._format_action(action)
+
+    def _format_usage(self, usage, actions, groups, prefix):
+        # Override usage to not list all subcommand choices
+        return super()._format_usage(usage, actions, groups, prefix)
+
+
 def main():
     """Main CLI entry point."""
-    parser = argparse.ArgumentParser(description="Hive multi-agent orchestrator")
+    parser = argparse.ArgumentParser(
+        description="Hive multi-agent orchestrator",
+        epilog=_EPILOG,
+        formatter_class=_HiveHelpFormatter,
+    )
 
     # Global options
     parser.add_argument("--db", default=None, help="Database path (default: ~/.hive/hive.db)")
@@ -1592,7 +1627,10 @@ def main():
         help="Output JSON (for programmatic use)",
     )
 
-    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="command",
+    )
 
     # create command
     create_parser = subparsers.add_parser("create", help="Create a new issue")
@@ -1646,15 +1684,15 @@ def main():
     list_parser.add_argument("--assignee", help="Filter by agent assignee")
     list_parser.add_argument("--limit", type=int, default=50, help="Max issues to show (default: 50)")
 
-    # ready command
-    subparsers.add_parser("ready", help="Show ready queue")
+    # ready command (hidden — advanced)
+    subparsers.add_parser("ready", help=argparse.SUPPRESS)
 
     # show command
     show_parser = subparsers.add_parser("show", help="Show issue details")
     show_parser.add_argument("issue_id", help="Issue ID")
 
-    # update command
-    update_parser = subparsers.add_parser("update", help="Update an issue")
+    # update command (hidden — advanced)
+    update_parser = subparsers.add_parser("update", help=argparse.SUPPRESS)
     update_parser.add_argument("issue_id", help="Issue ID")
     update_parser.add_argument("--title", help="New title")
     update_parser.add_argument("--description", help="New description")
@@ -1663,28 +1701,28 @@ def main():
     update_parser.add_argument("--model", help="New model")
     update_parser.add_argument("--tags", type=str, help="Comma-separated tags (e.g. refactor,python,small)")
 
-    # cancel command
-    cancel_parser = subparsers.add_parser("cancel", help="Cancel an issue")
+    # cancel command (hidden — advanced)
+    cancel_parser = subparsers.add_parser("cancel", help=argparse.SUPPRESS)
     cancel_parser.add_argument("issue_id", help="Issue ID")
     cancel_parser.add_argument("--reason", default="", help="Reason for cancellation")
 
-    # finalize command
-    finalize_parser = subparsers.add_parser("finalize", help="Finalize/close an issue")
+    # finalize command (hidden — advanced)
+    finalize_parser = subparsers.add_parser("finalize", help=argparse.SUPPRESS)
     finalize_parser.add_argument("issue_id", help="Issue ID")
     finalize_parser.add_argument("--resolution", default="", help="Resolution description")
 
-    # retry command
-    retry_parser = subparsers.add_parser("retry", help="Retry a failed/blocked issue")
+    # retry command (hidden — advanced)
+    retry_parser = subparsers.add_parser("retry", help=argparse.SUPPRESS)
     retry_parser.add_argument("issue_id", help="Issue ID")
     retry_parser.add_argument("--notes", default="", help="Notes about what to try differently")
 
-    # escalate command
-    escalate_parser = subparsers.add_parser("escalate", help="Escalate an issue")
+    # escalate command (hidden — advanced)
+    escalate_parser = subparsers.add_parser("escalate", help=argparse.SUPPRESS)
     escalate_parser.add_argument("issue_id", help="Issue ID")
     escalate_parser.add_argument("--reason", default="", help="Reason for escalation")
 
-    # molecule command
-    molecule_parser = subparsers.add_parser("molecule", help="Create a multi-step workflow")
+    # molecule command (hidden — advanced)
+    molecule_parser = subparsers.add_parser("molecule", help=argparse.SUPPRESS)
     molecule_parser.add_argument("title", help="Molecule title")
     molecule_parser.add_argument("--description", default="", help="Molecule description")
     molecule_parser.add_argument("--steps", required=True, help="Steps as JSON array")
@@ -1694,8 +1732,8 @@ def main():
     )
     molecule_parser.add_argument("--tags", type=str, help="Comma-separated tags (e.g. refactor,python,small)")
 
-    # dep command
-    dep_parser = subparsers.add_parser("dep", help="Manage dependencies")
+    # dep command (hidden — advanced)
+    dep_parser = subparsers.add_parser("dep", help=argparse.SUPPRESS)
     dep_subparsers = dep_parser.add_subparsers(dest="dep_command", help="Dependency command")
 
     dep_add_parser = dep_subparsers.add_parser("add", help="Add a dependency")
@@ -1712,23 +1750,23 @@ def main():
     dep_remove_parser.add_argument("issue_id", help="Issue with the dependency")
     dep_remove_parser.add_argument("depends_on", help="Dependency to remove")
 
-    # agents command
-    agents_parser = subparsers.add_parser("agents", help="List agents")
+    # agents command (hidden — advanced)
+    agents_parser = subparsers.add_parser("agents", help=argparse.SUPPRESS)
     agents_parser.add_argument("--status", help="Filter by status (idle, working, stalled, failed)")
 
-    # agent command
-    agent_parser = subparsers.add_parser("agent", help="Show agent details")
+    # agent command (hidden — advanced)
+    agent_parser = subparsers.add_parser("agent", help=argparse.SUPPRESS)
     agent_parser.add_argument("agent_id", help="Agent ID")
 
-    # events command
-    events_parser = subparsers.add_parser("events", help="Show events")
+    # events command (hidden — advanced)
+    events_parser = subparsers.add_parser("events", help=argparse.SUPPRESS)
     events_parser.add_argument("--issue", help="Filter by issue ID")
     events_parser.add_argument("--agent", help="Filter by agent ID")
     events_parser.add_argument("--type", dest="event_type", help="Filter by event type")
     events_parser.add_argument("--limit", type=int, default=20, help="Number of events (default: 20)")
 
-    # logs command
-    logs_parser = subparsers.add_parser("logs", help="Show event log (tail -f style)")
+    # logs command (hidden — advanced)
+    logs_parser = subparsers.add_parser("logs", help=argparse.SUPPRESS)
     logs_parser.add_argument("-f", "--follow", action="store_true", help="Follow new events in real time")
     logs_parser.add_argument(
         "-n",
@@ -1740,32 +1778,32 @@ def main():
     logs_parser.add_argument("--issue", help="Filter by issue ID")
     logs_parser.add_argument("--agent", help="Filter by agent ID")
 
-    # merges command
-    merges_parser = subparsers.add_parser("merges", help="List merge queue entries")
+    # merges command (hidden — advanced)
+    merges_parser = subparsers.add_parser("merges", help=argparse.SUPPRESS)
     merges_parser.add_argument("--status", help="Filter by status (queued|running|merged|failed)")
 
-    # costs command
-    costs_parser = subparsers.add_parser("costs", help="Show token usage and cost estimates")
+    # costs command (hidden — advanced)
+    costs_parser = subparsers.add_parser("costs", help=argparse.SUPPRESS)
     costs_parser.add_argument("--issue", help="Filter by specific issue ID")
     costs_parser.add_argument("--agent", help="Filter by specific agent ID")
 
     # status command
     subparsers.add_parser("status", help="Show orchestrator status")
 
-    # stats command
-    stats_parser = subparsers.add_parser("stats", help="Show model performance statistics")
+    # stats command (hidden — advanced)
+    stats_parser = subparsers.add_parser("stats", help=argparse.SUPPRESS)
     stats_parser.add_argument("--model", type=str, help="Filter by model name")
     stats_parser.add_argument("--tag", type=str, help="Filter by tag")
     stats_parser.add_argument("--by-type", action="store_true", help="Group by issue type instead of tag")
 
-    # metrics command
-    metrics_parser = subparsers.add_parser("metrics", help="Show agent run metrics")
+    # metrics command (hidden — advanced)
+    metrics_parser = subparsers.add_parser("metrics", help=argparse.SUPPRESS)
     metrics_parser.add_argument("--model", type=str, help="Filter by model name")
     metrics_parser.add_argument("--tag", type=str, help="Filter by tag")
     metrics_parser.add_argument("--type", dest="issue_type", type=str, help="Filter by issue type")
 
-    # daemon command
-    daemon_parser = subparsers.add_parser("daemon", help="Manage orchestrator daemon")
+    # daemon command (hidden — advanced)
+    daemon_parser = subparsers.add_parser("daemon", help=argparse.SUPPRESS)
     daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", help="Daemon command")
 
     daemon_start = daemon_subparsers.add_parser("start", help="Start daemon")
@@ -1803,16 +1841,16 @@ def main():
         help="Override backend (default: from config/HIVE_BACKEND)",
     )
 
-    # watch command
-    watch_parser = subparsers.add_parser("watch", help="Stream live events from a worker's OpenCode session")
+    # watch command (hidden — advanced)
+    watch_parser = subparsers.add_parser("watch", help=argparse.SUPPRESS)
     watch_parser.add_argument("issue_id", help="Issue ID to watch")
 
     # setup command (primary) + init (hidden alias)
     subparsers.add_parser("setup", help="Interactive project setup wizard")
     subparsers.add_parser("init", help=argparse.SUPPRESS)
 
-    # note command (add a note)
-    note_parser = subparsers.add_parser("note", help="Add a note to the knowledge base")
+    # note command (hidden — advanced)
+    note_parser = subparsers.add_parser("note", help=argparse.SUPPRESS)
     note_parser.add_argument("content", help="Note content")
     note_parser.add_argument("--issue", dest="issue_id", help="Associate note with an issue ID")
     note_parser.add_argument(
@@ -1822,8 +1860,8 @@ def main():
         help="Note category (default: discovery)",
     )
 
-    # notes command (list notes)
-    notes_parser = subparsers.add_parser("notes", help="List notes from the knowledge base")
+    # notes command (hidden — advanced)
+    notes_parser = subparsers.add_parser("notes", help=argparse.SUPPRESS)
     notes_parser.add_argument("--issue", dest="issue_id", help="Filter by issue ID")
     notes_parser.add_argument(
         "--category",
@@ -1832,8 +1870,8 @@ def main():
     )
     notes_parser.add_argument("--limit", type=int, default=20, help="Max notes to show (default: 20)")
 
-    # ui command
-    ui_parser = subparsers.add_parser("ui", help="Launch web UI to explore Hive data")
+    # ui command (hidden — advanced)
+    ui_parser = subparsers.add_parser("ui", help=argparse.SUPPRESS)
     ui_parser.add_argument("--port", type=int, default=8001, help="Port to serve on (default: 8001)")
     ui_parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
 
