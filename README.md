@@ -43,8 +43,6 @@ Rule of thumb: if you would split the work anyway, Hive is usually the better fi
 | Workers | Parallel implementers running in isolated worktrees |
 | Issues | The task board stored in SQLite |
 
-You can ignore deeper internals on day one.
-
 ## Setup Defaults (Safety First)
 
 `hive setup` now guides you through:
