@@ -1,6 +1,21 @@
 # Hive: Lightweight Multi-Agent Orchestrator
 
-A simplified multi-agent orchestration system using SQLite as the work queue and pluggable agent backends (OpenCode server or Claude Code CLI via WebSocket).
+A multi-agent orchestration system that coordinates parallel AI coding agents using SQLite as the work queue. Uses Claude Code CLI with your Pro/Max subscription — no API key needed.
+
+## Quick Start
+
+```bash
+# Install
+cd your-project && pip install -e path/to/hive
+
+# Set up and run
+hive setup                                          # configure project
+hive create "Add user auth" "Implement JWT login"   # create an issue
+hive start                                          # start the daemon
+hive status                                         # check progress
+```
+
+The daemon spawns worker agents that implement tasks in isolated git worktrees, then merges results back to main.
 
 ## Overview
 
@@ -12,20 +27,19 @@ Hive coordinates multiple AI coding agents working concurrently on a codebase. I
 - **Multi-step workflows**: Molecules enable sequential workflows where one agent handles multiple related steps
 - **Autonomous operation**: Permission unblocker keeps workers running without human intervention
 - **Merge pipeline**: Two-tier done→finalized pipeline (mechanical fast-path + Refinery LLM for conflicts)
-- **Dual completion detection**: SSE/WS events + session polling fallback
 - **Three-tier model config**: Queen (Opus), Workers (Sonnet), Refinery (Sonnet), with per-issue overrides
 
 ## Architecture
 
 ```
-Human ←→ Queen Bee TUI (opencode @queen agent, Opus)
+Human ←→ Queen Bee TUI (interactive Claude CLI session, Opus)
               ↓ (hive CLI commands)
          SQLite DB ←── Issues, deps, events, model config
               ↓
          Daemon (orchestrator loop)
               ↓ pluggable backend:
+              ↓   claude (default): WebSocket to Claude CLI processes (subscription billing)
               ↓   opencode: HTTP/SSE to OpenCode server (API billing)
-              ↓   claude: WebSocket to Claude CLI processes (subscription billing)
               ↓
          Worker Sessions (Sonnet) → git worktrees
               ↓
@@ -36,12 +50,11 @@ Human ←→ Queen Bee TUI (opencode @queen agent, Opus)
 
 | Component | Role |
 |-----------|------|
-| **Queen Bee** | OpenCode custom agent that decomposes user requests into issues via `hive` CLI |
+| **Queen Bee** | Interactive Claude CLI session that decomposes user requests into issues via `hive` CLI |
 | **Daemon** | Background orchestrator that polls the ready queue, spawns workers, detects completion, processes merges |
 | **Workers** | Ephemeral coding agents (Sonnet by default) that implement features, fix bugs, write tests |
 | **Refinery** | LLM merge processor (Sonnet) for conflict resolution and test failure diagnosis |
 | **SQLite DB** | Single source of truth for issues, dependencies, agents, events |
-| **Agent Backend** | OpenCode server (HTTP/SSE) or Claude WS (CLI via `--sdk-url` WebSocket) |
 | **Git Worktrees** | Per-agent sandboxes for isolated development |
 
 ## Installation
@@ -49,9 +62,7 @@ Human ←→ Queen Bee TUI (opencode @queen agent, Opus)
 ### Prerequisites
 
 1. **Python 3.12+**
-2. **Agent backend** (one of):
-   - **[OpenCode](https://github.com/nicholasgriffintn/opencode)** installed and available in PATH, OR
-   - **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (`claude` binary) with an active subscription (Pro/Max)
+2. **[Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)** (`claude` binary) with an active subscription (Pro/Max)
 3. **Git repository** for your project
 
 ### Install Hive
@@ -65,57 +76,17 @@ source .venv/bin/activate
 uv pip install -e ".[dev]"
 ```
 
-## Quick Start
+## Usage
 
-Hive supports two agent backends. Choose the one that fits your setup.
+### Launch the Queen Bee
 
-### Option A: OpenCode Backend (default)
-
-Requires an `ANTHROPIC_API_KEY` (API billing). OpenCode runs as a server that manages multiple agent sessions.
+The Queen Bee is an interactive session that decomposes your requests into issues, wires dependencies, and monitors progress:
 
 ```bash
-# 1. Start OpenCode server
-opencode serve --port 4096
-
-# 2. Start Hive daemon (in your project directory)
-hive daemon start -f
-```
-
-### Option B: Claude WS Backend
-
-Uses your Claude Code subscription credits (Pro/Max plan) — no API key needed. Hive runs a WebSocket server and spawns `claude` CLI processes that connect back to it via `--sdk-url`.
-
-```bash
-# Set the backend persistently for this project
-echo -e '[hive]\nbackend = "claude"' > .hive.toml
-
-# Or use the env var per-command
-HIVE_BACKEND=claude hive daemon start -f
-```
-
-That's it — no separate server to run. Each worker is a `claude` CLI process using your subscription. Default concurrency is 3 (conservative for subscription rate limits), configurable via `HIVE_CLAUDE_WS_MAX_CONCURRENT`.
-
-### Start the daemon
-
-The daemon polls the ready queue, spawns workers, monitors completion via dual detection (SSE/WS events + session polling fallback), processes the merge queue, and cleans up sessions on completion/cancellation/shutdown.
-
-### 3. Launch the Queen Bee
-
-```bash
-# Uses the backend from .hive.toml / HIVE_BACKEND / --backend flag
 hive queen
-
-# Or explicitly override for this invocation
-hive queen --backend claude
 ```
 
-The behavior depends on the configured backend:
-- **OpenCode**: Attaches to the running OpenCode server and opens a TUI. Switch to the `@queen` agent to interact with Hive.
-- **Claude WS**: Launches an interactive `claude` CLI session with the Queen Bee system prompt and scoped tool permissions.
-
-Either way, the Queen Bee decomposes your requests into issues, wires dependencies, and monitors progress — all through `hive` CLI commands.
-
-### 4. Or manage issues directly
+### Or manage issues directly
 
 ```bash
 # Create issues
@@ -128,7 +99,6 @@ hive dep add <test-issue-id> <auth-issue-id>
 # Monitor
 hive status
 hive list
-hive ready
 hive logs -f
 ```
 
@@ -136,116 +106,74 @@ The daemon picks up ready issues automatically and assigns them to workers.
 
 ## CLI Reference
 
+Essential commands (run `hive <command> -h` for details on any command):
+
+| Command | Description |
+|---------|-------------|
+| `hive setup` | Interactive project setup wizard |
+| `hive create <title> [desc]` | Create a new issue |
+| `hive list [--status S]` | List issues with sorting/filtering |
+| `hive show <id>` | Show issue details, deps, and events |
+| `hive status` | System overview (issue counts, workers, queues) |
+| `hive start` | Start the hive daemon |
+| `hive stop` | Stop the hive daemon |
+| `hive queen` | Launch Queen Bee interactive session |
+| `hive doctor` | Run system health checks |
+
 ### Global Options
 
 ```
---db PATH          Database path (default: hive.db)
---project PATH     Project directory (default: .)
+--db PATH          Database path (default: ~/.hive/hive.db)
+--project PATH     Project directory (auto-detected from git)
 --json             Output JSON (for programmatic use)
 ```
 
-### Issue Management
+### Advanced Commands
 
-| Command | Description |
-|---------|-------------|
-| `hive create <title> [desc] [--priority 0-4] [--type task\|bug\|feature] [--model MODEL]` | Create a new issue |
-| `hive list [--status S] [--sort FIELD] [-r] [--type T] [--assignee A] [--limit N]` | List issues with sorting/filtering |
-| `hive show <id>` | Show issue details, deps, and events |
-| `hive update <id> [--title T] [--description D] [--priority P] [--status S] [--model M]` | Update an issue |
-| `hive cancel <id> [--reason TEXT]` | Cancel an issue |
-| `hive finalize <id> [--resolution TEXT]` | Mark issue as done |
-| `hive retry <id> [--notes TEXT]` | Reset a failed issue to open |
-| `hive escalate <id> --reason TEXT` | Escalate for human attention |
+All commands below are fully functional — they're just not shown in `hive -h` to keep it clean:
 
-Sort fields for `hive list --sort`: `priority` (default), `created`, `updated`, `status`, `title`.
-
-### Workflows
-
-| Command | Description |
-|---------|-------------|
-| `hive molecule <title> --steps '<JSON>' [--description D]` | Create multi-step workflow |
-| `hive dep add <id> <depends_on> [--type blocks\|related]` | Add dependency |
-| `hive dep remove <id> <depends_on>` | Remove dependency |
-
-Steps JSON format for molecules:
-```json
-[
-  {"title": "Step 1", "description": "..."},
-  {"title": "Step 2", "needs": [0]}
-]
-```
-
-### Monitoring
-
-| Command | Description |
-|---------|-------------|
-| `hive status` | System overview (issue counts, workers, queues) |
-| `hive ready` | Show ready queue (unblocked, unassigned) |
-| `hive agents [--status S]` | List agents |
-| `hive agent <id>` | Show agent details |
-| `hive events [--issue ID] [--agent ID] [--type T] [--limit N]` | Query event log |
-| `hive logs [-f] [-n N] [--issue ID] [--agent ID]` | Tail event log |
-| `hive merges` | Show merge queue status |
-
-All commands support `--json` for machine-readable output.
-
-### Daemon
-
-| Command | Description |
-|---------|-------------|
-| `hive start` | Start the hive daemon |
-| `hive stop` | Stop the hive daemon |
-| `hive daemon start [-f]` | Start daemon (`-f` for foreground) |
-| `hive daemon stop` | Stop daemon |
-| `hive daemon restart` | Restart daemon |
-| `hive daemon status` | Show daemon status |
-| `hive daemon logs [-f] [-n N]` | Show daemon logs |
-
-### Queen Bee
-
-| Command | Description |
-|---------|-------------|
-| `hive queen [--backend opencode\|claude]` | Launch Queen Bee TUI (OpenCode) or interactive Claude CLI session (Claude WS) |
+`update`, `cancel`, `finalize`, `retry`, `escalate`, `molecule`, `dep`, `ready`, `agents`, `agent`, `events`, `logs`, `merges`, `costs`, `stats`, `metrics`, `daemon`, `watch`, `note`, `notes`, `ui`
 
 ## Configuration
 
 ```bash
+# Backend selection (default: claude)
+export HIVE_BACKEND=claude                 # "claude" (default) or "opencode"
+
 # Concurrency
-export HIVE_MAX_AGENTS=10                   # Max concurrent workers (default: 10)
+export HIVE_MAX_AGENTS=10                  # Max concurrent workers (default: 10)
 
-# Timing
-export HIVE_POLL_INTERVAL=5                 # Ready queue poll interval in seconds
-export HIVE_LEASE_DURATION=900              # Worker lease duration in seconds (default: 15min)
-export HIVE_LEASE_EXTENSION=600             # Lease extension on activity (default: 10min)
-export HIVE_PERMISSION_POLL_INTERVAL=0.5    # Permission check interval
-
-# Backend selection
-export HIVE_BACKEND=opencode                # "opencode" (default) or "claude"
-
-# OpenCode backend
-export OPENCODE_URL=http://127.0.0.1:4096  # OpenCode server URL
-export OPENCODE_SERVER_PASSWORD=secret      # Server password (if auth enabled)
-
-# Claude WS backend
-export HIVE_CLAUDE_WS_HOST=127.0.0.1       # WS server bind address (default: 127.0.0.1)
-export HIVE_CLAUDE_WS_PORT=8765            # WS server port (default: 8765)
-export HIVE_CLAUDE_WS_MAX_CONCURRENT=3     # Max concurrent CLI processes (default: 3)
-
-# Database
-export HIVE_DB_PATH=hive.db
+# Claude backend
+export HIVE_CLAUDE_WS_HOST=127.0.0.1      # WS server bind address (default: 127.0.0.1)
+export HIVE_CLAUDE_WS_PORT=8765           # WS server port (default: 8765)
+export HIVE_CLAUDE_WS_MAX_CONCURRENT=3    # Max concurrent CLI processes (default: 3)
 
 # Models (three-tier)
 export HIVE_DEFAULT_MODEL=claude-opus-4-6              # Queen/system (default)
-export HIVE_WORKER_MODEL=claude-sonnet-4-20250514      # Workers (cheaper for coding tasks)
-export HIVE_REFINERY_MODEL=claude-sonnet-4-20250514    # Merge refinery
+export HIVE_WORKER_MODEL=claude-sonnet-4-5-20250929    # Workers
+export HIVE_REFINERY_MODEL=claude-opus-4-6             # Merge refinery
 
 # Per-issue override (via CLI)
-# hive create "title" "desc" --model claude-opus-4-6   # Use Opus for this specific issue
+# hive create "title" "desc" --model claude-opus-4-6
 
 # Merge queue
-export HIVE_TEST_COMMAND="pytest tests/"    # Test command for merge gate (optional)
-export HIVE_MERGE_QUEUE_ENABLED=true        # Enable/disable merge queue
-export HIVE_MERGE_POLL_INTERVAL=10          # Merge queue poll interval in seconds
+export HIVE_TEST_COMMAND="pytest tests/"   # Test command for merge gate (optional)
+export HIVE_MERGE_QUEUE_ENABLED=true       # Enable/disable merge queue
+```
+
+Configuration is layered: defaults → `~/.hive/config.toml` → `.hive.toml` → environment variables. Use `hive setup` to create a project config, or set env vars for quick overrides.
+
+### Alternative: OpenCode Backend
+
+For API billing via an OpenCode server instead of subscription credits:
+
+```bash
+export HIVE_BACKEND=opencode
+export OPENCODE_URL=http://127.0.0.1:4096
+export OPENCODE_SERVER_PASSWORD=secret     # if auth enabled
+
+# Start OpenCode server first, then:
+hive start
 ```
 
 ## How It Works
@@ -257,17 +185,17 @@ export HIVE_MERGE_POLL_INTERVAL=10          # Merge queue poll interval in secon
 3. **Daemon polls ready queue** for issues with no unresolved dependencies
 4. **Worker spawned** for each ready issue:
    - Creates git worktree (`.worktrees/<agent-name>`)
-   - Creates OpenCode session scoped to worktree
+   - Spawns Claude CLI process connected via WebSocket
    - Sends worker prompt with task description
 5. **Worker executes autonomously**:
    - Reads code, makes changes, runs tests
    - Commits work to branch (`agent/<agent-name>`)
    - Writes `.hive-result.jsonl` file to worktree root (structured completion data)
 6. **Daemon detects completion** (dual strategy):
-   - SSE/WS event: `session.status → idle` (sub-second)
-   - Session polling: calls `get_session_status()` as fallback (catches missed events)
+   - WS event: `session.status → idle` (sub-second)
+   - Session polling: fallback (catches missed events)
 7. **Daemon assesses and merges**:
-   - Reads `.hive-result.jsonl` for structured completion data (after idle detected)
+   - Reads `.hive-result.jsonl` for structured completion data
    - Success: marks issue `done`, enqueues to merge queue
    - Merge queue: mechanical rebase → test → ff-merge, or Refinery LLM for conflicts
    - On merge success: issue → `finalized`, worktree cleaned up, session killed
@@ -289,16 +217,6 @@ Special states:
 - canceled: Abandoned
 ```
 
-### Permission Policy
-
-Workers run with restricted permissions:
-
-| Permission | Policy | Reason |
-|------------|--------|--------|
-| `read`, `edit`, `write`, `bash` | Allow | Standard tool usage |
-| `question`, `plan_enter` | Deny | No interactive prompts |
-| `external_directory` | Deny | Sandbox enforcement |
-
 ## Development
 
 ### Setup
@@ -312,11 +230,8 @@ uv pip install -e ".[dev]"
 ### Running Tests
 
 ```bash
-# Unit tests (integration tests auto-skipped without server)
-uv run pytest
-
-# Integration tests (requires running OpenCode server)
-uv run pytest -m integration
+uv run pytest                  # unit tests
+uv run pytest -m integration   # integration tests (requires backend)
 ```
 
 ### Linting & Formatting
@@ -324,44 +239,4 @@ uv run pytest -m integration
 ```bash
 uvx ruff check src/ tests/
 uvx ruff format --line-length 144 src/ tests/
-```
-
-### Exploring the Database
-
-Use [Datasette](https://datasette.io/) to browse and query the Hive SQLite database in your browser:
-
-```bash
-datasette ~/.hive/hive.db
-```
-
-This opens a web UI at `http://127.0.0.1:8001` where you can inspect issues, agents, events, dependencies, and the merge queue. Datasette is included in the dev dependencies.
-
-### Project Structure
-
-```
-hive/
-├── .opencode/agents/
-│   └── queen.md              # Queen Bee agent definition (system prompt + permissions)
-├── src/hive/
-│   ├── cli.py                # CLI interface (20+ commands, --json support, sort/filter)
-│   ├── config.py             # Configuration (3 model tiers + env vars)
-│   ├── daemon.py             # Background daemon with PID/log management
-│   ├── db.py                 # SQLite database layer (6 tables + model column)
-│   ├── git.py                # Git worktree + merge/rebase operations
-│   ├── ids.py                # Hash-based ID generation
-│   ├── merge.py              # Merge queue processor + Refinery LLM
-│   ├── models.py             # Data models (AgentIdentity, CompletionResult)
-│   ├── claude_ws.py          # Claude WS backend (WebSocket server + CLI process manager)
-│   ├── opencode.py           # OpenCode backend (HTTP client for sessions, messages, SSE)
-│   ├── orchestrator.py       # Orchestration engine (dual detection, session cleanup)
-│   ├── prompts.py            # Prompt loader + completion assessment logic
-│   ├── prompts/
-│   │   ├── worker.md         # Worker behavioral contract + completion signals
-│   │   ├── system.md         # System prompt template
-│   │   └── refinery.md       # Merge refinery prompt template
-│   ├── sse.py                # SSE event consumer + dispatch
-│   └── tools.py              # ToolExecutor (CLI backend, sort/filter)
-├── tests/                    # 300+ unit tests + integration tests
-├── pyproject.toml
-└── README.md
 ```
