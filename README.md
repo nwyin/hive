@@ -12,7 +12,7 @@ Hive coordinates multiple AI coding agents working concurrently on a codebase. I
 - **Multi-step workflows**: Molecules enable sequential workflows where one agent handles multiple related steps
 - **Autonomous operation**: Permission unblocker keeps workers running without human intervention
 - **Merge pipeline**: Two-tier done→finalized pipeline (mechanical fast-path + Refinery LLM for conflicts)
-- **Triple completion detection**: SSE events + file-based `.hive-result.jsonl` + session polling fallback
+- **Dual completion detection**: SSE/WS events + session polling fallback
 - **Three-tier model config**: Queen (Opus), Workers (Sonnet), Refinery (Sonnet), with per-issue overrides
 
 ## Architecture
@@ -97,7 +97,7 @@ That's it — no separate server to run. Each worker is a `claude` CLI process u
 
 ### Start the daemon
 
-The daemon polls the ready queue, spawns workers, monitors completion via triple detection (SSE/WS events + file-based + polling), processes the merge queue, and cleans up sessions on completion/cancellation/shutdown.
+The daemon polls the ready queue, spawns workers, monitors completion via dual detection (SSE/WS events + session polling fallback), processes the merge queue, and cleans up sessions on completion/cancellation/shutdown.
 
 ### 3. Launch the Queen Bee
 
@@ -262,13 +262,12 @@ export HIVE_MERGE_POLL_INTERVAL=10          # Merge queue poll interval in secon
 5. **Worker executes autonomously**:
    - Reads code, makes changes, runs tests
    - Commits work to branch (`agent/<agent-name>`)
-   - Writes `.hive-result.jsonl` file to worktree root (the sole completion signal)
-6. **Daemon detects completion** (triple strategy):
-   - SSE event: `session.status → idle` (sub-second)
-   - File-based: polls for `.hive-result.jsonl` in worktree (deterministic)
-   - Session polling: calls `get_session_status()` as fallback
+   - Writes `.hive-result.jsonl` file to worktree root (structured completion data)
+6. **Daemon detects completion** (dual strategy):
+   - SSE/WS event: `session.status → idle` (sub-second)
+   - Session polling: calls `get_session_status()` as fallback (catches missed events)
 7. **Daemon assesses and merges**:
-   - Reads `.hive-result.jsonl` for worker and refinery results
+   - Reads `.hive-result.jsonl` for structured completion data (after idle detected)
    - Success: marks issue `done`, enqueues to merge queue
    - Merge queue: mechanical rebase → test → ff-merge, or Refinery LLM for conflicts
    - On merge success: issue → `finalized`, worktree cleaned up, session killed
@@ -354,7 +353,7 @@ hive/
 │   ├── models.py             # Data models (AgentIdentity, CompletionResult)
 │   ├── claude_ws.py          # Claude WS backend (WebSocket server + CLI process manager)
 │   ├── opencode.py           # OpenCode backend (HTTP client for sessions, messages, SSE)
-│   ├── orchestrator.py       # Orchestration engine (triple detection, session cleanup)
+│   ├── orchestrator.py       # Orchestration engine (dual detection, session cleanup)
 │   ├── prompts.py            # Prompt loader + completion assessment logic
 │   ├── prompts/
 │   │   ├── worker.md         # Worker behavioral contract + completion signals
