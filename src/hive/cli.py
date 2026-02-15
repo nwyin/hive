@@ -1017,11 +1017,25 @@ class HiveCLI:
                     total = tokens["input_tokens"] + tokens["output_tokens"]
                     print(f"{model}: {total:,} tokens")
 
-    def doctor(self, *, json_mode: bool = False):
+    def doctor(self, fix: bool = False, *, json_mode: bool = False):
         """Run system health checks."""
         from .doctor import run_all_checks
 
         results = run_all_checks(self.db)
+
+        # Apply fixes if requested
+        fixed_checks = []
+        if fix:
+            for result in results:
+                if result.status in ("fail", "warn") and result.fix is not None:
+                    try:
+                        result.fix(self.db)
+                        fixed_checks.append(result.id)
+                    except Exception as e:
+                        if json_mode:
+                            print(json.dumps({"error": f"Failed to fix {result.id}: {e}"}), file=sys.stderr)
+                        else:
+                            print(f"Error fixing {result.id}: {e}", file=sys.stderr)
 
         if json_mode:
             output = [
@@ -1030,6 +1044,8 @@ class HiveCLI:
                     "status": r.status,
                     "description": r.description,
                     "details": r.details,
+                    "fixable": r.fix is not None,
+                    "fixed": r.id in fixed_checks,
                 }
                 for r in results
             ]
@@ -1041,13 +1057,18 @@ class HiveCLI:
         print("-" * 76)
         for result in results:
             status_display = result.status.upper()
-            print(f"{result.id:<8} {status_display:<8} {result.description[:60]}")
+            description = result.description[:60]
+            if result.id in fixed_checks:
+                description += " [FIXED]"
+            print(f"{result.id:<8} {status_display:<8} {description}")
 
         # Summary
         failures = sum(1 for r in results if r.status == "fail")
         warnings = sum(1 for r in results if r.status == "warn")
 
         print()
+        if fix and fixed_checks:
+            print(f"Fixed {len(fixed_checks)} check(s): {', '.join(fixed_checks)}")
         if failures > 0 or warnings > 0:
             parts = []
             if failures > 0:
@@ -1777,7 +1798,8 @@ def main():
     ui_parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
 
     # doctor command
-    subparsers.add_parser("doctor", help="Run system health checks")
+    doctor_parser = subparsers.add_parser("doctor", help="Run system health checks")
+    doctor_parser.add_argument("--fix", action="store_true", help="Auto-fix issues where possible")
 
     args = parser.parse_args()
 
@@ -1978,7 +2000,7 @@ def main():
             cli.ui(port=args.port, host=args.host)
 
         elif args.command == "doctor":
-            cli.doctor(json_mode=json_mode)
+            cli.doctor(fix=getattr(args, "fix", False), json_mode=json_mode)
 
         else:
             parser.print_help()

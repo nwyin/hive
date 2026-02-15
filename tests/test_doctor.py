@@ -1,12 +1,16 @@
 """Tests for hive doctor module."""
 
+import tempfile
+
 from hive.config import Config
 from hive.doctor import (
     check_inv1_exhausted_retry_budget,
     check_inv2_assignee_status_consistency,
     check_inv3_unbounded_loops,
     check_inv5_retry_count_disagreement,
+    check_inv6_orphaned_agents,
     check_inv7_stuck_merges,
+    check_inv8_ghost_worktrees,
     run_all_checks,
 )
 
@@ -215,12 +219,137 @@ def test_inv7_ignores_queued_merges(temp_db):
     assert result.status == "ok"
 
 
+def test_inv6_orphaned_agents_ok(temp_db):
+    """Test INV-6: No orphaned agents when worktrees exist."""
+    # Create agent with a real temporary worktree
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent_id = temp_db.create_agent("test-agent")
+        temp_db.conn.execute(
+            "UPDATE agents SET status = 'active', worktree = ? WHERE id = ?",
+            (tmpdir, agent_id),
+        )
+        temp_db.conn.commit()
+
+        result = check_inv6_orphaned_agents(temp_db)
+        assert result.status == "ok"
+        assert len(result.details) == 0
+
+
+def test_inv6_orphaned_agents_fail(temp_db):
+    """Test INV-6: Detect agent with missing worktree."""
+    # Create agent with non-existent worktree
+    agent_id = temp_db.create_agent("orphaned-agent")
+    issue_id = temp_db.create_issue("Test issue", project="test")
+
+    temp_db.conn.execute(
+        "UPDATE agents SET status = 'working', current_issue = ?, worktree = ? WHERE id = ?",
+        (issue_id, "/nonexistent/worktree/path", agent_id),
+    )
+    temp_db.conn.commit()
+
+    result = check_inv6_orphaned_agents(temp_db)
+    assert result.status == "fail"
+    assert len(result.details) == 1
+    assert result.details[0]["id"] == agent_id
+    assert result.details[0]["worktree"] == "/nonexistent/worktree/path"
+
+
+def test_inv6_ignores_idle_agents(temp_db):
+    """Test INV-6: Ignore idle agents even if worktree missing."""
+    # Create idle agent with missing worktree (should be ignored)
+    agent_id = temp_db.create_agent("idle-agent")
+    temp_db.conn.execute(
+        "UPDATE agents SET worktree = ? WHERE id = ?",
+        ("/nonexistent/worktree", agent_id),
+    )
+    temp_db.conn.commit()
+
+    result = check_inv6_orphaned_agents(temp_db)
+    assert result.status == "ok"
+
+
+def test_inv6_fix_marks_agents_failed(temp_db):
+    """Test INV-6 fix: Mark orphaned agents as failed."""
+    # Create orphaned agent
+    agent_id = temp_db.create_agent("orphaned-agent")
+    issue_id = temp_db.create_issue("Test issue", project="test")
+
+    temp_db.conn.execute(
+        "UPDATE agents SET status = 'working', current_issue = ?, worktree = ? WHERE id = ?",
+        (issue_id, "/nonexistent/worktree", agent_id),
+    )
+    temp_db.conn.commit()
+
+    # Run check and apply fix
+    result = check_inv6_orphaned_agents(temp_db)
+    assert result.status == "fail"
+    assert result.fix is not None
+
+    result.fix(temp_db)
+
+    # Verify agent is now failed with no current_issue
+    cursor = temp_db.conn.execute(
+        "SELECT status, current_issue FROM agents WHERE id = ?",
+        (agent_id,),
+    )
+    row = cursor.fetchone()
+    assert row[0] == "failed"
+    assert row[1] is None
+
+    # Verify event was logged
+    events = temp_db.get_events(issue_id=issue_id, event_type="doctor_fix")
+    assert len(events) > 0
+
+
+def test_inv7_fix_resets_stuck_merges(temp_db):
+    """Test INV-7 fix: Reset stuck merge queue entries."""
+    issue_id = temp_db.create_issue("Stuck merge", project="test")
+
+    # Create stuck merge
+    temp_db.conn.execute(
+        """
+        INSERT INTO merge_queue (issue_id, project, worktree, branch_name, status, enqueued_at)
+        VALUES (?, 'test', '/tmp/worktree', 'test-branch', 'running', datetime('now', '-35 minutes'))
+        """,
+        (issue_id,),
+    )
+    temp_db.conn.commit()
+
+    # Run check and apply fix
+    result = check_inv7_stuck_merges(temp_db)
+    assert result.status == "warn"
+    assert result.fix is not None
+
+    result.fix(temp_db)
+
+    # Verify merge is now queued
+    cursor = temp_db.conn.execute(
+        "SELECT status FROM merge_queue WHERE issue_id = ?",
+        (issue_id,),
+    )
+    row = cursor.fetchone()
+    assert row[0] == "queued"
+
+    # Verify event was logged
+    events = temp_db.get_events(issue_id=issue_id, event_type="doctor_fix")
+    assert len(events) > 0
+
+
+def test_inv8_ghost_worktrees_ok(temp_db):
+    """Test INV-8: No ghost worktrees when all worktrees have agents."""
+    # This test assumes we're in a git repo
+    # If git worktree list fails, check should warn, not fail
+    result = check_inv8_ghost_worktrees(temp_db)
+    # Should be ok or warn (if git command fails)
+    assert result.status in ("ok", "warn")
+
+
 def test_run_all_checks(temp_db):
     """Test run_all_checks returns list of CheckResults."""
     results = run_all_checks(temp_db)
 
-    # Should return results for all checks
-    assert len(results) == 5
+    # Should return results for all checks (now 7 checks)
+    assert len(results) == 7
 
     # All should be CheckResult objects with required fields
     for result in results:
