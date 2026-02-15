@@ -290,6 +290,36 @@ def get_commit_hash(worktree_path: str) -> Optional[str]:
         return None
 
 
+def has_diff_from_main(worktree_path: str, main_branch: str = "main") -> bool:
+    """
+    Check if the worktree branch has any commits relative to main branch.
+
+    Runs 'git log main..HEAD --oneline' and returns True if output is non-empty.
+    This detects if the worker actually committed any changes.
+
+    Args:
+        worktree_path: Path to the worktree
+        main_branch: Main branch to compare against (default: main)
+
+    Returns:
+        True if there are commits ahead of main, False otherwise
+
+    Raises:
+        GitWorktreeError: If git command fails
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", f"{main_branch}..HEAD", "--oneline"],
+            cwd=str(worktree_path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return bool(result.stdout.strip())
+    except subprocess.CalledProcessError as e:
+        raise GitWorktreeError(f"Failed to check diff from main: {e.stderr}") from e
+
+
 # --- Async wrappers ---
 # These run blocking git operations in a thread executor to avoid
 # blocking the asyncio event loop. Use these from async code instead
@@ -336,3 +366,9 @@ async def delete_branch_async(project_path: str, branch_name: str, force: bool =
     """Async wrapper for delete_branch. Runs in a thread executor."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, delete_branch, project_path, branch_name, force)
+
+
+async def has_diff_from_main_async(worktree_path: str, main_branch: str = "main") -> bool:
+    """Async wrapper for has_diff_from_main. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, has_diff_from_main, worktree_path, main_branch)

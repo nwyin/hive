@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import Config, WORKER_PERMISSIONS
 from .db import Database
-from .git import create_worktree_async, get_commit_hash, remove_worktree_async
+from .git import create_worktree_async, get_commit_hash, has_diff_from_main_async, remove_worktree_async
 from .merge import MergeProcessor
 from .ids import generate_id
 from .models import AgentIdentity, CompletionResult
@@ -1015,6 +1015,36 @@ class Orchestrator:
                 result = assess_completion(messages, file_result=file_result)
 
                 if result.success:
+                    # Validate that worker actually made commits
+                    has_commits = await has_diff_from_main_async(agent.worktree)
+                    if not has_commits:
+                        # Log validation failure
+                        self.db.log_event(
+                            agent.issue_id,
+                            agent.agent_id,
+                            "validation_failed",
+                            {
+                                "reason": "No commits relative to main despite claiming success",
+                                "original_summary": result.summary,
+                            },
+                        )
+
+                        # Convert to failure result
+                        validation_result = CompletionResult(
+                            success=False,
+                            reason="No commits relative to main despite claiming success",
+                            summary=result.summary,
+                        )
+
+                        # Route through failure handling
+                        await self._handle_agent_failure(agent, validation_result)
+
+                        # Clean up and exit
+                        await self._cleanup_session(agent)
+                        if agent.agent_id in self.active_agents:
+                            self._unregister_agent(agent.agent_id)
+                        return
+
                     # Mark issue as done
                     self.db.update_issue_status(agent.issue_id, "done")
 

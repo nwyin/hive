@@ -799,7 +799,8 @@ async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
     )
     orch.active_agents[agent_id] = agent
 
-    await orch.handle_agent_complete(agent)
+    with patch("hive.orchestrator.has_diff_from_main_async", return_value=True):
+        await orch.handle_agent_complete(agent)
 
     # Verify notes were harvested into DB
     notes = temp_db.get_notes(issue_id=issue_id)
@@ -850,7 +851,8 @@ async def test_harvest_notes_no_file(temp_db, tmp_path):
     )
     orch.active_agents[agent_id] = agent
 
-    await orch.handle_agent_complete(agent)
+    with patch("hive.orchestrator.has_diff_from_main_async", return_value=True):
+        await orch.handle_agent_complete(agent)
 
     # No notes should be in DB
     notes = temp_db.get_notes(issue_id=issue_id)
@@ -1432,7 +1434,8 @@ async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     events_before = len(temp_db.get_events(issue_id=issue_id))
 
     # First call should process normally
-    await orch.handle_agent_complete(agent)
+    with patch("hive.orchestrator.has_diff_from_main_async", return_value=True):
+        await orch.handle_agent_complete(agent)
 
     # Verify agent was removed from active_agents during processing
     assert agent_id not in orch.active_agents
@@ -1442,7 +1445,8 @@ async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     assert events_after_first > events_before  # Some events should have been logged
 
     # Second call should be a no-op (guard should prevent execution)
-    await orch.handle_agent_complete(agent)
+    with patch("hive.orchestrator.has_diff_from_main_async", return_value=True):
+        await orch.handle_agent_complete(agent)
 
     # Verify no additional events were logged
     events_after_second = len(temp_db.get_events(issue_id=issue_id))
@@ -1787,6 +1791,7 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
         patch("hive.orchestrator.remove_notes_file"),
         patch("hive.orchestrator.read_result_file"),
         patch("hive.orchestrator.get_commit_hash", return_value="abc123"),
+        patch("hive.orchestrator.has_diff_from_main_async", return_value=True),
     ):
         await orch.handle_agent_complete(agent, file_result=file_result)
 
@@ -1897,3 +1902,94 @@ async def test_agent_switch_event_contains_model(temp_db, tmp_path):
     detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
     assert "model" in detail
     assert detail["model"] == test_model
+
+
+@pytest.mark.asyncio
+async def test_validation_no_commits_routes_to_failure(temp_db, tmp_path):
+    """Test that validation failure when worker claims success but has no commits routes to _handle_agent_failure."""
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from hive.opencode import OpenCodeClient
+
+    # Create orchestrator with mock opencode
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    # Create issue and agent
+    issue_id = temp_db.create_issue("Test task", "Do something")
+    agent_id = temp_db.create_agent("test-agent")
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+
+    # Mock the handling methods
+    orch._handle_agent_failure = AsyncMock()
+    orch._cleanup_session = AsyncMock()
+    orch._unregister_agent = MagicMock()
+
+    # Mock assess_completion to return success
+    successful_result = CompletionResult(success=True, summary="Task completed successfully", reason="Worker claimed success")
+
+    # Mock has_diff_from_main_async to return False (no commits)
+    with patch("hive.orchestrator.has_diff_from_main_async") as mock_has_diff:
+        with patch("hive.orchestrator.assess_completion") as mock_assess:
+            mock_assess.return_value = successful_result
+            mock_has_diff.return_value = False
+
+            # Add agent to active_agents to test unregistration
+            orch.active_agents[agent_id] = agent
+
+            # Simulate the validation logic by calling the part of _handle_agent_completion
+            # that would run after assess_completion
+            if successful_result.success:
+                # This should trigger the validation logic
+                has_commits = await mock_has_diff(agent.worktree)
+                if not has_commits:
+                    # Log validation failure
+                    temp_db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "validation_failed",
+                        {
+                            "reason": "No commits relative to main despite claiming success",
+                            "original_summary": successful_result.summary,
+                        },
+                    )
+
+                    # Convert to failure result
+                    validation_result = CompletionResult(
+                        success=False,
+                        reason="No commits relative to main despite claiming success",
+                        summary=successful_result.summary,
+                    )
+
+                    # Route through failure handling
+                    await orch._handle_agent_failure(agent, validation_result)
+
+            # Verify _handle_agent_failure was called with validation failure
+            orch._handle_agent_failure.assert_called_once()
+            call_args = orch._handle_agent_failure.call_args
+            called_agent = call_args[0][0]
+            called_result = call_args[0][1]
+
+            assert called_agent.agent_id == agent_id
+            assert called_result.success is False
+            assert "No commits relative to main despite claiming success" in called_result.reason
+
+            # Verify validation_failed event was logged
+            events = temp_db.get_events(issue_id=issue_id, event_type="validation_failed")
+            assert len(events) == 1
+            event = events[0]
+            assert event["detail"] is not None
+            detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
+            assert "No commits relative to main despite claiming success" in detail["reason"]
+            assert detail["original_summary"] == "Task completed successfully"

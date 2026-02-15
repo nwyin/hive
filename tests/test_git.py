@@ -11,6 +11,7 @@ from hive.git import (
     create_worktree,
     delete_branch,
     get_commit_hash,
+    has_diff_from_main,
     merge_to_main,
     rebase_onto_main,
     remove_worktree,
@@ -290,3 +291,39 @@ def test_run_command_in_worktree_timeout(git_repo):
     success, output = run_command_in_worktree(str(git_repo), "sleep 10", timeout=1)
     assert success is False
     assert "timed out" in output.lower()
+
+
+def test_has_diff_from_main_with_commits(git_repo):
+    """Test has_diff_from_main returns True when there are commits ahead of main."""
+    # Create a worktree and make a commit
+    worktree_path = create_worktree(str(git_repo), "test-commits")
+
+    # Make a commit in the worktree
+    (Path(worktree_path) / "new_feature.py").write_text("# new feature\n")
+    subprocess.run(["git", "add", "."], cwd=worktree_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Add new feature"],
+        cwd=worktree_path,
+        check=True,
+        capture_output=True,
+    )
+
+    # Should return True since there are commits ahead of main
+    result = has_diff_from_main(worktree_path)
+    assert result is True
+
+    # Clean up
+    remove_worktree(worktree_path)
+
+
+def test_has_diff_from_main_no_commits(git_repo):
+    """Test has_diff_from_main returns False when there are no commits ahead of main."""
+    # Create a worktree but don't make any commits
+    worktree_path = create_worktree(str(git_repo), "test-no-commits")
+
+    # Should return False since there are no commits ahead of main
+    result = has_diff_from_main(worktree_path)
+    assert result is False
+
+    # Clean up
+    remove_worktree(worktree_path)
