@@ -37,15 +37,17 @@ class Orchestrator:
         opencode_client: OpenCodeClient,
         project_path: str,
         project_name: str = "default",
+        sse_client: Optional[SSEClient] = None,
     ):
         """
         Initialize orchestrator.
 
         Args:
             db: Database instance
-            opencode_client: OpenCode HTTP client
+            opencode_client: OpenCode HTTP client (or ClaudeWSBackend)
             project_path: Path to the project repository
             project_name: Name of the project
+            sse_client: Optional SSE client override (e.g. ClaudeWSBackend serves both roles)
         """
         self.db = db
         self.opencode = opencode_client
@@ -68,7 +70,7 @@ class Orchestrator:
         self._issue_to_agent: dict[str, str] = {}  # issue_id -> agent_id
 
         # SSE client for event monitoring
-        self.sse_client = SSEClient(
+        self.sse_client = sse_client or SSEClient(
             base_url=Config.OPENCODE_URL,
             password=Config.OPENCODE_PASSWORD,
             global_events=True,
@@ -218,9 +220,9 @@ class Orchestrator:
         try:
             sessions = await self.opencode.list_sessions()
             live_session_ids = {s["id"] for s in sessions}
-            logger.info(f"Fetched {len(live_session_ids)} live session(s) from OpenCode")
+            logger.info(f"Fetched {len(live_session_ids)} live session(s) from backend")
         except Exception as e:
-            logger.warning(f"Could not fetch live sessions from OpenCode ({e}), falling back to DB-only reconciliation")
+            logger.warning(f"Could not fetch live sessions from backend ({e}), falling back to DB-only reconciliation")
 
         # Phase 1 — Reconcile stale DB agents
         cursor = self.db.conn.execute(
@@ -545,7 +547,7 @@ class Orchestrator:
                         self._opencode_healthy = True
                         self._degraded_since = None
                         self._backoff_delay = 5  # Reset backoff
-                        logger.info(f"OpenCode recovered after {degraded_duration:.1f}s degraded mode")
+                        logger.info(f"Backend recovered after {degraded_duration:.1f}s degraded mode")
                     else:
                         # Still unhealthy - wait with exponential backoff
                         await asyncio.sleep(self._backoff_delay)
