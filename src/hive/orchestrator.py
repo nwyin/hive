@@ -720,9 +720,13 @@ class Orchestrator:
                 "spawn_error",
                 {"error": str(e)},
             )
-            # Clean up the OpenCode session if it was created
+            # Clean up the OpenCode session if it was created (best-effort —
+            # don't let cleanup failure prevent DB/worktree cleanup below)
             if session_id:
-                await self.opencode.cleanup_session(session_id, directory=worktree_path)
+                try:
+                    await self.opencode.cleanup_session(session_id, directory=worktree_path)
+                except Exception:
+                    pass
             # Clean up in-memory tracking (if agent was registered)
             if agent_id in self.active_agents:
                 self._unregister_agent(agent_id)
@@ -1214,9 +1218,13 @@ class Orchestrator:
                 "session_cycle_error",
                 {"error": str(e)},
             )
-            # Clean up the new session if it was created
+            # Clean up the new session if it was created (best-effort —
+            # don't let cleanup failure prevent _unregister_agent below)
             if new_session_id:
-                await self.opencode.cleanup_session(new_session_id, directory=agent.worktree)
+                try:
+                    await self.opencode.cleanup_session(new_session_id, directory=agent.worktree)
+                except Exception:
+                    pass
             # Release agent
             if agent.agent_id in self.active_agents:
                 self._unregister_agent(agent.agent_id)
