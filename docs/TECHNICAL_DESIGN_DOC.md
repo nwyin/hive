@@ -70,8 +70,8 @@ The result is a system that preserves Gas Town's best abstractions — the ready
 | **Refinery (LLM)**  | The merge processor. Easy rebases go through mechanically. Complex merges, conflicts, and integration failures get reasoned about by the Refinery agent. A persistent OpenCode session.                                                                                                                                                  |
 | **Workers (LLM)**   | Ephemeral coding agents. One per issue. Implement, test, commit. Spawned on demand, destroyed on completion.                                                                                                                                                                                                                             |
 | **SQLite DB**       | Single source of truth for all work items, dependencies, agent state, and events. Shared by the Queen Bee (via CLI tools) and the orchestrator.                                                                                                                                                                                          |
-| **OpenCode Server** | Agent runtime — hosts the Queen Bee session (user-facing), worker sessions (headless), and refinery session.                                                                                                                                                                                                                             |
-| **Git Worktrees**   | Per-agent sandboxes, scoped via OpenCode's `X-OpenCode-Directory` header                                                                                                                                                                                                                                                                 |
+| **Agent Backend**   | Pluggable agent runtime. OpenCode server (HTTP/SSE, API billing) or Claude WS (CLI via `--sdk-url`, subscription billing). See Section 6.                                                                                                                                                                                               |
+| **Git Worktrees**   | Per-agent sandboxes, scoped to the backend's session directory                                                                                                                                                                                                                                                                           |
 
 ### The Key Split: Deterministic vs. Ambiguous
 
@@ -373,9 +373,108 @@ WHERE id = :issue_id
 
 ---
 
-## 6. OpenCode Integration
+## 6. Agent Backend Architecture
 
-### 6.1 Server Lifecycle
+The orchestrator does not talk directly to any specific LLM runtime. Instead, it programs against a **backend interface** — a set of methods for session lifecycle, message dispatch, and event monitoring. This allows different agent runtimes to be swapped in without changing the orchestrator or merge processor.
+
+### 6.0 The Backend Interface
+
+Any backend must implement two interfaces that the orchestrator consumes:
+
+**Session lifecycle** (consumed as `self.opencode`):
+
+| Method | Purpose |
+|--------|---------|
+| `create_session(directory, title, permissions)` | Create an agent session scoped to a worktree |
+| `send_message_async(session_id, parts, model, system, directory)` | Send a prompt (fire-and-forget) |
+| `get_session_status(session_id)` | Return `{"type": "idle"\|"busy"\|"error"}` |
+| `get_messages(session_id, limit)` | Return messages (for token usage logging) |
+| `abort_session(session_id)` | Stop a running session |
+| `delete_session(session_id)` | Remove a session entirely |
+| `cleanup_session(session_id)` | Best-effort abort + delete |
+| `list_sessions()` | List active sessions (for health checks, reconciliation) |
+| `get_pending_permissions(directory)` | Get blocked permission requests |
+| `reply_permission(request_id, reply)` | Resolve a permission request |
+
+**Event monitoring** (consumed as `self.sse_client`):
+
+| Method | Purpose |
+|--------|---------|
+| `on(event_type, handler)` | Register handler for `session.status`, `session.error`, `permission.request` |
+| `connect_with_reconnect()` | Start the event stream (runs as background task) |
+| `stop()` | Shut down the event stream |
+
+The orchestrator is wired up in `daemon.py`:
+
+```python
+if Config.BACKEND == "claude-ws":
+    backend = ClaudeWSBackend(host=..., port=...)
+    orchestrator = Orchestrator(
+        opencode_client=backend,
+        sse_client=backend,   # same object serves both roles
+    )
+else:
+    orchestrator = Orchestrator(
+        opencode_client=OpenCodeClient(...),
+        sse_client=SSEClient(...),   # separate objects
+    )
+```
+
+A backend can serve as both the session client AND the event emitter (like `ClaudeWSBackend` does), or they can be separate objects (like OpenCode, which has a distinct `SSEClient`).
+
+**Adding a new backend** requires implementing the methods above. The orchestrator, merge processor, and all monitoring logic work unchanged. Key constraints:
+
+- `get_session_status` must return `{"type": "idle"}` when a session finishes its prompt — this triggers completion detection.
+- `get_messages` must return messages with `metadata.input_tokens` and `metadata.output_tokens` fields — this is what `_log_token_usage` reads.
+- The event emitter must fire `session.status` events with `{"sessionID": ..., "status": {"type": "idle"}}` — this wakes up `monitor_agent` via asyncio.Event.
+- Completion detection is primarily file-based (`.hive-result.jsonl`), so the backend only needs to signal when the session goes idle, not parse output.
+
+### 6.0.1 Current Backends
+
+| Backend | Config | Runtime | Billing | Dependencies |
+|---------|--------|---------|---------|-------------|
+| **OpenCode** (`opencode`) | `HIVE_BACKEND=opencode` | OpenCode server (HTTP + SSE) | Anthropic API key | OpenCode binary, running server |
+| **Claude WS** (`claude-ws`) | `HIVE_BACKEND=claude-ws` | Claude Code CLI via `--sdk-url` | Subscription credits (Pro/Max) | `claude` binary, active subscription |
+
+The OpenCode backend is the original and default. The Claude WS backend was added to let users run Hive on their existing Claude Code subscription without needing an API key or running a separate server.
+
+### 6.0.2 Claude WS Backend Details
+
+Instead of talking to a server, Hive **becomes** the server. `ClaudeWSBackend` runs an aiohttp WebSocket server that Claude CLI processes connect to:
+
+```
+Hive (WS Server on :8765)
+  ├── /agent/{session_id}  ← Claude CLI connects here
+  │
+  ├── create_session() → spawns: claude --sdk-url ws://127.0.0.1:8765/agent/ID
+  │                               --print --output-format stream-json
+  │                               --permission-mode bypassPermissions
+  │                               --model claude-sonnet-4-20250514
+  │                               -p "" --cwd /path/to/worktree
+  │
+  ├── send_message_async() → sends {"type": "user", "message": {...}} over WS
+  │
+  ├── _route_message() ← receives assistant/result/control_request messages
+  │   └── on "result" → emits session.status idle event (SSE-compatible)
+  │
+  └── delete_session() → terminates the CLI process
+```
+
+Key design decisions:
+
+- **`bypassPermissions` mode**: Workers are trusted to operate freely in their worktrees. No permission prompts are sent over the wire, so `get_pending_permissions` returns `[]`.
+- **Conservative concurrency**: Default max 3 concurrent CLI processes (`HIVE_CLAUDE_WS_MAX_CONCURRENT`), enforced by asyncio.Semaphore. Subscription rate limits are different from API limits.
+- **Message format translation**: The WS protocol uses Anthropic message format (`message.usage.input_tokens`). `get_messages()` translates to OpenCode format (`metadata.input_tokens`) so `_log_token_usage` works unchanged.
+- **Process = session**: Each session is a CLI process. `create_session` spawns it, `delete_session` kills it. No external server to manage.
+- **System prompt via `initialize`**: On first `send_message_async` with a `system` param, sends an `initialize` control request with `appendSystemPrompt` before the user message. This adds to (rather than replaces) Claude Code's built-in system prompt.
+
+---
+
+### 6.1 OpenCode Backend
+
+_The remainder of Section 6 describes the OpenCode backend specifically._
+
+### 6.1.1 Server Lifecycle
 
 The orchestrator starts a single OpenCode server instance. All agent sessions run within it.
 
@@ -387,7 +486,7 @@ OPENCODE_SERVER_PASSWORD=$SECRET \
 
 One server, many sessions. Each session is scoped to a directory (git worktree) via the `?directory=` query parameter.
 
-### 6.2 Session-as-Agent Mapping
+### 6.1.2 Session-as-Agent Mapping
 
 Each active agent maps 1:1 to an OpenCode session:
 
@@ -433,7 +532,7 @@ Content-Type: application/json
 
 The `prompt_async` endpoint returns immediately. The orchestrator monitors progress via the SSE event stream.
 
-### 6.3 Event-Driven Monitoring
+### 6.1.3 Event-Driven Monitoring
 
 OpenCode exposes two SSE event endpoints:
 
@@ -460,7 +559,7 @@ Key events the orchestrator reacts to:
 
 This replaces Gas Town's Witness patrol cycle. Instead of polling tmux sessions for liveness, the orchestrator receives real-time status updates. The per-directory `/event` endpoint exists for narrower use cases (e.g., a UI focused on one agent), but the orchestrator doesn't need it.
 
-### 6.4 Session Cycling (Handoff)
+### 6.1.4 Session Cycling (Handoff)
 
 When an agent completes a molecule step and needs a fresh context for the next step:
 
@@ -471,7 +570,7 @@ When an agent completes a molecule step and needs a fresh context for the next s
 
 The sandbox (git worktree) persists across session cycles. Only the LLM context resets. This is the same three-layer lifecycle as Gas Town, mediated by HTTP instead of tmux.
 
-### 6.5 Directory Scoping for Multi-Project
+### 6.1.5 Directory Scoping for Multi-Project
 
 OpenCode's `?directory=` parameter maps directly to per-agent git worktrees:
 
