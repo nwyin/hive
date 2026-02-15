@@ -1051,11 +1051,14 @@ class Orchestrator:
                     # Get commit hash if available
                     commit_hash = result.git_commit or get_commit_hash(agent.worktree)
 
+                    # Extract test_command from worker's file_result
+                    test_command = file_result.get("test_command") if file_result else None
+
                     # Enqueue to merge queue
                     self.db.conn.execute(
                         """
-                        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         """,
                         (
                             agent.issue_id,
@@ -1063,6 +1066,7 @@ class Orchestrator:
                             self.project_name,
                             agent.worktree,
                             f"agent/{agent.name}",
+                            test_command,
                         ),
                     )
                     self.db.conn.commit()

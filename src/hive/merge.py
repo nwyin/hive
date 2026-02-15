@@ -197,14 +197,46 @@ class MergeProcessor:
 
         # Step 2: Run tests (if configured, in executor to avoid blocking event loop)
         test_output = None
-        if Config.TEST_COMMAND:
-            test_ok, test_output = await run_command_in_worktree_async(worktree, Config.TEST_COMMAND)
+        worker_test_cmd = entry.get("test_command")
+        global_test_cmd = Config.TEST_COMMAND
+
+        # If both worker and global test commands exist: run worker first (fast), then global (comprehensive)
+        if worker_test_cmd and global_test_cmd:
+            # Run worker-specific tests first (timeout 120s)
+            worker_ok, worker_output = await run_command_in_worktree_async(worktree, worker_test_cmd, timeout=120)
+            if not worker_ok:
+                self.db.log_event(
+                    issue_id,
+                    agent_id,
+                    "test_failure",
+                    {"command": worker_test_cmd, "type": "worker", "output": worker_output[:2000]},
+                )
+                return (False, worker_output)
+
+            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": worker_test_cmd, "type": "worker"})
+
+            # Run global tests (timeout 300s)
+            global_ok, global_output = await run_command_in_worktree_async(worktree, global_test_cmd, timeout=300)
+            if not global_ok:
+                self.db.log_event(
+                    issue_id,
+                    agent_id,
+                    "test_failure",
+                    {"command": global_test_cmd, "type": "global", "output": global_output[:2000]},
+                )
+                return (False, global_output)
+
+            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": global_test_cmd, "type": "global"})
+
+        elif worker_test_cmd:
+            # Only worker test command - run it (timeout 120s)
+            test_ok, test_output = await run_command_in_worktree_async(worktree, worker_test_cmd, timeout=120)
             if not test_ok:
                 self.db.log_event(
                     issue_id,
                     agent_id,
                     "test_failure",
-                    {"command": Config.TEST_COMMAND, "output": test_output[:2000]},
+                    {"command": worker_test_cmd, "type": "worker", "output": test_output[:2000]},
                 )
 
                 # Create structured rejection note for test failure
@@ -218,7 +250,23 @@ class MergeProcessor:
 
                 return (False, test_output)
 
-            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": Config.TEST_COMMAND})
+            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": worker_test_cmd, "type": "worker"})
+
+        elif global_test_cmd:
+            # Only global test command - run it (timeout 300s)
+            test_ok, test_output = await run_command_in_worktree_async(worktree, global_test_cmd, timeout=300)
+            if not test_ok:
+                self.db.log_event(
+                    issue_id,
+                    agent_id,
+                    "test_failure",
+                    {"command": global_test_cmd, "type": "global", "output": test_output[:2000]},
+                )
+                return (False, test_output)
+
+            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": global_test_cmd, "type": "global"})
+
+        # If neither test command exists, skip tests
 
         # Step 3: Merge to main (ff-only, in executor to avoid blocking event loop)
         try:
@@ -270,6 +318,8 @@ class MergeProcessor:
             remove_result_file(worktree_path)
 
             # Build the refinery prompt
+            # Prefer worker test_command over global Config.TEST_COMMAND
+            test_cmd = entry.get("test_command") or Config.TEST_COMMAND
             prompt = build_refinery_prompt(
                 issue_title=entry.get("issue_title", "Unknown"),
                 issue_id=issue_id,
@@ -278,7 +328,7 @@ class MergeProcessor:
                 agent_name=entry.get("agent_name"),
                 rebase_succeeded=rebase_ok,
                 test_output=test_output,
-                test_command=Config.TEST_COMMAND,
+                test_command=test_cmd,
             )
 
             # Send to refinery

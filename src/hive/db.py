@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     project     TEXT NOT NULL,
     worktree    TEXT NOT NULL,
     branch_name TEXT NOT NULL,
+    test_command TEXT,
     status      TEXT NOT NULL DEFAULT 'queued',
     enqueued_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT
@@ -236,6 +237,18 @@ class Database:
         # Create tags index (safe after column exists via CREATE TABLE or migration)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)")
         self.conn.commit()
+
+        # Add test_command column to merge_queue if missing
+        cursor = self.conn.execute("PRAGMA table_info(merge_queue)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "test_command" not in columns:
+            try:
+                self.conn.execute("ALTER TABLE merge_queue ADD COLUMN test_command TEXT")
+                self.conn.commit()
+                logger.info("Added test_command column to merge_queue table")
+            except sqlite3.Error as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
 
     def create_issue(
         self,
