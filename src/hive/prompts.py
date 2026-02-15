@@ -1,5 +1,6 @@
 """Prompt templates for Hive agents."""
 
+import hashlib
 import json
 from pathlib import Path
 from string import Template
@@ -37,6 +38,12 @@ def _load_template(name: str) -> str:
         template_path = _PROMPTS_DIR / f"{name}.md"
         _template_cache[name] = template_path.read_text()
     return _template_cache[name]
+
+
+def get_prompt_version(template_name: str) -> str:
+    """Return a short hash of the prompt template file content."""
+    content = _load_template(template_name)
+    return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 
 def build_worker_prompt(

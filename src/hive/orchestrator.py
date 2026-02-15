@@ -17,6 +17,7 @@ from .prompts import (
     assess_completion,
     build_system_prompt,
     build_worker_prompt,
+    get_prompt_version,
     read_notes_file,
     read_result_file,
     remove_notes_file,
@@ -696,6 +697,7 @@ class Orchestrator:
                 "session_id": session_id,
                 "worktree": worktree_path,
                 "routing_method": "new_agent",
+                "prompt_version": get_prompt_version("worker"),
             }
 
             self.db.log_event(
@@ -1179,7 +1181,11 @@ class Orchestrator:
                 next_step["id"],
                 agent.agent_id,
                 "session_cycled",
-                {"new_session_id": new_session_id, "step_title": next_step["title"]},
+                {
+                    "new_session_id": new_session_id,
+                    "step_title": next_step["title"],
+                    "prompt_version": get_prompt_version("worker"),
+                },
             )
 
             # Start monitoring task

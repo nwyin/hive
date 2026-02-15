@@ -5,6 +5,7 @@ from hive.prompts import (
     build_refinery_prompt,
     build_system_prompt,
     build_worker_prompt,
+    get_prompt_version,
     read_notes_file,
     remove_notes_file,
 )
@@ -351,3 +352,98 @@ def test_worker_prompt_contains_knowledge_sharing():
     assert "gotcha" in prompt
     assert "dependency" in prompt
     assert "pattern" in prompt
+
+
+# --- Prompt versioning tests ---
+
+
+def test_get_prompt_version_returns_hex_string():
+    """Test get_prompt_version returns a 12-character hex string."""
+    import re
+
+    version = get_prompt_version("worker")
+
+    assert isinstance(version, str)
+    assert len(version) == 12
+    assert re.match(r"[0-9a-f]{12}", version), f"Expected hex string, got: {version}"
+
+
+def test_get_prompt_version_deterministic():
+    """Test get_prompt_version returns the same result for same template."""
+    version1 = get_prompt_version("worker")
+    version2 = get_prompt_version("worker")
+
+    assert version1 == version2
+
+
+def test_get_prompt_version_changes_with_content():
+    """Test get_prompt_version returns different hashes for different content."""
+    import unittest.mock
+    from hive.prompts import _load_template
+
+    # Mock _load_template to return different content
+    with unittest.mock.patch("hive.prompts._load_template") as mock_load:
+        mock_load.return_value = "content1"
+        version1 = get_prompt_version("worker")
+
+        mock_load.return_value = "content2"
+        version2 = get_prompt_version("worker")
+
+        assert version1 != version2
+
+
+def test_get_prompt_version_all_templates():
+    """Test get_prompt_version works with all template types."""
+    import re
+
+    for template_name in ["worker", "system", "refinery"]:
+        version = get_prompt_version(template_name)
+
+        assert isinstance(version, str)
+        assert len(version) == 12
+        assert re.match(r"[0-9a-f]{12}", version), f"Expected hex string for {template_name}, got: {version}"
+
+
+def test_worker_started_event_includes_prompt_version(temp_db):
+    """Test worker_started event includes prompt_version in event detail."""
+    import re
+
+    # Create an issue
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+
+    # Create an agent (required for foreign key constraint)
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Directly test the event logging with prompt_version (simulating what happens in orchestrator)
+    event_detail = {
+        "session_id": "test-session-id",
+        "worktree": "/test/worktree",
+        "routing_method": "new_agent",
+        "prompt_version": get_prompt_version("worker"),
+    }
+
+    temp_db.log_event(issue_id, agent_id, "worker_started", event_detail)
+
+    # Get all events for this issue
+    events = temp_db.get_events(issue_id)
+
+    # Find the worker_started event
+    worker_started_events = [e for e in events if e["event_type"] == "worker_started"]
+    assert len(worker_started_events) == 1
+
+    event = worker_started_events[0]
+
+    # Parse the detail JSON if it's a string
+    import json
+
+    detail = event["detail"]
+    if isinstance(detail, str):
+        detail = json.loads(detail)
+
+    assert "prompt_version" in detail
+
+    # Verify it's a valid 12-character hex string
+    prompt_version = detail["prompt_version"]
+    assert isinstance(prompt_version, str)
+    assert len(prompt_version) == 12
+    assert re.match(r"[0-9a-f]{12}", prompt_version)
