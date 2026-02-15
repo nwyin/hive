@@ -182,6 +182,15 @@ class MergeProcessor:
         if not rebase_ok:
             self.db.log_event(issue_id, agent_id, "rebase_conflict", {"branch": branch_name})
             await abort_rebase_async(worktree)
+
+            # Create structured rejection note for rebase conflict
+            self.db.add_note(
+                issue_id=issue_id,
+                agent_id=agent_id,
+                category="rejection",
+                content=f"[Merge conflict] Rebase onto main failed.\nBranch: {branch_name}",
+            )
+
             return (False, None)
 
         self.db.log_event(issue_id, agent_id, "rebase_success", {"branch": branch_name})
@@ -197,6 +206,16 @@ class MergeProcessor:
                     "test_failure",
                     {"command": Config.TEST_COMMAND, "output": test_output[:2000]},
                 )
+
+                # Create structured rejection note for test failure
+                truncated_output = test_output[:500] if test_output else ""
+                self.db.add_note(
+                    issue_id=issue_id,
+                    agent_id=agent_id,
+                    category="rejection",
+                    content=f"[Test failure] Tests failed after rebase.\nCommand: {Config.TEST_COMMAND}\n```\n{truncated_output}\n```",
+                )
+
                 return (False, test_output)
 
             self.db.log_event(issue_id, agent_id, "tests_passed", {"command": Config.TEST_COMMAND})
@@ -303,6 +322,20 @@ class MergeProcessor:
                     agent_id,
                     "merge_rejected",
                     {"summary": result.get("summary", "")},
+                )
+
+                # Create structured rejection note from refinery
+                rejection_reason = result.get("summary", "Unknown reason")
+                truncated_test_output = test_output[:500] if test_output else "N/A"
+                note_content = f"[Refinery rejection] {rejection_reason}\nBranch: {entry['branch_name']}"
+                if test_output:
+                    note_content += f"\nTest output (truncated):\n```\n{truncated_test_output}\n```"
+
+                self.db.add_note(
+                    issue_id=issue_id,
+                    agent_id=agent_id,
+                    category="rejection",
+                    content=note_content,
                 )
             else:
                 # needs_human or unknown

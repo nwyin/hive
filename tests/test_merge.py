@@ -743,15 +743,16 @@ async def test_send_to_refinery_harvests_notes(tmp_path, temp_db, mock_opencode)
                 with patch("hive.merge.remove_result_file"):
                     await mp._send_to_refinery(entry)
 
-    # Verify notes were saved to DB
+    # Verify notes were saved to DB (2 harvested + 1 rejection note)
     notes = temp_db.get_notes()
-    assert len(notes) == 2
+    assert len(notes) == 3
     contents = [n["content"] for n in notes]
     assert "Import block conflicts with worker-2" in contents
     assert "Tests require DB fixtures to be reset" in contents
     categories = [n["category"] for n in notes]
     assert "gotcha" in categories
     assert "pattern" in categories
+    assert "rejection" in categories  # New rejection note
 
     # Verify notes_harvested event was logged with refinery source
     events = temp_db.get_events(issue_id)
@@ -848,3 +849,276 @@ async def test_finalize_issue_molecule_completion(temp_db, mock_opencode, git_re
     step2 = temp_db.get_issue(step2_id)
     assert step1["status"] == "finalized"
     assert step2["status"] == "finalized"
+
+
+# --- Tests for structured rejection notes ---
+
+
+@pytest.mark.asyncio
+async def test_mechanical_merge_rebase_conflict_creates_rejection_note(merge_entry_with_worktree, temp_db, mock_opencode):
+    """Test that rebase conflicts create a structured rejection note."""
+    info = merge_entry_with_worktree
+
+    mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
+
+    # Patch rebase_onto_main_async to simulate rebase conflict
+    with patch("hive.merge.rebase_onto_main_async", new_callable=AsyncMock, return_value=False):
+        with patch("hive.merge.abort_rebase_async", new_callable=AsyncMock):
+            entry = {
+                "id": 1,
+                "issue_id": info["issue_id"],
+                "agent_id": info["agent_id"],
+                "worktree": info["worktree_path"],
+                "branch_name": info["branch_name"],
+            }
+            success, _ = await mp._try_mechanical_merge(entry)
+
+    assert success is False
+
+    # Verify rejection note was created
+    notes = temp_db.get_notes(issue_id=info["issue_id"], category="rejection")
+    assert len(notes) == 1
+
+    note = notes[0]
+    assert note["category"] == "rejection"
+    assert "[Merge conflict]" in note["content"]
+    assert "Rebase onto main failed" in note["content"]
+    assert info["branch_name"] in note["content"]
+    assert note["issue_id"] == info["issue_id"]
+    assert note["agent_id"] == info["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_mechanical_merge_test_failure_creates_rejection_note(merge_entry_with_worktree, temp_db, mock_opencode):
+    """Test that test failures create a structured rejection note with test output."""
+    info = merge_entry_with_worktree
+
+    mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
+
+    test_output = "FAILED tests/test_foo.py::test_bar - AssertionError: expected 42, got 41\n" * 20
+
+    # Patch run_command_in_worktree_async to simulate test failure
+    with patch("hive.merge.run_command_in_worktree_async", new_callable=AsyncMock, return_value=(False, test_output)):
+        with patch("hive.merge.Config") as mock_config:
+            mock_config.TEST_COMMAND = "pytest tests/"
+
+            entry = {
+                "id": 1,
+                "issue_id": info["issue_id"],
+                "agent_id": info["agent_id"],
+                "worktree": info["worktree_path"],
+                "branch_name": info["branch_name"],
+            }
+            success, _ = await mp._try_mechanical_merge(entry)
+
+    assert success is False
+
+    # Verify rejection note was created
+    notes = temp_db.get_notes(issue_id=info["issue_id"], category="rejection")
+    assert len(notes) == 1
+
+    note = notes[0]
+    assert note["category"] == "rejection"
+    assert "[Test failure]" in note["content"]
+    assert "Tests failed after rebase" in note["content"]
+    assert "pytest tests/" in note["content"]
+    assert "FAILED tests/test_foo.py" in note["content"]
+    # Verify output is truncated to 500 chars
+    assert len(note["content"]) < len(test_output) + 200  # Content should be much shorter than full output
+
+
+@pytest.mark.asyncio
+async def test_refinery_rejection_creates_structured_note(tmp_path, temp_db, mock_opencode):
+    """Test that refinery rejections create structured notes with rejection reason."""
+    worktree_path = str(tmp_path / "worktree")
+    Path(worktree_path).mkdir()
+
+    # Create DB rows
+    issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    agent_id = temp_db.create_agent(name="test-agent")
+    temp_db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (issue_id, agent_id, "test", worktree_path, "test-branch"),
+    )
+    temp_db.conn.commit()
+    queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    entry = {
+        "id": queue_id,
+        "issue_id": issue_id,
+        "agent_id": agent_id,
+        "branch_name": "test-branch",
+        "worktree": worktree_path,
+        "issue_title": "Test Issue",
+    }
+
+    test_output = "ERROR: Module not found: 'foo'\nTraceback..." * 10
+
+    # Mock refinery session lifecycle
+    mock_opencode.create_session = AsyncMock(return_value={"id": "test-session"})
+    mock_opencode.send_message_async = AsyncMock()
+    mock_opencode.get_session_status = AsyncMock(side_effect=[{"type": "busy"}, {"type": "idle"}])
+    mock_opencode.get_messages = AsyncMock(return_value=[{"parts": [{"type": "text", "text": "done"}]}])
+    mock_opencode.cleanup_session = AsyncMock()
+
+    mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
+
+    with patch("hive.merge.asyncio.sleep", new_callable=AsyncMock):
+        with patch("hive.merge.Config") as mock_config:
+            mock_config.TEST_COMMAND = "pytest"
+            mock_config.REFINERY_MODEL = "test-model"
+            mock_config.LEASE_DURATION = 30
+            mock_config.REFINERY_TOKEN_THRESHOLD = 100000
+
+            with patch(
+                "hive.merge.read_result_file",
+                return_value={
+                    "status": "rejected",
+                    "summary": "Could not resolve semantic conflict in imports",
+                    "tests_passed": False,
+                    "conflicts_resolved": 0,
+                },
+            ):
+                with patch("hive.merge.remove_result_file"), patch("hive.merge.remove_notes_file"):
+                    await mp._send_to_refinery(entry, test_output=test_output)
+
+    # Verify rejection note was created
+    notes = temp_db.get_notes(issue_id=issue_id, category="rejection")
+    assert len(notes) == 1
+
+    note = notes[0]
+    assert note["category"] == "rejection"
+    assert "[Refinery rejection]" in note["content"]
+    assert "Could not resolve semantic conflict in imports" in note["content"]
+    assert "test-branch" in note["content"]
+    assert "Test output (truncated):" in note["content"]
+    assert "ERROR: Module not found" in note["content"]
+    # Verify test output is truncated
+    assert len(note["content"]) < len(test_output) + 300
+
+    # Verify issue was reset to open
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_refinery_rejection_note_without_test_output(tmp_path, temp_db, mock_opencode):
+    """Test that refinery rejection notes work when there's no test output (rebase conflict)."""
+    worktree_path = str(tmp_path / "worktree")
+    Path(worktree_path).mkdir()
+
+    # Create DB rows
+    issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    agent_id = temp_db.create_agent(name="test-agent")
+    temp_db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (issue_id, agent_id, "test", worktree_path, "test-branch"),
+    )
+    temp_db.conn.commit()
+    queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    entry = {
+        "id": queue_id,
+        "issue_id": issue_id,
+        "agent_id": agent_id,
+        "branch_name": "test-branch",
+        "worktree": worktree_path,
+        "issue_title": "Test Issue",
+    }
+
+    # Mock refinery session lifecycle
+    mock_opencode.create_session = AsyncMock(return_value={"id": "test-session"})
+    mock_opencode.send_message_async = AsyncMock()
+    mock_opencode.get_session_status = AsyncMock(side_effect=[{"type": "busy"}, {"type": "idle"}])
+    mock_opencode.get_messages = AsyncMock(return_value=[{"parts": [{"type": "text", "text": "done"}]}])
+    mock_opencode.cleanup_session = AsyncMock()
+
+    mp = MergeProcessor(temp_db, mock_opencode, "/tmp/project", "test")
+
+    with patch("hive.merge.asyncio.sleep", new_callable=AsyncMock):
+        with patch("hive.merge.Config") as mock_config:
+            mock_config.TEST_COMMAND = None
+            mock_config.REFINERY_MODEL = "test-model"
+            mock_config.LEASE_DURATION = 30
+            mock_config.REFINERY_TOKEN_THRESHOLD = 100000
+
+            with patch(
+                "hive.merge.read_result_file",
+                return_value={
+                    "status": "rejected",
+                    "summary": "Rebase conflict too complex to auto-resolve",
+                    "tests_passed": False,
+                    "conflicts_resolved": 0,
+                },
+            ):
+                with patch("hive.merge.remove_result_file"), patch("hive.merge.remove_notes_file"):
+                    await mp._send_to_refinery(entry, test_output=None)
+
+    # Verify rejection note was created
+    notes = temp_db.get_notes(issue_id=issue_id, category="rejection")
+    assert len(notes) == 1
+
+    note = notes[0]
+    assert note["category"] == "rejection"
+    assert "[Refinery rejection]" in note["content"]
+    assert "Rebase conflict too complex to auto-resolve" in note["content"]
+    assert "test-branch" in note["content"]
+    # Should NOT have test output section
+    assert "Test output" not in note["content"]
+
+
+@pytest.mark.asyncio
+async def test_get_notes_filters_by_rejection_category(temp_db):
+    """Test that get_notes correctly filters by rejection category."""
+    issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    agent_id = temp_db.create_agent(name="test-agent")
+
+    # Add notes with different categories
+    temp_db.add_note(issue_id=issue_id, agent_id=agent_id, category="discovery", content="Found a pattern")
+    temp_db.add_note(issue_id=issue_id, agent_id=agent_id, category="rejection", content="[Test failure] Tests failed")
+    temp_db.add_note(issue_id=issue_id, agent_id=agent_id, category="gotcha", content="Watch out for X")
+    temp_db.add_note(issue_id=issue_id, agent_id=agent_id, category="rejection", content="[Merge conflict] Rebase failed")
+
+    # Get only rejection notes
+    rejection_notes = temp_db.get_notes(issue_id=issue_id, category="rejection")
+    assert len(rejection_notes) == 2
+    for note in rejection_notes:
+        assert note["category"] == "rejection"
+
+    # Get all notes for issue
+    all_notes = temp_db.get_notes(issue_id=issue_id)
+    assert len(all_notes) == 4
+
+
+@pytest.mark.asyncio
+async def test_multiple_rejection_notes_accumulate(merge_entry_with_worktree, temp_db, mock_opencode):
+    """Test that multiple rejection attempts create multiple notes."""
+    info = merge_entry_with_worktree
+
+    mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
+
+    # First rejection: rebase conflict
+    with patch("hive.merge.rebase_onto_main_async", new_callable=AsyncMock, return_value=False):
+        entry = {
+            "id": 1,
+            "issue_id": info["issue_id"],
+            "agent_id": info["agent_id"],
+            "worktree": info["worktree_path"],
+            "branch_name": info["branch_name"],
+        }
+        await mp._try_mechanical_merge(entry)
+
+    # Second rejection: test failure (simulating a retry)
+    with patch("hive.merge.run_command_in_worktree_async", new_callable=AsyncMock, return_value=(False, "Test failed")):
+        with patch("hive.merge.Config") as mock_config:
+            mock_config.TEST_COMMAND = "pytest"
+            await mp._try_mechanical_merge(entry)
+
+    # Verify both rejection notes exist
+    notes = temp_db.get_notes(issue_id=info["issue_id"], category="rejection")
+    assert len(notes) == 2
+
+    # Verify they have different content
+    contents = [n["content"] for n in notes]
+    assert any("[Merge conflict]" in c for c in contents)
+    assert any("[Test failure]" in c for c in contents)
