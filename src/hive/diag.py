@@ -136,7 +136,7 @@ def _gather_recent_events(db: Database, limit: int = 50) -> list[dict]:
     return db.get_recent_events(n=limit)
 
 
-def _gather_daemon_log_tail(project_name: str, lines: int = 30) -> list[str]:
+def _gather_daemon_log_tail(project_name: str, lines: int = 50) -> list[str]:
     log_file = HIVE_DIR / "logs" / f"orchestrator-{project_name}.log"
     if not log_file.exists():
         return [f"(no log file: {log_file})"]
@@ -322,7 +322,7 @@ def format_report_text(report: dict) -> str:
 
     # --- Daemon Log Tail ---
     lines.append("")
-    lines.append("--- Daemon Log (last 30 lines) ---")
+    lines.append("--- Daemon Log (last 50 lines) ---")
     log_lines = report.get("daemon_log_tail", [])
     if isinstance(log_lines, list):
         for line in log_lines:
