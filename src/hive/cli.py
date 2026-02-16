@@ -705,10 +705,10 @@ class HiveCLI:
 
     def merges(self, status: Optional[str] = None, *, json_mode: bool = False):
         """List merge queue entries."""
-        query = "SELECT mq.*, i.title as issue_title, a.name as agent_name FROM merge_queue mq JOIN issues i ON mq.issue_id = i.id LEFT JOIN agents a ON mq.agent_id = a.id"
-        params = []
+        query = "SELECT mq.*, i.title as issue_title, a.name as agent_name FROM merge_queue mq JOIN issues i ON mq.issue_id = i.id LEFT JOIN agents a ON mq.agent_id = a.id WHERE i.project = ?"
+        params = [self.project_name]
         if status:
-            query += " WHERE mq.status = ?"
+            query += " AND mq.status = ?"
             params.append(status)
         query += " ORDER BY mq.enqueued_at DESC LIMIT 50"
 
@@ -745,7 +745,7 @@ class HiveCLI:
             status_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
             # Get active agents
-            active_agents = self.db.get_active_agents()
+            active_agents = self.db.get_active_agents(project=self.project_name)
 
             # Get ready queue
             ready = self.db.get_ready_queue(limit=10)
@@ -802,11 +802,11 @@ class HiveCLI:
     def list_agents(self, status: Optional[str] = None, *, json_mode: bool = False):
         """List agents."""
         try:
-            query = "SELECT * FROM agents"
-            params = []
+            query = "SELECT * FROM agents WHERE project = ?"
+            params = [self.project_name]
 
             if status:
-                query += " WHERE status = ?"
+                query += " AND status = ?"
                 params.append(status)
 
             query += " ORDER BY created_at DESC"
@@ -925,7 +925,7 @@ class HiveCLI:
     ):
         """Add a note to the knowledge base."""
         try:
-            note_id = self.db.add_note(agent_id=None, issue_id=issue_id, content=content, category=category)
+            note_id = self.db.add_note(agent_id=None, issue_id=issue_id, content=content, category=category, project=self.project_name)
 
             result = {
                 "note_id": note_id,
@@ -952,7 +952,7 @@ class HiveCLI:
     ):
         """List notes from the knowledge base."""
         try:
-            notes = self.db.get_notes(issue_id=issue_id, category=category, limit=limit)
+            notes = self.db.get_notes(issue_id=issue_id, category=category, project=self.project_name, limit=limit)
 
             result = {"count": len(notes), "notes": notes}
         except Exception as e:
@@ -1070,7 +1070,7 @@ class HiveCLI:
         json_mode: bool = False,
     ):
         """Show token usage and cost estimates."""
-        usage = self.db.get_token_usage(issue_id=issue_id, agent_id=agent_id)
+        usage = self.db.get_token_usage(issue_id=issue_id, agent_id=agent_id, project=self.project_name)
 
         if json_mode:
             print(json.dumps(usage, indent=2))
@@ -1207,7 +1207,7 @@ class HiveCLI:
 
     def metrics(self, model=None, tag=None, issue_type=None, json_mode=False):
         """Show aggregated agent run metrics."""
-        results = self.db.get_metrics(model=model, tag=tag, issue_type=issue_type)
+        results = self.db.get_metrics(model=model, tag=tag, issue_type=issue_type, project=self.project_name)
 
         if json_mode:
             # Calculate summary stats for JSON output
@@ -1373,7 +1373,7 @@ class HiveCLI:
         ).fetchall()
 
         print(f"\nHive — {self.project_name} ({datetime.now().strftime('%H:%M:%S')})")
-        print(f"Workers: {len(self.db.get_active_agents())}/{Config.MAX_AGENTS}")
+        print(f"Workers: {len(self.db.get_active_agents(project=self.project_name))}/{Config.MAX_AGENTS}")
         print(
             f"Merge queue: {merge_stats.get('queued', 0)} queued, "
             f"{merge_stats.get('running', 0)} running, "
@@ -1946,7 +1946,7 @@ def _do_setup(project_path: Path, project_name: str, *, db: Database | None = No
         if conventions:
             note_lines.append(f"Conventions: {conventions}")
         note_content = "\n".join(note_lines)
-        note_id = db.add_note(issue_id=None, agent_id=None, category="context", content=note_content)
+        note_id = db.add_note(issue_id=None, agent_id=None, category="context", content=note_content, project=project_name)
         print(f"  Added project context note #{note_id}")
 
     # Next steps
