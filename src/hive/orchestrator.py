@@ -689,11 +689,7 @@ class Orchestrator:
                 "worktree_error",
                 {"error": str(e)},
             )
-            # Delete the orphaned agent
-            self.db.conn.execute("PRAGMA foreign_keys = OFF")
-            self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-            self.db.conn.execute("PRAGMA foreign_keys = ON")
-            self.db.conn.commit()
+            self._delete_agent_row(agent_id)
             return
 
         # Atomic claim
@@ -701,10 +697,7 @@ class Orchestrator:
         if not claimed:
             # Someone else claimed it first, clean up worktree and delete agent
             await remove_worktree_async(worktree_path)
-            self.db.conn.execute("PRAGMA foreign_keys = OFF")
-            self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-            self.db.conn.execute("PRAGMA foreign_keys = ON")
-            self.db.conn.commit()
+            self._delete_agent_row(agent_id)
             return
 
         # Create OpenCode session
@@ -933,6 +926,15 @@ class Orchestrator:
         """Release an issue back to the open queue."""
         self.db.update_issue_status(issue_id, "open")
         self.db.conn.execute("UPDATE issues SET assignee = NULL WHERE id = ?", (issue_id,))
+        self.db.conn.commit()
+
+    def _delete_agent_row(self, agent_id: str):
+        """Delete agent row for early spawn-orphan cleanup paths."""
+        self.db.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+        finally:
+            self.db.conn.execute("PRAGMA foreign_keys = ON")
         self.db.conn.commit()
 
     async def _best_effort_cleanup(self, label: str, op: Awaitable[Any]):

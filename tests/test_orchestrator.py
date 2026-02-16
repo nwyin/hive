@@ -577,7 +577,12 @@ async def test_merge_task_auto_restart(temp_db, tmp_path):
     # Mock asyncio.create_task to capture the new task creation
     with patch("asyncio.create_task") as mock_create_task:
         mock_new_task = Mock()
-        mock_create_task.return_value = mock_new_task
+
+        def _consume_and_return_task(coro):
+            coro.close()
+            return mock_new_task
+
+        mock_create_task.side_effect = _consume_and_return_task
 
         # Call the callback
         orch._on_merge_task_done(failed_task)
@@ -601,7 +606,7 @@ async def test_merge_task_no_restart_when_cancelled(temp_db, tmp_path):
     )
 
     # Test callback with cancelled task (should not restart)
-    cancelled_task = AsyncMock()
+    cancelled_task = Mock()
     cancelled_task.cancelled.return_value = True
 
     with patch("asyncio.create_task") as mock_create_task:
@@ -628,7 +633,7 @@ async def test_merge_task_no_restart_when_not_running(temp_db, tmp_path):
     # Test callback when not running (should not restart)
     orch.running = False
 
-    failed_task = AsyncMock()
+    failed_task = Mock()
     failed_task.cancelled.return_value = False
     failed_task.exception.return_value = Exception("Merge processor died")
 
