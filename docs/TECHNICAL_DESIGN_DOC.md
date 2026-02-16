@@ -149,7 +149,7 @@ Ready issues satisfy:
 
 - `status = 'open'`
 - `assignee IS NULL`
-- `type != 'molecule'`
+- `type != 'epic'`
 - all `blocks` dependencies are in `done|finalized|canceled`
 
 Sorted by `priority ASC, created_at ASC`.
@@ -225,7 +225,7 @@ Flow:
    - completion assessment fail,
    - no-diff validation fail,
    - success done,
-   - success + molecule cycle.
+   - success + epic cycle.
 4. Success path:
    - issue -> `done`
    - enqueue `merge_queue` (including worker `test_command` if provided)
@@ -341,7 +341,7 @@ On refinery exceptions, queue entry is failed and refinery session is force-rese
 
 - `merge_queue.status='merged'`
 - issue -> `finalized`
-- molecule parent may be auto-finalized when all children are complete
+- epic parent may be auto-finalized when all children are complete
 
 `_teardown_after_finalize`:
 
@@ -436,7 +436,7 @@ On completion merge/orchestrator paths:
 
 Before worker dispatch, orchestrator injects:
 
-- molecule sibling notes (`get_notes_for_molecule`)
+- epic sibling notes (`get_notes_for_epic`)
 - recent project notes (`get_notes(project=..., limit=10)`)
 
 ---
@@ -477,7 +477,7 @@ Implemented in `src/hive/cli.py`.
 - `hive finalize`
 - `hive retry`
 - `hive review`
-- `hive molecule`
+- `hive epic`
 - `hive dep add|remove`
 
 ### Monitoring and analytics
