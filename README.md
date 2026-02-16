@@ -1,4 +1,4 @@
-# Hive: Multi-Agent Coding Orchestrator
+# Hive: Multi-Agent Coding Orchestrator (STILL IN ALPHA. BE WARNED)
 
 Hive coordinates parallel coding workers against a shared issue queue, then helps you review and finalize work.
 
