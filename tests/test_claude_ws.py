@@ -280,9 +280,9 @@ async def test_sync_handler(backend):
 
 @pytest.mark.asyncio
 async def test_get_session_status_unknown(backend):
-    """Unknown session returns idle."""
+    """Unknown session returns not_found."""
     status = await backend.get_session_status("nonexistent")
-    assert status["type"] == "idle"
+    assert status["type"] == "not_found"
 
 
 @pytest.mark.asyncio

@@ -154,13 +154,29 @@ class Orchestrator:
         async def handle_session_status(properties):
             session_id = properties.get("sessionID")
             status = properties.get("status", {})
+            status_type = status.get("type")
+
+            if not session_id:
+                logger.warning(f"session.status event missing sessionID: {properties}")
+                return
 
             # Any session activity = renew the lease for the associated agent
             self._renew_lease_for_session(session_id)
 
             # If session becomes idle, signal completion
-            if status.get("type") == "idle" and session_id in self.session_status_events:
-                self.session_status_events[session_id].set()
+            if status_type == "idle":
+                event = self.session_status_events.get(session_id)
+                logger.info(
+                    f"Received idle session.status for session {session_id} "
+                    f"(event_exists={bool(event)}, mapped_agent={self._session_to_agent.get(session_id)})"
+                )
+                if event:
+                    event.set()
+                else:
+                    logger.warning(
+                        f"Idle status received for session {session_id} but no monitor event exists "
+                        f"(mapped_agent={self._session_to_agent.get(session_id)})"
+                    )
 
         self.sse_client.on("session.status", handle_session_status)
 
@@ -806,16 +822,38 @@ class Orchestrator:
         except Exception:
             return False
 
-    async def _poll_session_idle(self, agent: AgentIdentity) -> bool:
+    async def _poll_session_idle(
+        self,
+        session_id: str,
+        worktree: str,
+        *,
+        agent_id: Optional[str] = None,
+        issue_id: Optional[str] = None,
+    ) -> bool:
         """Poll opencode to check if a session has gone idle.
 
         Fallback for when SSE events are missed (e.g., reconnect gap).
         Returns True if the session is idle, False otherwise.
         """
         try:
-            status = await self.opencode.get_session_status(agent.session_id, directory=agent.worktree)
-            return status is not None and status.get("type") == "idle"
-        except Exception:
+            status = await self.opencode.get_session_status(session_id, directory=worktree)
+            status_type = status.get("type") if isinstance(status, dict) else None
+
+            if status_type == "idle":
+                logger.info(f"Session poll detected idle for session {session_id} (agent={agent_id}, issue={issue_id}, status={status})")
+                return True
+
+            if status_type in ("not_found", "error", None):
+                logger.warning(
+                    f"Session poll observed non-runnable status for session {session_id} (agent={agent_id}, issue={issue_id}, status={status})"
+                )
+            else:
+                logger.debug(
+                    f"Session poll observed active status for session {session_id} (agent={agent_id}, issue={issue_id}, status={status})"
+                )
+            return False
+        except Exception as e:
+            logger.warning(f"Session poll failed for session {session_id} (agent={agent_id}, issue={issue_id}): {e}")
             return False
 
     async def monitor_agent(self, agent: AgentIdentity):
@@ -842,6 +880,9 @@ class Orchestrator:
         try:
             event = self.session_status_events.get(my_session_id)
             if not event:
+                logger.warning(
+                    f"Monitor started without session event for session {my_session_id} (agent={agent.agent_id}, issue={agent.issue_id})"
+                )
                 return
 
             # Record initial activity
@@ -849,6 +890,11 @@ class Orchestrator:
 
             # Poll loop: check for completion or inactivity
             check_interval = min(30, Config.LEASE_DURATION // 4)
+            completion_detected_via = "unknown"
+            logger.info(
+                f"Starting monitor for session {my_session_id} "
+                f"(agent={agent.agent_id}, issue={agent.issue_id}, check_interval={check_interval}s)"
+            )
             while True:
                 try:
                     await asyncio.wait_for(event.wait(), timeout=check_interval)
@@ -857,9 +903,17 @@ class Orchestrator:
                     if self._is_issue_canceled(agent.issue_id):
                         # Issue was canceled while agent was working.
                         # cancel_agent_for_issue already handled cleanup + set the event.
+                        logger.info(
+                            f"Monitor exiting due to cancellation for session {my_session_id} (agent={agent.agent_id}, issue={agent.issue_id})"
+                        )
                         return
+                    completion_detected_via = "event"
                     break
                 except asyncio.TimeoutError:
+                    logger.debug(
+                        f"Monitor timeout waiting for idle event for session {my_session_id}; "
+                        f"polling fallback (event_set={event.is_set()}, current_agent_session={agent.session_id})"
+                    )
                     # Check if the issue was canceled
                     if self._is_issue_canceled(agent.issue_id):
                         await self.cancel_agent_for_issue(agent.issue_id)
@@ -867,7 +921,13 @@ class Orchestrator:
 
                     # Polling fallback: directly check if the session went idle.
                     # This catches cases where the SSE event was missed.
-                    if await self._poll_session_idle(agent):
+                    if await self._poll_session_idle(
+                        my_session_id,
+                        agent.worktree,
+                        agent_id=agent.agent_id,
+                        issue_id=agent.issue_id,
+                    ):
+                        completion_detected_via = "poll"
                         break
 
                     # Check if there's been recent activity
@@ -882,11 +942,29 @@ class Orchestrator:
 
             # AFTER idle detected, read result file for structured data
             file_result = read_result_file(agent.worktree)
+            if file_result is None:
+                result_path = Path(agent.worktree) / ".hive-result.jsonl"
+                exists = result_path.exists()
+                size = None
+                mtime = None
+                if exists:
+                    try:
+                        stat = result_path.stat()
+                        size = stat.st_size
+                        mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+                    except OSError as e:
+                        logger.warning(f"Failed to stat result file for session {my_session_id}: {e}")
+                logger.error(
+                    f"Completion signal missing after idle detection for session {my_session_id} "
+                    f"(detected_via={completion_detected_via}, current_agent_session={agent.session_id}, "
+                    f"result_file={result_path}, exists={exists}, size={size}, mtime={mtime})"
+                )
 
             # Agent finished, assess completion
             await self.handle_agent_complete(agent, file_result=file_result)
 
         except Exception as e:
+            logger.exception(f"Monitor error for session {my_session_id} (agent={agent.agent_id}, issue={agent.issue_id}): {e}")
             self.db.log_event(
                 agent.issue_id,
                 agent.agent_id,
@@ -896,6 +974,11 @@ class Orchestrator:
         finally:
             # Clean up using the snapshotted session_id, not agent.session_id
             # which may have been mutated by cycle_agent_to_next_step.
+            logger.debug(
+                f"Monitor cleanup for session {my_session_id} "
+                f"(agent={agent.agent_id}, issue={agent.issue_id}, "
+                f"event_present={my_session_id in self.session_status_events})"
+            )
             if my_session_id in self.session_status_events:
                 del self.session_status_events[my_session_id]
             self._session_last_activity.pop(my_session_id, None)
@@ -906,6 +989,7 @@ class Orchestrator:
         Called after agent completion or failure to ensure the session
         does not linger and consume tokens.
         """
+        logger.info(f"Cleaning up session {agent.session_id} (agent={agent.agent_id}, issue={agent.issue_id}, worktree={agent.worktree})")
         await self.opencode.cleanup_session(agent.session_id, directory=agent.worktree)
 
     def _mark_agent_failed(self, agent_id: str):
@@ -1010,6 +1094,10 @@ class Orchestrator:
         )
 
         self.session_status_events[agent.session_id] = asyncio.Event()
+        logger.debug(
+            f"Created session status event for session {agent.session_id} "
+            f"(agent={agent.agent_id}, issue={issue_id}, started_event={started_event_type})"
+        )
 
         await self.opencode.send_message_async(
             agent.session_id,
@@ -1018,9 +1106,13 @@ class Orchestrator:
             system=system_prompt,
             directory=agent.worktree,
         )
+        logger.info(f"Dispatched worker prompt for session {agent.session_id} (agent={agent.agent_id}, issue={issue_id}, model={model})")
 
         self.db.log_event(issue_id, agent.agent_id, started_event_type, started_event_detail)
-        asyncio.create_task(self.monitor_agent(agent))
+        monitor_task = asyncio.create_task(self.monitor_agent(agent))
+        logger.debug(
+            f"Started monitor task for session {agent.session_id} (agent={agent.agent_id}, issue={issue_id}, task_id={id(monitor_task)})"
+        )
 
     async def _decide_completion_transition(
         self,
@@ -1349,7 +1441,11 @@ class Orchestrator:
             next_step: Next step issue dict
         """
         # Abort and delete current session (not just abort — delete prevents leaked sessions)
-        await self.opencode.cleanup_session(agent.session_id, directory=agent.worktree)
+        old_session_id = agent.session_id
+        logger.info(
+            f"Cycling agent {agent.agent_id} to next molecule step; cleaning up old session {old_session_id} (next_step={next_step['id']})"
+        )
+        await self.opencode.cleanup_session(old_session_id, directory=agent.worktree)
 
         # Claim the next step
         claimed = self.db.claim_issue(next_step["id"], agent.agent_id)
@@ -1417,6 +1513,9 @@ class Orchestrator:
             # Clean up the new session if it was created (best-effort —
             # don't let cleanup failure prevent _unregister_agent below)
             if new_session_id:
+                logger.warning(
+                    f"Cycle failed after creating session {new_session_id}; cleaning up (agent={agent.agent_id}, issue={next_step['id']})"
+                )
                 await self._best_effort_cleanup(
                     "cycle_session_cleanup",
                     self.opencode.cleanup_session(new_session_id, directory=agent.worktree),

@@ -122,6 +122,40 @@ async def test_bug1_monitor_agent_preserves_new_session_event_after_cycling(temp
     assert old_session_id not in orch.session_status_events, "Old session's event should have been cleaned up by monitor_agent's finally block"
 
 
+@pytest.mark.asyncio
+async def test_bug1_monitor_poll_uses_snapshotted_session_id(temp_db, tmp_path):
+    """Verify polling fallback checks the monitor's original session_id.
+
+    If agent.session_id mutates during a monitor timeout (cycle in flight),
+    monitor must still poll old_session_id to avoid cross-session false idle.
+    """
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    old_session_id = "old-session-333"
+    new_session_id = "new-session-444"
+    agent = _make_agent(temp_db, orch, name="poll-worker", issue_title="Step 1", session_id=old_session_id, worktree=str(tmp_path))
+
+    orch.session_status_events[old_session_id] = asyncio.Event()
+    orch._poll_session_idle = AsyncMock(return_value=True)
+    orch.handle_agent_complete = AsyncMock()
+
+    async def timeout_and_mutate(awaitable, timeout):
+        agent.session_id = new_session_id
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    with patch("hive.orchestrator.asyncio.wait_for", side_effect=timeout_and_mutate):
+        await orch.monitor_agent(agent)
+
+    orch._poll_session_idle.assert_awaited_once_with(
+        old_session_id,
+        str(tmp_path),
+        agent_id=agent.agent_id,
+        issue_id=agent.issue_id,
+    )
+
+
 # =============================================================================
 # BUG-2: Blocking time.sleep / subprocess calls in event loop
 # =============================================================================

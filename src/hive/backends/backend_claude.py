@@ -211,7 +211,8 @@ class ClaudeWSBackend(HiveBackend):
 
         # Send user message — the CLI responds with system/init after the
         # first user message, so we send first, then wait for init.
-        await self._ws_send(
+        prev_status = session.status
+        message_sent = await self._ws_send(
             session_id,
             {
                 "type": "user",
@@ -221,6 +222,16 @@ class ClaudeWSBackend(HiveBackend):
             },
         )
         session.status = "busy"
+        logger.info(
+            f"Session {session_id} status transition {prev_status} -> busy "
+            f"(message_sent={message_sent}, ws_connected={session.ws_connected.is_set()}, "
+            f"connected={session.connected.is_set()})"
+        )
+        if not message_sent:
+            logger.warning(
+                f"User message may have been dropped for session {session_id} "
+                f"(ws_connected={session.ws_connected.is_set()}, ws_present={session.ws is not None})"
+            )
 
         # Wait for system/init if this is the first message
         if not session.connected.is_set():
@@ -234,10 +245,12 @@ class ClaudeWSBackend(HiveBackend):
         """Return tracked status from WS messages."""
         session = self.sessions.get(session_id)
         if not session:
-            return {"type": "idle"}
+            logger.warning(f"Session status requested for unknown session {session_id}")
+            return {"type": "not_found"}
 
         # Check if process has died
         if session.process and session.process.returncode is not None:
+            logger.warning(f"Session status requested for dead process {session_id} (returncode={session.process.returncode})")
             return {"type": "error"}
 
         return {"type": session.status}
@@ -269,7 +282,9 @@ class ClaudeWSBackend(HiveBackend):
         """Kill the CLI process and clean up."""
         session = self.sessions.pop(session_id, None)
         if not session:
+            logger.debug(f"delete_session called for unknown session {session_id}")
             return False
+        logger.info(f"Deleting session {session_id} (directory={directory or session.directory})")
         if session.process and session.process.returncode is None:
             # Send SIGTERM to the process group (child is a session leader
             # via start_new_session=True) so grandchildren are also killed.
@@ -370,6 +385,8 @@ class ClaudeWSBackend(HiveBackend):
                             await self._route_message(session_id, parsed)
                         except json.JSONDecodeError:
                             logger.warning(f"Malformed JSON from session {session_id}: {line[:100]}")
+                        except Exception as e:
+                            logger.exception(f"Error routing WS message for session {session_id}: {e}")
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 logger.error(f"WS error for session {session_id}: {ws.exception()}")
 
@@ -394,17 +411,31 @@ class ClaudeWSBackend(HiveBackend):
             logger.info(f"Session {session_id} initialized (cli_session={session.cli_session_id})")
 
         elif msg_type == "assistant":
+            prev_status = session.status
+            session.status = "busy"
             session.messages.append(msg)
+            if prev_status != "busy":
+                logger.info(f"Session {session_id} status transition {prev_status} -> busy (source=assistant)")
             # Emit activity event for lease renewal
-            await self._emit("session.status", {"sessionID": session_id, "status": {"type": "busy"}})
+            try:
+                await self._emit("session.status", {"sessionID": session_id, "status": {"type": "busy"}})
+            except Exception as e:
+                logger.exception(f"Failed to emit busy session.status for session {session_id}: {e}")
+                raise
 
         elif msg_type == "result":
+            prev_status = session.status
             session.status = "idle"
             session.result = msg
             session.messages.append(msg)
             session.total_usage = msg.get("usage", {})
+            logger.info(f"Session {session_id} status transition {prev_status} -> idle (result_usage_keys={list(session.total_usage.keys())})")
             # Emit SSE-compatible idle event
-            await self._emit("session.status", {"sessionID": session_id, "status": {"type": "idle"}})
+            try:
+                await self._emit("session.status", {"sessionID": session_id, "status": {"type": "idle"}})
+            except Exception as e:
+                logger.exception(f"Failed to emit idle session.status for session {session_id}: {e}")
+                raise
 
         elif msg_type == "control_request":
             # Shouldn't happen with bypassPermissions, but handle gracefully
@@ -472,11 +503,21 @@ class ClaudeWSBackend(HiveBackend):
             else:
                 all_handler(event_type, properties)
 
-    async def _ws_send(self, session_id: str, msg: dict):
+    async def _ws_send(self, session_id: str, msg: dict) -> bool:
         """Send a message to the CLI process via WebSocket."""
         session = self.sessions.get(session_id)
-        if session and session.ws and not session.ws.closed:
-            await session.ws.send_str(json.dumps(msg) + "\n")
+        msg_type = msg.get("type")
+        if not session:
+            logger.warning(f"Dropping WS send for unknown session {session_id} (type={msg_type})")
+            return False
+        if not session.ws:
+            logger.warning(f"Dropping WS send for session {session_id} without WS connection (type={msg_type})")
+            return False
+        if session.ws.closed:
+            logger.warning(f"Dropping WS send for closed session WS {session_id} (type={msg_type})")
+            return False
+        await session.ws.send_str(json.dumps(msg) + "\n")
+        return True
 
     async def _send_initialize(self, session_id: str, system_prompt: str):
         """Send initialize control request with system prompt."""
