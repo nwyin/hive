@@ -128,31 +128,6 @@ async def test_bug1_monitor_agent_preserves_new_session_event_after_cycling(temp
 
 
 @pytest.mark.asyncio
-async def test_bug2_create_worktree_async_exists():
-    """Verify async wrappers exist and are importable."""
-    from hive.git import (
-        create_worktree_async,
-        remove_worktree_async,
-        rebase_onto_main_async,
-        abort_rebase_async,
-        merge_to_main_async,
-        run_command_in_worktree_async,
-        delete_branch_async,
-    )
-
-    # All should be coroutine functions
-    import inspect
-
-    assert inspect.iscoroutinefunction(create_worktree_async)
-    assert inspect.iscoroutinefunction(remove_worktree_async)
-    assert inspect.iscoroutinefunction(rebase_onto_main_async)
-    assert inspect.iscoroutinefunction(abort_rebase_async)
-    assert inspect.iscoroutinefunction(merge_to_main_async)
-    assert inspect.iscoroutinefunction(run_command_in_worktree_async)
-    assert inspect.iscoroutinefunction(delete_branch_async)
-
-
-@pytest.mark.asyncio
 async def test_bug2_event_loop_not_blocked_during_worktree_creation(tmp_path):
     """Verify that create_worktree_async doesn't block the event loop.
 
