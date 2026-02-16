@@ -583,7 +583,7 @@ class Orchestrator:
                 # Normal operation - check if we can spawn more agents
                 if len(self.active_agents) < Config.MAX_AGENTS:
                     # Get ready work
-                    ready = self.db.get_ready_queue(limit=1)
+                    ready = self.db.get_ready_queue(project=self.project_name, limit=1)
 
                     if ready:
                         issue = ready[0]
@@ -630,6 +630,7 @@ class Orchestrator:
             name=agent_name,
             model=model,
             metadata={"issue_id": issue_id},
+            project=self.project_name,
         )
 
         # Create git worktree (in executor to avoid blocking event loop)
@@ -802,7 +803,7 @@ class Orchestrator:
                     notes.append(note)
 
         # Get recent project-wide notes
-        for note in self.db.get_recent_project_notes(limit=10):
+        for note in self.db.get_recent_project_notes(project=self.project_name, limit=10):
             if note["id"] not in seen_ids:
                 seen_ids.add(note["id"])
                 notes.append(note)
@@ -961,6 +962,7 @@ class Orchestrator:
                             agent_id=agent.agent_id,
                             content=note.get("content", ""),
                             category=note.get("category", "discovery"),
+                            project=self.project_name,
                         )
                     self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
                     logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")

@@ -129,7 +129,7 @@ class MergeProcessor:
 
     async def process_queue_once(self):
         """Process the next item in the merge queue. One at a time, sequential."""
-        entries = self.db.get_queued_merges(limit=1)
+        entries = self.db.get_queued_merges(project=self.project_name, limit=1)
         if not entries:
             return
 
@@ -189,6 +189,7 @@ class MergeProcessor:
                 agent_id=agent_id,
                 category="rejection",
                 content=f"[Merge conflict] Rebase onto main failed.\nBranch: {branch_name}",
+                project=self.project_name,
             )
 
             return (False, None)
@@ -208,6 +209,7 @@ class MergeProcessor:
                 agent_id=agent_id,
                 category="rejection",
                 content=f"[Test failure] Tests failed after rebase.\nCommand: {cmd}\n```\n{truncated_output}\n```",
+                project=self.project_name,
             )
 
         # If both worker and global test commands exist: run worker first (fast), then global (comprehensive)
@@ -390,6 +392,7 @@ class MergeProcessor:
                     agent_id=agent_id,
                     category="rejection",
                     content=note_content,
+                    project=self.project_name,
                 )
             else:
                 # needs_human or unknown
@@ -412,6 +415,7 @@ class MergeProcessor:
                             agent_id=agent_id,
                             content=note.get("content", ""),
                             category=note.get("category", "discovery"),
+                            project=self.project_name,
                         )
                     self.db.log_event(issue_id, agent_id, "notes_harvested", {"count": len(notes_data), "source": "refinery"})
             except Exception:
