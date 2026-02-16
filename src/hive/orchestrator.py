@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -55,6 +56,18 @@ class EscalationDecision(str, Enum):
     AGENT_SWITCH = "agent_switch"
     ESCALATE = "escalate"
     ANOMALY_ESCALATE = "anomaly_escalate"
+
+
+@dataclass
+class CompletionDecision:
+    """Decision payload from completion transition analysis."""
+
+    transition: CompletionTransition
+    result: Optional[CompletionResult] = None
+    terminal_status: Optional[str] = None
+    budget_tokens: Optional[int] = None
+    validation_original_summary: Optional[str] = None
+    next_step: Optional[Dict[str, Any]] = None
 
 
 class Orchestrator:
@@ -485,6 +498,9 @@ class Orchestrator:
         Args:
             issue_id: The issue ID that was canceled
         """
+        # Cancel transition table:
+        # - CANCELLED_BY_USER -> wake monitor event, mark failed, log cancel, teardown+worktree cleanup
+
         # Find the agent working on this issue
         agent_id = self._issue_to_agent.get(issue_id)
         agent = self.active_agents.get(agent_id) if agent_id else None
@@ -959,6 +975,82 @@ class Orchestrator:
             except Exception:
                 pass
 
+    async def _decide_completion_transition(
+        self,
+        agent: AgentIdentity,
+        file_result: Optional[Dict[str, Any]] = None,
+    ) -> CompletionDecision:
+        """Decision phase for completion handling.
+
+        Determines the next completion transition and any payload required by
+        transition side effects.
+        """
+        terminal_issue = self.db.get_issue(agent.issue_id)
+        if terminal_issue and terminal_issue.get("status") in ("canceled", "finalized"):
+            return CompletionDecision(
+                transition=CompletionTransition.SKIP_TERMINAL_ISSUE,
+                terminal_status=terminal_issue["status"],
+            )
+
+        messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
+        self._log_token_usage(agent, messages)
+
+        if Config.MAX_TOKENS_PER_ISSUE:
+            budget_tokens = self.db.get_issue_token_total(agent.issue_id)
+            if budget_tokens > Config.MAX_TOKENS_PER_ISSUE:
+                logger.warning(f"Issue {agent.issue_id} exceeded token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})")
+                return CompletionDecision(
+                    transition=CompletionTransition.FAIL_BUDGET,
+                    budget_tokens=budget_tokens,
+                    result=CompletionResult(
+                        success=False,
+                        reason=f"Exceeded per-issue token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})",
+                        summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
+                    ),
+                )
+
+        result = assess_completion(messages, file_result=file_result)
+        if not result.success:
+            return CompletionDecision(
+                transition=CompletionTransition.FAIL_ASSESSMENT,
+                result=result,
+            )
+
+        has_commits = await has_diff_from_main_async(agent.worktree)
+        if not has_commits:
+            return CompletionDecision(
+                transition=CompletionTransition.FAIL_VALIDATION_NO_DIFF,
+                validation_original_summary=result.summary,
+                result=CompletionResult(
+                    success=False,
+                    reason="No commits relative to main despite claiming success",
+                    summary=result.summary,
+                ),
+            )
+
+        issue = self.db.get_issue(agent.issue_id)
+        if issue and issue.get("parent_id"):
+            next_step = self.db.get_next_ready_step(issue["parent_id"])
+            if next_step:
+                return CompletionDecision(
+                    transition=CompletionTransition.SUCCESS_CYCLE_NEXT_STEP,
+                    result=result,
+                    next_step=next_step,
+                )
+
+        return CompletionDecision(
+            transition=CompletionTransition.SUCCESS_DONE,
+            result=result,
+        )
+
+    # Completion transition table:
+    # - SKIP_TERMINAL_ISSUE      -> log agent_complete_skipped
+    # - FAIL_BUDGET              -> log budget_exceeded + _handle_agent_failure
+    # - FAIL_ASSESSMENT          -> _handle_agent_failure
+    # - FAIL_VALIDATION_NO_DIFF  -> log validation_failed + _handle_agent_failure
+    # - SUCCESS_DONE             -> update done + enqueue merge + log completed
+    # - SUCCESS_CYCLE_NEXT_STEP  -> SUCCESS_DONE effects + cycle agent + skip teardown
+    # - ERROR_COMPLETION_HANDLER -> log completion_error
     async def handle_agent_complete(
         self,
         agent: AgentIdentity,
@@ -986,16 +1078,8 @@ class Orchestrator:
             return
         self._handling_agents.add(agent.agent_id)
 
-        # State machine shape:
-        # 1) Decide transition outcome from guards/result validation.
-        # 2) Execute transition side effects inline.
         post_action = PostAction.TEARDOWN
-        transition: CompletionTransition | None = None
-        transition_result: Optional[CompletionResult] = None
-        terminal_issue: Optional[Dict[str, Any]] = None
-        budget_tokens: Optional[int] = None
-        validation_original_summary: Optional[str] = None
-        next_step: Optional[Dict[str, Any]] = None
+        decision: Optional[CompletionDecision] = None
 
         try:
             # Always clean up the result file if it exists
@@ -1021,149 +1105,108 @@ class Orchestrator:
             finally:
                 remove_notes_file(agent.worktree)
 
-            # Decide transition.
-            terminal_issue = self.db.get_issue(agent.issue_id)
-            if terminal_issue and terminal_issue.get("status") in ("canceled", "finalized"):
-                transition = CompletionTransition.SKIP_TERMINAL_ISSUE
-            else:
-                messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
-                self._log_token_usage(agent, messages)
+            decision = await self._decide_completion_transition(agent, file_result=file_result)
 
-                if Config.MAX_TOKENS_PER_ISSUE:
-                    budget_tokens = self.db.get_issue_token_total(agent.issue_id)
-                    if budget_tokens > Config.MAX_TOKENS_PER_ISSUE:
-                        logger.warning(f"Issue {agent.issue_id} exceeded token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})")
-                        transition = CompletionTransition.FAIL_BUDGET
-                        transition_result = CompletionResult(
-                            success=False,
-                            reason=f"Exceeded per-issue token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})",
-                            summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
-                        )
-
-                if transition is None:
-                    result = assess_completion(messages, file_result=file_result)
-                    transition_result = result
-
-                    if not result.success:
-                        transition = CompletionTransition.FAIL_ASSESSMENT
-                    else:
-                        has_commits = await has_diff_from_main_async(agent.worktree)
-                        if not has_commits:
-                            validation_original_summary = result.summary
-                            transition = CompletionTransition.FAIL_VALIDATION_NO_DIFF
-                            transition_result = CompletionResult(
-                                success=False,
-                                reason="No commits relative to main despite claiming success",
-                                summary=result.summary,
-                            )
-                        else:
-                            issue = self.db.get_issue(agent.issue_id)
-                            if issue and issue.get("parent_id"):
-                                next_step = self.db.get_next_ready_step(issue["parent_id"])
-                                if next_step:
-                                    transition = CompletionTransition.SUCCESS_CYCLE_NEXT_STEP
-
-                            if transition is None:
-                                transition = CompletionTransition.SUCCESS_DONE
-
-            # Execute transition side effects.
-            if transition == CompletionTransition.SKIP_TERMINAL_ISSUE:
-                status = terminal_issue["status"] if terminal_issue else "unknown"
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "agent_complete_skipped",
-                    {"reason": f"issue already {status}, cleaning up session"},
-                )
-
-            elif transition == CompletionTransition.FAIL_BUDGET:
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "budget_exceeded",
-                    {"issue_tokens": budget_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
-                )
-                if transition_result is not None:
-                    await self._handle_agent_failure(agent, transition_result)
-
-            elif transition == CompletionTransition.FAIL_VALIDATION_NO_DIFF:
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "validation_failed",
-                    {
-                        "reason": "No commits relative to main despite claiming success",
-                        "original_summary": validation_original_summary,
-                    },
-                )
-                if transition_result is not None:
-                    await self._handle_agent_failure(agent, transition_result)
-
-            elif transition == CompletionTransition.FAIL_ASSESSMENT:
-                if transition_result is not None:
-                    await self._handle_agent_failure(agent, transition_result)
-
-            elif transition in (CompletionTransition.SUCCESS_DONE, CompletionTransition.SUCCESS_CYCLE_NEXT_STEP):
-                if transition_result is None:
-                    raise RuntimeError("Missing completion result for success transition")
-
-                # Mark issue as done.
-                self.db.update_issue_status(agent.issue_id, "done")
-
-                # Get commit hash if available.
-                commit_hash = transition_result.git_commit or get_commit_hash(agent.worktree)
-
-                # Extract test_command from worker's file_result.
-                test_command = file_result.get("test_command") if file_result else None
-
-                # Enqueue to merge queue.
-                self.db.conn.execute(
-                    """
-                    INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
+            match decision.transition:
+                case CompletionTransition.SKIP_TERMINAL_ISSUE:
+                    status = decision.terminal_status or "unknown"
+                    self.db.log_event(
                         agent.issue_id,
                         agent.agent_id,
-                        self.project_name,
-                        agent.worktree,
-                        f"agent/{agent.name}",
-                        test_command,
-                    ),
-                )
-                self.db.conn.commit()
+                        "agent_complete_skipped",
+                        {"reason": f"issue already {status}, cleaning up session"},
+                    )
 
-                # Get agent model from database.
-                agent_row = self.db.get_agent(agent.agent_id)
-                model = agent_row["model"] if agent_row else None
+                case CompletionTransition.FAIL_BUDGET:
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "budget_exceeded",
+                        {"issue_tokens": decision.budget_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
+                    )
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
 
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "completed",
-                    {
-                        "summary": transition_result.summary,
-                        "commit": commit_hash,
-                        "artifacts": transition_result.artifacts,
-                        "model": model,
-                    },
-                )
+                case CompletionTransition.FAIL_VALIDATION_NO_DIFF:
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "validation_failed",
+                        {
+                            "reason": "No commits relative to main despite claiming success",
+                            "original_summary": decision.validation_original_summary,
+                        },
+                    )
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
 
-                if transition == CompletionTransition.SUCCESS_CYCLE_NEXT_STEP and next_step:
-                    await self.cycle_agent_to_next_step(agent, next_step)
-                    if agent.agent_id in self.active_agents:
-                        post_action = PostAction.CONTINUE_AGENT
+                case CompletionTransition.FAIL_ASSESSMENT:
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
 
-            else:
-                raise RuntimeError(f"Unhandled completion transition: {transition}")
+                case CompletionTransition.SUCCESS_DONE | CompletionTransition.SUCCESS_CYCLE_NEXT_STEP:
+                    if decision.result is None:
+                        raise RuntimeError("Missing completion result for success transition")
+
+                    # Mark issue as done.
+                    self.db.update_issue_status(agent.issue_id, "done")
+
+                    # Get commit hash if available.
+                    commit_hash = decision.result.git_commit or get_commit_hash(agent.worktree)
+
+                    # Extract test_command from worker's file_result.
+                    test_command = file_result.get("test_command") if file_result else None
+
+                    # Enqueue to merge queue.
+                    self.db.conn.execute(
+                        """
+                        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            agent.issue_id,
+                            agent.agent_id,
+                            self.project_name,
+                            agent.worktree,
+                            f"agent/{agent.name}",
+                            test_command,
+                        ),
+                    )
+                    self.db.conn.commit()
+
+                    # Get agent model from database.
+                    agent_row = self.db.get_agent(agent.agent_id)
+                    model = agent_row["model"] if agent_row else None
+
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "completed",
+                        {
+                            "summary": decision.result.summary,
+                            "commit": commit_hash,
+                            "artifacts": decision.result.artifacts,
+                            "model": model,
+                        },
+                    )
+
+                    if decision.transition == CompletionTransition.SUCCESS_CYCLE_NEXT_STEP:
+                        if decision.next_step is None:
+                            raise RuntimeError("Missing next step for cycle transition")
+                        await self.cycle_agent_to_next_step(agent, decision.next_step)
+                        if agent.agent_id in self.active_agents:
+                            post_action = PostAction.CONTINUE_AGENT
+
+                case _:
+                    raise RuntimeError(f"Unhandled completion transition: {decision.transition}")
 
         except Exception as e:
-            transition = CompletionTransition.ERROR_COMPLETION_HANDLER
+            transition = decision.transition.value if decision else CompletionTransition.ERROR_COMPLETION_HANDLER.value
             self.db.log_event(
                 agent.issue_id,
                 agent.agent_id,
                 "completion_error",
-                {"error": str(e), "transition": transition.value},
+                {"error": str(e), "transition": transition},
             )
         finally:
             self._handling_agents.discard(agent.agent_id)
@@ -1408,6 +1451,10 @@ class Orchestrator:
         Args:
             agent: Agent identity
         """
+        # Stalled transition table:
+        # - FAIL_STALLED_IN_PROGRESS -> mark failed + escalate via _handle_agent_failure + teardown
+        # - FAIL_STALLED_TERMINAL    -> mark failed + teardown (no escalation)
+
         # Guard: skip if this agent was already handled (removed from active_agents)
         if agent.agent_id not in self.active_agents:
             logger.debug(f"Skipping stall handling for {agent.name} — already removed from active agents")
@@ -1419,6 +1466,7 @@ class Orchestrator:
             return
         self._handling_agents.add(agent.agent_id)
 
+        stalled_transition = "FAIL_STALLED_TERMINAL"
         try:
             self.db.log_event(
                 agent.issue_id,
@@ -1435,6 +1483,7 @@ class Orchestrator:
             # infinite spawn loop for issues whose workers always stall.
             current_issue = self.db.get_issue(agent.issue_id)
             if current_issue and current_issue.get("status") == "in_progress":
+                stalled_transition = "FAIL_STALLED_IN_PROGRESS"
                 stall_result = CompletionResult(
                     success=False,
                     reason="Agent stalled (lease expired, no activity)",
@@ -1442,6 +1491,7 @@ class Orchestrator:
                 )
                 await self._handle_agent_failure(agent, stall_result)
         finally:
+            logger.debug(f"Stall transition for {agent.name}: {stalled_transition}")
             self._handling_agents.discard(agent.agent_id)
             await self._teardown_agent(agent, remove_worktree=True)
 

@@ -367,6 +367,47 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
     assert temp_db.count_events_by_type(issue_id, "escalated") == 1
 
 
+@pytest.mark.asyncio
+async def test_handle_agent_failure_anomaly_escalates_immediately(temp_db, tmp_path):
+    """Anomaly threshold should force immediate escalation."""
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Anomaly task", "Repeated failures")
+    agent_id = temp_db.create_agent("test-agent")
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+    temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "failure-1"})
+
+    original_threshold = Config.ANOMALY_FAILURE_THRESHOLD
+    original_window = Config.ANOMALY_WINDOW_MINUTES
+    Config.ANOMALY_FAILURE_THRESHOLD = 1
+    Config.ANOMALY_WINDOW_MINUTES = 60
+    try:
+        await orch._handle_agent_failure(
+            agent,
+            CompletionResult(success=False, reason="failure-2", summary="second failure"),
+        )
+    finally:
+        Config.ANOMALY_FAILURE_THRESHOLD = original_threshold
+        Config.ANOMALY_WINDOW_MINUTES = original_window
+
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "escalated"
+    escalated_events = temp_db.get_events(issue_id=issue_id, event_type="escalated")
+    assert len(escalated_events) == 1
+
+
 @pytest.fixture
 def git_repo(tmp_path):
     """Create a temporary git repository for testing."""
@@ -1216,6 +1257,33 @@ async def test_handle_stalled_agent_double_call_guard(temp_db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_stalled_agent_terminal_issue_skips_escalation(temp_db, tmp_path):
+    """Stalled terminal issues should mark failed and teardown without escalation."""
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+
+    issue_id = temp_db.create_issue("Terminal stalled task", "Already canceled")
+    temp_db.update_issue_status(issue_id, "canceled")
+    agent_id = temp_db.create_agent("test-agent")
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+    orch.active_agents[agent_id] = agent
+    orch._handle_agent_failure = AsyncMock()
+
+    await orch.handle_stalled_agent(agent)
+
+    orch._handle_agent_failure.assert_not_called()
+    stall_events = temp_db.get_events(issue_id=issue_id, event_type="stalled")
+    assert len(stall_events) == 1
+    assert agent_id not in orch.active_agents
+
+
+@pytest.mark.asyncio
 async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     """Test that handle_agent_complete guards against double execution."""
     # Create orchestrator with mock opencode
@@ -1260,6 +1328,115 @@ async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     # Verify no additional events were logged
     events_after_second = len(temp_db.get_events(issue_id=issue_id))
     assert events_after_second == events_after_first
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_complete_terminal_transition_skips_message_fetch(temp_db, tmp_path):
+    """Canceled/finalized issue should skip message fetch and log skip event."""
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+
+    issue_id = temp_db.create_issue("Terminal task", "Already canceled")
+    temp_db.update_issue_status(issue_id, "canceled")
+    agent_id = temp_db.create_agent("test-agent")
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+    orch.active_agents[agent_id] = agent
+
+    await orch.handle_agent_complete(agent)
+
+    mock_opencode.get_messages.assert_not_called()
+    events = temp_db.get_events(issue_id=issue_id, event_type="agent_complete_skipped")
+    assert len(events) == 1
+    assert agent_id not in orch.active_agents
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_complete_budget_transition_routes_failure(temp_db, tmp_path):
+    """Budget exceeded transition should log and route through failure handling."""
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+
+    issue_id = temp_db.create_issue("Budget task", "Hit budget")
+    agent_id = temp_db.create_agent("test-agent")
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+    orch.active_agents[agent_id] = agent
+
+    orch._handle_agent_failure = AsyncMock()
+    orch.db.get_issue_token_total = Mock(return_value=101)
+
+    original_max_tokens = Config.MAX_TOKENS_PER_ISSUE
+    Config.MAX_TOKENS_PER_ISSUE = 100
+    try:
+        await orch.handle_agent_complete(agent)
+    finally:
+        Config.MAX_TOKENS_PER_ISSUE = original_max_tokens
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="budget_exceeded")
+    assert len(events) == 1
+    orch._handle_agent_failure.assert_called_once()
+    failure_result = orch._handle_agent_failure.call_args[0][1]
+    assert "Exceeded per-issue token budget" in failure_result.reason
+    assert agent_id not in orch.active_agents
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_complete_cycle_transition_skips_teardown(temp_db, tmp_path):
+    """Cycle transition should continue the same agent and skip teardown."""
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+
+    parent_id = temp_db.create_issue("Molecule parent", issue_type="molecule")
+    issue_id = temp_db.create_issue("Step 1", issue_type="step", parent_id=parent_id)
+    next_step_id = temp_db.create_issue("Step 2", issue_type="step", parent_id=parent_id)
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+    orch.active_agents[agent_id] = agent
+
+    orch._teardown_agent = AsyncMock()
+    orch.cycle_agent_to_next_step = AsyncMock()
+
+    file_result = {
+        "status": "success",
+        "summary": "Step complete",
+        "files_changed": [],
+        "tests_added": [],
+        "tests_run": True,
+        "blockers": [],
+        "artifacts": [{"type": "git_commit", "value": "abc123"}],
+    }
+
+    with patch("hive.orchestrator.has_diff_from_main_async", return_value=True):
+        await orch.handle_agent_complete(agent, file_result=file_result)
+
+    orch.cycle_agent_to_next_step.assert_called_once()
+    cycled_step = orch.cycle_agent_to_next_step.call_args[0][1]
+    assert cycled_step["id"] == next_step_id
+    orch._teardown_agent.assert_not_called()
+    assert agent_id in orch.active_agents
 
 
 @pytest.mark.asyncio
