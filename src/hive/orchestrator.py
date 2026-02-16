@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,34 @@ from .prompts import (
 from .backends import SSEClient
 
 logger = logging.getLogger(__name__)
+
+
+class CompletionTransition(str, Enum):
+    """Transition outcomes for completion handling."""
+
+    SKIP_TERMINAL_ISSUE = "skip_terminal_issue"
+    FAIL_BUDGET = "fail_budget"
+    FAIL_ASSESSMENT = "fail_assessment"
+    FAIL_VALIDATION_NO_DIFF = "fail_validation_no_diff"
+    SUCCESS_DONE = "success_done"
+    SUCCESS_CYCLE_NEXT_STEP = "success_cycle_next_step"
+    ERROR_COMPLETION_HANDLER = "error_completion_handler"
+
+
+class PostAction(str, Enum):
+    """Post-transition action for completion handler."""
+
+    TEARDOWN = "teardown"
+    CONTINUE_AGENT = "continue_agent"
+
+
+class EscalationDecision(str, Enum):
+    """Escalation routing decision after a failure."""
+
+    RETRY = "retry"
+    AGENT_SWITCH = "agent_switch"
+    ESCALATE = "escalate"
+    ANOMALY_ESCALATE = "anomaly_escalate"
 
 
 class Orchestrator:
@@ -465,24 +494,12 @@ class Orchestrator:
 
         logger.info(f"Canceling agent {agent.name} (session {agent.session_id}) for issue {issue_id}")
 
-        # Abort and delete the opencode session
-        await self.opencode.cleanup_session(agent.session_id, directory=agent.worktree)
-
         # Signal the monitor_agent loop to stop waiting
         event = self.session_status_events.get(agent.session_id)
         if event:
             event.set()
 
-        # Mark agent as failed
-        self.db.conn.execute(
-            """
-            UPDATE agents
-            SET status = 'failed', current_issue = NULL, session_id = NULL
-            WHERE id = ?
-            """,
-            (agent.agent_id,),
-        )
-        self.db.conn.commit()
+        self._mark_agent_failed(agent.agent_id)
 
         self.db.log_event(
             issue_id,
@@ -491,16 +508,7 @@ class Orchestrator:
             {"reason": "issue canceled by user, session aborted"},
         )
 
-        # Clean up worktree (in executor to avoid blocking event loop)
-        if agent.worktree:
-            try:
-                await remove_worktree_async(agent.worktree)
-            except Exception:
-                pass
-
-        # Remove from active agents
-        if agent.agent_id in self.active_agents:
-            self._unregister_agent(agent.agent_id)
+        await self._teardown_agent(agent, remove_worktree=True)
 
     async def start(self):
         """Start the orchestrator."""
@@ -773,11 +781,7 @@ class Orchestrator:
             if agent_id in self.active_agents:
                 self._unregister_agent(agent_id)
             # Mark agent as failed in DB
-            self.db.conn.execute(
-                "UPDATE agents SET status = 'failed', session_id = NULL, current_issue = NULL WHERE id = ?",
-                (agent_id,),
-            )
-            self.db.conn.commit()
+            self._mark_agent_failed(agent_id)
             # Clean up worktree and mark issue failed
             await remove_worktree_async(worktree_path)
             self.db.update_issue_status(issue_id, "failed")
@@ -919,6 +923,42 @@ class Orchestrator:
         """
         await self.opencode.cleanup_session(agent.session_id, directory=agent.worktree)
 
+    def _mark_agent_failed(self, agent_id: str):
+        """Mark an agent failed in DB and clear issue/session references."""
+        self.db.conn.execute(
+            """
+            UPDATE agents
+            SET status = 'failed',
+                current_issue = NULL,
+                session_id = NULL
+            WHERE id = ?
+            """,
+            (agent_id,),
+        )
+        self.db.conn.commit()
+
+    def _release_issue(self, issue_id: str):
+        """Release an issue back to the open queue."""
+        self.db.update_issue_status(issue_id, "open")
+        self.db.conn.execute("UPDATE issues SET assignee = NULL WHERE id = ?", (issue_id,))
+        self.db.conn.commit()
+
+    async def _teardown_agent(self, agent: AgentIdentity, *, remove_worktree: bool = False):
+        """Best-effort cleanup for session, in-memory registration, and worktree."""
+        try:
+            await self._cleanup_session(agent)
+        except Exception:
+            pass
+
+        if agent.agent_id in self.active_agents:
+            self._unregister_agent(agent.agent_id)
+
+        if remove_worktree and agent.worktree:
+            try:
+                await remove_worktree_async(agent.worktree)
+            except Exception:
+                pass
+
     async def handle_agent_complete(
         self,
         agent: AgentIdentity,
@@ -946,6 +986,17 @@ class Orchestrator:
             return
         self._handling_agents.add(agent.agent_id)
 
+        # State machine shape:
+        # 1) Decide transition outcome from guards/result validation.
+        # 2) Execute transition side effects inline.
+        post_action = PostAction.TEARDOWN
+        transition: CompletionTransition | None = None
+        transition_result: Optional[CompletionResult] = None
+        terminal_issue: Optional[Dict[str, Any]] = None
+        budget_tokens: Optional[int] = None
+        validation_original_summary: Optional[str] = None
+        next_step: Optional[Dict[str, Any]] = None
+
         try:
             # Always clean up the result file if it exists
             remove_result_file(agent.worktree)
@@ -970,189 +1021,179 @@ class Orchestrator:
             finally:
                 remove_notes_file(agent.worktree)
 
-            # Check if issue was canceled/finalized while the agent was working.
-            # If so, don't overwrite the status — just clean up the session.
-            current_issue = self.db.get_issue(agent.issue_id)
-            if current_issue and current_issue.get("status") in ("canceled", "finalized"):
+            # Decide transition.
+            terminal_issue = self.db.get_issue(agent.issue_id)
+            if terminal_issue and terminal_issue.get("status") in ("canceled", "finalized"):
+                transition = CompletionTransition.SKIP_TERMINAL_ISSUE
+            else:
+                messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
+                self._log_token_usage(agent, messages)
+
+                if Config.MAX_TOKENS_PER_ISSUE:
+                    budget_tokens = self.db.get_issue_token_total(agent.issue_id)
+                    if budget_tokens > Config.MAX_TOKENS_PER_ISSUE:
+                        logger.warning(f"Issue {agent.issue_id} exceeded token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})")
+                        transition = CompletionTransition.FAIL_BUDGET
+                        transition_result = CompletionResult(
+                            success=False,
+                            reason=f"Exceeded per-issue token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})",
+                            summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
+                        )
+
+                if transition is None:
+                    result = assess_completion(messages, file_result=file_result)
+                    transition_result = result
+
+                    if not result.success:
+                        transition = CompletionTransition.FAIL_ASSESSMENT
+                    else:
+                        has_commits = await has_diff_from_main_async(agent.worktree)
+                        if not has_commits:
+                            validation_original_summary = result.summary
+                            transition = CompletionTransition.FAIL_VALIDATION_NO_DIFF
+                            transition_result = CompletionResult(
+                                success=False,
+                                reason="No commits relative to main despite claiming success",
+                                summary=result.summary,
+                            )
+                        else:
+                            issue = self.db.get_issue(agent.issue_id)
+                            if issue and issue.get("parent_id"):
+                                next_step = self.db.get_next_ready_step(issue["parent_id"])
+                                if next_step:
+                                    transition = CompletionTransition.SUCCESS_CYCLE_NEXT_STEP
+
+                            if transition is None:
+                                transition = CompletionTransition.SUCCESS_DONE
+
+            # Execute transition side effects.
+            if transition == CompletionTransition.SKIP_TERMINAL_ISSUE:
+                status = terminal_issue["status"] if terminal_issue else "unknown"
                 self.db.log_event(
                     agent.issue_id,
                     agent.agent_id,
                     "agent_complete_skipped",
-                    {"reason": f"issue already {current_issue['status']}, cleaning up session"},
+                    {"reason": f"issue already {status}, cleaning up session"},
                 )
-                await self._cleanup_session(agent)
-                if agent.agent_id in self.active_agents:
-                    self._unregister_agent(agent.agent_id)
-                return
 
-            # Get messages from session
-            try:
-                messages = await self.opencode.get_messages(agent.session_id, directory=agent.worktree)
-
-                # Extract and log token usage from messages
-                self._log_token_usage(agent, messages)
-
-                # Per-issue token budget check
-                if Config.MAX_TOKENS_PER_ISSUE:
-                    issue_tokens = self.db.get_issue_token_total(agent.issue_id)
-                    if issue_tokens > Config.MAX_TOKENS_PER_ISSUE:
-                        logger.warning(f"Issue {agent.issue_id} exceeded token budget ({issue_tokens} > {Config.MAX_TOKENS_PER_ISSUE})")
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "budget_exceeded",
-                            {"issue_tokens": issue_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
-                        )
-                        budget_result = CompletionResult(
-                            success=False,
-                            reason=f"Exceeded per-issue token budget ({issue_tokens} > {Config.MAX_TOKENS_PER_ISSUE})",
-                            summary=f"Terminated: per-issue token budget exceeded ({issue_tokens} tokens)",
-                        )
-                        await self._handle_agent_failure(agent, budget_result)
-                        await self._cleanup_session(agent)
-                        if agent.agent_id in self.active_agents:
-                            self._unregister_agent(agent.agent_id)
-                        return
-
-                # Assess completion — file_result takes priority over message parsing
-                result = assess_completion(messages, file_result=file_result)
-
-                if result.success:
-                    # Validate that worker actually made commits
-                    has_commits = await has_diff_from_main_async(agent.worktree)
-                    if not has_commits:
-                        # Log validation failure
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "validation_failed",
-                            {
-                                "reason": "No commits relative to main despite claiming success",
-                                "original_summary": result.summary,
-                            },
-                        )
-
-                        # Convert to failure result
-                        validation_result = CompletionResult(
-                            success=False,
-                            reason="No commits relative to main despite claiming success",
-                            summary=result.summary,
-                        )
-
-                        # Route through failure handling
-                        await self._handle_agent_failure(agent, validation_result)
-
-                        # Clean up and exit
-                        await self._cleanup_session(agent)
-                        if agent.agent_id in self.active_agents:
-                            self._unregister_agent(agent.agent_id)
-                        return
-
-                    # Mark issue as done
-                    self.db.update_issue_status(agent.issue_id, "done")
-
-                    # Get commit hash if available
-                    commit_hash = result.git_commit or get_commit_hash(agent.worktree)
-
-                    # Extract test_command from worker's file_result
-                    test_command = file_result.get("test_command") if file_result else None
-
-                    # Enqueue to merge queue
-                    self.db.conn.execute(
-                        """
-                        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            agent.issue_id,
-                            agent.agent_id,
-                            self.project_name,
-                            agent.worktree,
-                            f"agent/{agent.name}",
-                            test_command,
-                        ),
-                    )
-                    self.db.conn.commit()
-
-                    # Get agent model from database
-                    agent_row = self.db.get_agent(agent.agent_id)
-                    model = agent_row["model"] if agent_row else None
-
-                    self.db.log_event(
-                        agent.issue_id,
-                        agent.agent_id,
-                        "completed",
-                        {
-                            "summary": result.summary,
-                            "commit": commit_hash,
-                            "artifacts": result.artifacts,
-                            "model": model,
-                        },
-                    )
-
-                    # Check if this was a step in a molecule
-                    issue = self.db.get_issue(agent.issue_id)
-                    if issue and issue.get("parent_id"):
-                        # This is a molecule step - check for next step
-                        next_step = self.db.get_next_ready_step(issue["parent_id"])
-
-                        if next_step:
-                            # Session-cycle to next step (abort old session inside)
-                            await self.cycle_agent_to_next_step(agent, next_step)
-                            return  # Don't remove from active agents yet
-
-                    # No more steps or not a molecule - clean up session and release agent
-                    await self._cleanup_session(agent)
-                    if agent.agent_id in self.active_agents:
-                        self._unregister_agent(agent.agent_id)
-
-                else:
-                    # Handle failure with retry escalation chain
-                    await self._handle_agent_failure(agent, result)
-
-                    # Clean up session and release agent
-                    await self._cleanup_session(agent)
-                    if agent.agent_id in self.active_agents:
-                        self._unregister_agent(agent.agent_id)
-
-            except Exception as e:
+            elif transition == CompletionTransition.FAIL_BUDGET:
                 self.db.log_event(
                     agent.issue_id,
                     agent.agent_id,
-                    "completion_error",
-                    {"error": str(e)},
+                    "budget_exceeded",
+                    {"issue_tokens": budget_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
                 )
-                # Clean up session and release agent
-                await self._cleanup_session(agent)
-                if agent.agent_id in self.active_agents:
-                    self._unregister_agent(agent.agent_id)
+                if transition_result is not None:
+                    await self._handle_agent_failure(agent, transition_result)
+
+            elif transition == CompletionTransition.FAIL_VALIDATION_NO_DIFF:
+                self.db.log_event(
+                    agent.issue_id,
+                    agent.agent_id,
+                    "validation_failed",
+                    {
+                        "reason": "No commits relative to main despite claiming success",
+                        "original_summary": validation_original_summary,
+                    },
+                )
+                if transition_result is not None:
+                    await self._handle_agent_failure(agent, transition_result)
+
+            elif transition == CompletionTransition.FAIL_ASSESSMENT:
+                if transition_result is not None:
+                    await self._handle_agent_failure(agent, transition_result)
+
+            elif transition in (CompletionTransition.SUCCESS_DONE, CompletionTransition.SUCCESS_CYCLE_NEXT_STEP):
+                if transition_result is None:
+                    raise RuntimeError("Missing completion result for success transition")
+
+                # Mark issue as done.
+                self.db.update_issue_status(agent.issue_id, "done")
+
+                # Get commit hash if available.
+                commit_hash = transition_result.git_commit or get_commit_hash(agent.worktree)
+
+                # Extract test_command from worker's file_result.
+                test_command = file_result.get("test_command") if file_result else None
+
+                # Enqueue to merge queue.
+                self.db.conn.execute(
+                    """
+                    INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        agent.issue_id,
+                        agent.agent_id,
+                        self.project_name,
+                        agent.worktree,
+                        f"agent/{agent.name}",
+                        test_command,
+                    ),
+                )
+                self.db.conn.commit()
+
+                # Get agent model from database.
+                agent_row = self.db.get_agent(agent.agent_id)
+                model = agent_row["model"] if agent_row else None
+
+                self.db.log_event(
+                    agent.issue_id,
+                    agent.agent_id,
+                    "completed",
+                    {
+                        "summary": transition_result.summary,
+                        "commit": commit_hash,
+                        "artifacts": transition_result.artifacts,
+                        "model": model,
+                    },
+                )
+
+                if transition == CompletionTransition.SUCCESS_CYCLE_NEXT_STEP and next_step:
+                    await self.cycle_agent_to_next_step(agent, next_step)
+                    if agent.agent_id in self.active_agents:
+                        post_action = PostAction.CONTINUE_AGENT
+
+            else:
+                raise RuntimeError(f"Unhandled completion transition: {transition}")
+
+        except Exception as e:
+            transition = CompletionTransition.ERROR_COMPLETION_HANDLER
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "completion_error",
+                {"error": str(e), "transition": transition.value},
+            )
         finally:
             self._handling_agents.discard(agent.agent_id)
+            if post_action == PostAction.TEARDOWN:
+                await self._teardown_agent(agent)
 
-    async def _handle_agent_failure(self, agent: AgentIdentity, result):
-        """
-        Handle agent failure with retry escalation chain.
+    def _choose_escalation(self, issue_id: str) -> EscalationDecision:
+        """Decide escalation tier based on anomaly/retry/switch counts."""
+        if Config.ANOMALY_FAILURE_THRESHOLD and Config.ANOMALY_WINDOW_MINUTES:
+            recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
+            if recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD:
+                return EscalationDecision.ANOMALY_ESCALATE
 
-        Three-tier escalation:
-        1. Retry same agent (up to Config.MAX_RETRIES times)
-        2. Switch agent (up to Config.MAX_AGENT_SWITCHES times)
-        3. Escalate to human intervention
+        retry_count = self.db.count_events_by_type(issue_id, "retry")
+        if retry_count < Config.MAX_RETRIES:
+            return EscalationDecision.RETRY
 
-        Args:
-            agent: Agent identity that failed
-            result: Completion result with failure details
-        """
+        agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+        if agent_switch_count < Config.MAX_AGENT_SWITCHES:
+            return EscalationDecision.AGENT_SWITCH
+
+        return EscalationDecision.ESCALATE
+
+    async def _handle_agent_failure(self, agent: AgentIdentity, result: CompletionResult):
+        """State machine for failure routing: retry -> agent switch -> escalate."""
         issue_id = agent.issue_id
 
-        # Count existing retry and agent_switch events
-        retry_count = self.db.count_events_by_type(issue_id, "retry")
-        agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
-
-        # Get agent model from database
+        # Log the failure first so anomaly checks see this occurrence.
         agent_row = self.db.get_agent(agent.agent_id)
         model = agent_row["model"] if agent_row else None
-
-        # Log the failure first
         self.db.log_event(
             issue_id,
             agent.agent_id,
@@ -1160,31 +1201,28 @@ class Orchestrator:
             {"reason": result.reason, "summary": result.summary, "model": model},
         )
 
-        # Anomaly detection: auto-escalate if too many failures in a short window
-        if Config.ANOMALY_FAILURE_THRESHOLD and Config.ANOMALY_WINDOW_MINUTES:
-            recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
-            if recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD:
-                logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
-                self.db.update_issue_status(issue_id, "escalated")
-                self.db.log_event(
-                    issue_id,
-                    agent.agent_id,
-                    "escalated",
-                    {
-                        "reason": "Anomaly detection: rapid repeated failures",
-                        "recent_failures": recent_failures,
-                        "window_minutes": Config.ANOMALY_WINDOW_MINUTES,
-                        "final_failure_reason": result.reason,
-                    },
-                )
-                return
+        decision = self._choose_escalation(issue_id)
 
-        if retry_count < Config.MAX_RETRIES:
-            # Tier 1: Retry with same or different agent
-            self.db.update_issue_status(issue_id, "open")
-            # Clear assignee so get_ready_queue can pick this issue up again
-            self.db.conn.execute("UPDATE issues SET assignee = NULL WHERE id = ?", (issue_id,))
-            self.db.conn.commit()
+        if decision == EscalationDecision.ANOMALY_ESCALATE:
+            recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
+            logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
+            self.db.update_issue_status(issue_id, "escalated")
+            self.db.log_event(
+                issue_id,
+                agent.agent_id,
+                "escalated",
+                {
+                    "reason": "Anomaly detection: rapid repeated failures",
+                    "recent_failures": recent_failures,
+                    "window_minutes": Config.ANOMALY_WINDOW_MINUTES,
+                    "final_failure_reason": result.reason,
+                },
+            )
+            return
+
+        if decision == EscalationDecision.RETRY:
+            retry_count = self.db.count_events_by_type(issue_id, "retry")
+            self._release_issue(issue_id)
             self.db.log_event(
                 issue_id,
                 agent.agent_id,
@@ -1192,13 +1230,11 @@ class Orchestrator:
                 {"retry_count": retry_count + 1, "reason": result.reason, "previous_agent": agent.name},
             )
             logger.info(f"Retrying issue {issue_id} (attempt {retry_count + 1}/{Config.MAX_RETRIES})")
+            return
 
-        elif agent_switch_count < Config.MAX_AGENT_SWITCHES:
-            # Tier 2: Switch agent (reset issue to open with fresh session)
-            self.db.update_issue_status(issue_id, "open")
-            # Clear assignee so get_ready_queue can pick this issue up again
-            self.db.conn.execute("UPDATE issues SET assignee = NULL WHERE id = ?", (issue_id,))
-            self.db.conn.commit()
+        if decision == EscalationDecision.AGENT_SWITCH:
+            agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+            self._release_issue(issue_id)
             self.db.log_event(
                 issue_id,
                 agent.agent_id,
@@ -1206,24 +1242,23 @@ class Orchestrator:
                 {"switch_count": agent_switch_count + 1, "reason": result.reason, "previous_agent": agent.name, "model": model},
             )
             logger.info(f"Switching agent for issue {issue_id} (switch {agent_switch_count + 1}/{Config.MAX_AGENT_SWITCHES})")
+            return
 
-        else:
-            # Tier 3: Escalate to human intervention
-            self.db.update_issue_status(issue_id, "escalated")
-            self.db.log_event(
-                issue_id,
-                agent.agent_id,
-                "escalated",
-                {
-                    "reason": "Exhausted all retry and agent switch attempts",
-                    "final_failure_reason": result.reason,
-                    "total_retries": retry_count,
-                    "total_agent_switches": agent_switch_count,
-                },
-            )
-            logger.warning(
-                f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches"
-            )
+        retry_count = self.db.count_events_by_type(issue_id, "retry")
+        agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+        self.db.update_issue_status(issue_id, "escalated")
+        self.db.log_event(
+            issue_id,
+            agent.agent_id,
+            "escalated",
+            {
+                "reason": "Exhausted all retry and agent switch attempts",
+                "final_failure_reason": result.reason,
+                "total_retries": retry_count,
+                "total_agent_switches": agent_switch_count,
+            },
+        )
+        logger.warning(f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches")
 
     async def cycle_agent_to_next_step(self, agent: AgentIdentity, next_step: Dict[str, Any]):
         """
@@ -1392,21 +1427,8 @@ class Orchestrator:
                 {"lease_expired": True},
             )
 
-            # Abort and delete the session
-            await self._cleanup_session(agent)
-
             # Mark agent as failed so it's not picked up again
-            self.db.conn.execute(
-                """
-                UPDATE agents
-                SET status = 'failed',
-                    current_issue = NULL,
-                    session_id = NULL
-                WHERE id = ?
-                """,
-                (agent.agent_id,),
-            )
-            self.db.conn.commit()
+            self._mark_agent_failed(agent.agent_id)
 
             # Route through escalation chain (retry → agent_switch → escalate)
             # instead of unconditionally resetting to open, which caused an
@@ -1421,17 +1443,7 @@ class Orchestrator:
                 await self._handle_agent_failure(agent, stall_result)
         finally:
             self._handling_agents.discard(agent.agent_id)
-
-        # Clean up worktree (in executor to avoid blocking event loop)
-        if agent.worktree:
-            try:
-                await remove_worktree_async(agent.worktree)
-            except Exception:
-                pass  # Best-effort cleanup
-
-        # Remove from active agents
-        if agent.agent_id in self.active_agents:
-            self._unregister_agent(agent.agent_id)
+            await self._teardown_agent(agent, remove_worktree=True)
 
     async def _check_opencode_health(self) -> bool:
         """
