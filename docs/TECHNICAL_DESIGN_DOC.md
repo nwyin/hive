@@ -493,7 +493,7 @@ Implemented in `src/hive/cli.py`.
 
 - `hive start`
 - `hive stop`
-- `hive queen [--backend opencode|claude]`
+- `hive queen [--backend opencode|claude|codex]`
 - `hive note`
 - `hive setup` / `hive init`
 
@@ -556,4 +556,3 @@ Minimum checklist for doc sync:
 - backend method contracts (`backends/base.py`)
 - command surface (`cli.py`)
 - file protocol changes (`prompts.py` / templates)
-

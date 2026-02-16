@@ -1258,6 +1258,8 @@ class HiveCLI:
         effective = backend or Config.BACKEND
         if effective == "claude":
             self._queen_claude()
+        elif effective == "codex":
+            self._queen_codex()
         else:
             self._queen_opencode()
 
@@ -1401,6 +1403,61 @@ permission:
         try:
             result = subprocess.run(cmd)
             sys.exit(result.returncode)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._queen_cleanup_identity_files(claude_md, instructions_path)
+
+    def _queen_codex(self):
+        """Launch Queen Bee as an interactive Codex CLI session."""
+        # Write identity files for compaction persistence (instructions + state files).
+        claude_md, instructions_path = self._queen_write_identity_files()
+
+        short_prompt = "Read .hive/queen-instructions.md for your full instructions now."
+
+        # Persistent instructions that survive long chats + compaction.
+        # Keep this short and point at the durable instruction/state files.
+        developer_instructions = (
+            "You are the Hive Queen Bee coordinator. You do NOT write code; you plan, decompose, and monitor.\\n"
+            "Full instructions: .hive/queen-instructions.md (read now; re-read after compaction).\\n"
+            "Operational state: .hive/queen-state.md (re-read after compaction; update after significant actions).\\n"
+            "Before creating issues/epics, output a human-readable plan for user review and wait for explicit approval.\\n"
+            "Always use hive --json for Hive CLI commands."
+        )
+
+        # Codex compaction prompt (used when the client compacts long threads).
+        # Ensure summaries keep the queen's durable context pointers.
+        compact_prompt = (
+            "Summarize the conversation for continuity.\\n"
+            "Preserve: user goals, key decisions, current plan/issues, and next steps.\\n"
+            "Always include a reminder to read .hive/queen-instructions.md and .hive/queen-state.md after compaction."
+        )
+
+        codex_cmd = os.environ.get("CODEX_CMD", "codex")
+        sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "workspace-write")
+        approval = os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never")
+        cmd = [
+            codex_cmd,
+            "--sandbox",
+            sandbox,
+            "--ask-for-approval",
+            approval,
+            "-c",
+            f'developer_instructions="{developer_instructions}"',
+            "-c",
+            f'compact_prompt="{compact_prompt}"',
+            "--cd",
+            str(self.project_path),
+            short_prompt,
+        ]
+
+        print("Launching Queen Bee TUI (Codex CLI)...\n")
+
+        try:
+            result = subprocess.run(cmd)
+            sys.exit(result.returncode)
+        except FileNotFoundError:
+            self._error("Codex CLI not found. Install `codex` and ensure it's on PATH, or set CODEX_CMD to the codex executable path.")
         except KeyboardInterrupt:
             pass
         finally:
@@ -1602,7 +1659,7 @@ def main():
     queen_parser = subparsers.add_parser("queen", help="Launch Queen Bee TUI")
     queen_parser.add_argument(
         "--backend",
-        choices=["opencode", "claude"],
+        choices=["opencode", "claude", "codex"],
         default=None,
         help="Override backend (default: from config/HIVE_BACKEND)",
     )

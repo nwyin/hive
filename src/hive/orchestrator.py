@@ -574,9 +574,16 @@ class Orchestrator:
         # to create sessions (e.g. eager refinery), which requires the server.
         sse_task = asyncio.create_task(self.sse_client.connect_with_reconnect())
 
-        # If the backend has a server_ready gate, wait for it before proceeding
+        # If the backend has a server_ready gate, wait for it before proceeding.
+        # IMPORTANT: if the event loop task dies before setting server_ready
+        # (e.g. missing binary / auth failure), don't hang forever.
         if hasattr(self.sse_client, "server_ready"):
-            await self.sse_client.server_ready.wait()
+            server_ready = self.sse_client.server_ready
+            while not server_ready.is_set():
+                if sse_task.done():
+                    exc = sse_task.exception()
+                    raise exc or RuntimeError("Backend event loop exited before becoming ready")
+                await asyncio.sleep(0.1)
 
         await self._reconcile_stale_agents()
 

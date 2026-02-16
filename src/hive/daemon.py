@@ -283,6 +283,27 @@ def run_daemon_foreground(db, project_path: str, project_name: str):
                     await asyncio.wait_for(main_task, timeout=5)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
+        elif Config.BACKEND == "codex":
+            from .backends import CodexAppServerBackend
+
+            backend = CodexAppServerBackend()
+            async with backend:
+                orchestrator = Orchestrator(
+                    db=db,
+                    opencode_client=backend,
+                    project_path=project_path,
+                    project_name=project_name,
+                    sse_client=backend,
+                )
+                # Run orchestrator until stop signal
+                main_task = asyncio.create_task(orchestrator.start())
+                await stop_event.wait()
+                orchestrator.running = False
+                main_task.cancel()
+                try:
+                    await asyncio.wait_for(main_task, timeout=5)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
         else:
             from .backends import OpenCodeClient
 
