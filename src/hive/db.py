@@ -239,89 +239,34 @@ class Database:
             self.conn.rollback()
             raise
 
+    def _ensure_column(self, table: str, column: str, col_type: str):
+        """Add column to table if it does not exist. Idempotent."""
+        cursor = self.conn.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in cursor.fetchall()]
+        if column not in columns:
+            try:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                self.conn.commit()
+                logger.info(f"Added {column} column to {table} table")
+            except sqlite3.Error as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+
     def _migrate_if_needed(self):
         """Apply any necessary database migrations."""
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        # Check if model column exists in issues table
-        cursor = self.conn.execute("PRAGMA table_info(issues)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if "model" not in columns:
-            try:
-                self.conn.execute("ALTER TABLE issues ADD COLUMN model TEXT")
-                self.conn.commit()
-                logger.info("Added model column to issues table")
-            except sqlite3.Error as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-
-        # Add tags column if missing
-        cursor = self.conn.execute("PRAGMA table_info(issues)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "tags" not in columns:
-            self.conn.execute("ALTER TABLE issues ADD COLUMN tags TEXT")
-            self.conn.commit()
-            logger.info("Added tags column to issues table")
+        # Add missing columns using helper
+        self._ensure_column("issues", "model", "TEXT")
+        self._ensure_column("issues", "tags", "TEXT")
+        self._ensure_column("merge_queue", "test_command", "TEXT")
+        self._ensure_column("notes", "project", "TEXT")
+        self._ensure_column("agents", "project", "TEXT")
 
         # Create tags index (safe after column exists via CREATE TABLE or migration)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)")
         self.conn.commit()
-
-        # Add test_command column to merge_queue if missing
-        cursor = self.conn.execute("PRAGMA table_info(merge_queue)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "test_command" not in columns:
-            try:
-                self.conn.execute("ALTER TABLE merge_queue ADD COLUMN test_command TEXT")
-                self.conn.commit()
-                logger.info("Added test_command column to merge_queue table")
-            except sqlite3.Error as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
-
-        # Create agent_runs view (views aren't created by executescript on all SQLite versions)
-        self.conn.execute("""
-CREATE VIEW IF NOT EXISTS agent_runs AS
-SELECT
-    e_start.agent_id,
-    e_start.issue_id,
-    i.type as issue_type,
-    COALESCE(i.model, 'unknown') as model,
-    i.tags,
-    CASE
-        WHEN e_done.id IS NOT NULL THEN 'done'
-        WHEN e_fail.id IS NOT NULL THEN 'failed'
-        WHEN e_esc.id IS NOT NULL THEN 'escalated'
-        ELSE 'unknown'
-    END as outcome,
-    ROUND((julianday(COALESCE(e_done.created_at, e_fail.created_at, e_esc.created_at)) - julianday(e_start.created_at)) * 86400, 1) as duration_s,
-    (SELECT COUNT(*) FROM events er WHERE er.issue_id = e_start.issue_id AND er.event_type = 'retry') as retry_count,
-    (SELECT COUNT(*) FROM events en WHERE en.agent_id = e_start.agent_id AND en.event_type = 'notes_harvested') as notes_produced,
-    (SELECT COUNT(*) FROM events eni WHERE eni.agent_id = e_start.agent_id AND eni.event_type = 'notes_injected') as notes_injected,
-    e_start.created_at as started_at,
-    COALESCE(e_done.created_at, e_fail.created_at, e_esc.created_at) as ended_at
-FROM events e_start
-JOIN issues i ON e_start.issue_id = i.id
-LEFT JOIN events e_done ON e_start.agent_id = e_done.agent_id AND e_done.event_type = 'completed'
-LEFT JOIN events e_fail ON e_start.agent_id = e_fail.agent_id AND e_fail.event_type IN ('status_failed')
-LEFT JOIN events e_esc ON e_start.issue_id = e_esc.issue_id AND e_esc.event_type = 'escalated'
-WHERE e_start.event_type = 'worker_started'
-        """)
-        self.conn.commit()
-
-        # Add project column to notes table if missing
-        cursor = self.conn.execute("PRAGMA table_info(notes)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "project" not in columns:
-            try:
-                self.conn.execute("ALTER TABLE notes ADD COLUMN project TEXT")
-                self.conn.commit()
-                logger.info("Added project column to notes table")
-            except sqlite3.Error as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
 
         # Backfill notes.project from issues.project via issue_id FK (always run to catch any NULL values)
         self.conn.execute("""
@@ -336,18 +281,6 @@ WHERE e_start.event_type = 'worker_started'
         # Create index on notes.project if it doesn't exist
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)")
         self.conn.commit()
-
-        # Add project column to agents table if missing
-        cursor = self.conn.execute("PRAGMA table_info(agents)")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "project" not in columns:
-            try:
-                self.conn.execute("ALTER TABLE agents ADD COLUMN project TEXT")
-                self.conn.commit()
-                logger.info("Added project column to agents table")
-            except sqlite3.Error as e:
-                if "duplicate column name" not in str(e).lower():
-                    raise
 
         # Create index on agents.project if it doesn't exist
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)")
