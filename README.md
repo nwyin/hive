@@ -4,6 +4,23 @@ Hive coordinates parallel coding workers against a shared issue queue, then help
 
 ## Quick Start (5 minutes)
 
+### Install (global, no venv activation)
+
+If you want `hive` available across all repos (like `pipx`), use `uv tool install`:
+
+```bash
+cd hive
+uv tool install -e .
+uv tool update-shell   # ensures uv's tool bin dir is on PATH
+```
+
+Notes:
+
+- Use `uv tool install -e ".[dev]"` if you want the dev extras too.
+- If you previously ran `uv tool install .`, you may need `--force` to refresh the installed snapshot: `uv tool install --force .`
+
+### Install (project venv)
+
 ```bash
 # Install
 cd hive
