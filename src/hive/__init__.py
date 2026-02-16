@@ -1,4 +1,3 @@
-# Hive multi-agent orchestrator
 """Hive: Lightweight Multi-Agent Orchestrator"""
 
 from .logging_config import configure_logging
