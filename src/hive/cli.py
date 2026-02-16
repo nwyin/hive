@@ -1556,8 +1556,39 @@ class HiveCLI:
         else:
             self._queen_opencode()
 
+    _OPENCODE_QUEEN_FRONTMATTER = """\
+---
+description: Strategic coordinator for Hive multi-agent orchestration
+mode: primary
+tools:
+  write: true
+  edit: true
+permission:
+  bash:
+    "hive *": allow
+    "git *": allow
+    "ls *": allow
+    "find *": allow
+    "rg *": allow
+  read: allow
+---
+
+"""
+
+    def _queen_write_opencode_agent(self):
+        """Generate .opencode/agents/queen.md from source template."""
+        from .prompts import _load_template
+
+        queen_prompt = _load_template("queen")
+        agents_dir = self.project_path / ".opencode" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        agent_file = agents_dir / "queen.md"
+        agent_file.write_text(self._OPENCODE_QUEEN_FRONTMATTER + queen_prompt)
+
     def _queen_opencode(self):
         """Launch Queen Bee via OpenCode TUI."""
+        self._queen_write_opencode_agent()
+
         opencode_cmd = os.environ.get("OPENCODE_CMD", "opencode")
         cmd = [
             opencode_cmd,
