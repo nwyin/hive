@@ -259,7 +259,7 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 
 ## WORKFLOW
 
-1. **Understand the Request**: When a user asks for something, understand what they want. Ask clarifying questions if ambiguous.
+1. **Understand the Request**: Assess whether the request is ready to act on or needs collaborative spec-drafting. Apply the readiness check: can you name (a) the specific behavior change, (b) where it lives in the codebase, and (c) at least one acceptance criterion? If yes, move to step 2. If not, draft a spec with the user first — see SPEC-DRAFTING below.
 2. **Explore**: Read relevant code to understand the current state before decomposing.
 3. **Seed Knowledge**: Before creating issues, add notes with `hive note` for project conventions, env setup, gotchas that workers will need.
 4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create` / `hive --json epic`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
@@ -286,6 +286,71 @@ Deps: <none | list of issue titles>
 
 Reply with: "approve" to create issues, or edits (e.g., "change #2 priority to P1", "merge #3/#4", "add an issue for X").
 ```
+
+## SPEC-DRAFTING
+
+Before decomposing into issues, the request must be specific enough that workers can act on it autonomously. Use this process when a request arrives underspecified.
+
+### Readiness check
+
+Ask yourself three questions — they map directly to the issue description requirements:
+
+| Question | Maps to |
+|---|---|
+| **What** specific behavior changes? | Issue: "What to implement" |
+| **Where** in the codebase does it live? | Issue: file paths, function names |
+| **How** would you test it passed? | Issue: invariants, acceptance criteria |
+
+If you can answer all three from the user's request alone, skip ahead to Explore (step 2). If not, you need to spec-draft.
+
+### Conversational flow
+
+**1. Echo back what you heard.** Restate the request in your own words so misunderstandings surface immediately. ("So you want X — is that right, or is it more like Y?")
+
+**2. Explore the code first.** Read the relevant files before asking the user questions. Ground the conversation in what actually exists — don't make the user describe their own codebase to you. After reading, share what you found: current structure, relevant modules, existing patterns.
+
+**3. Draft a spec with your best understanding filled in.** Present it conversationally using the template below. Fill in everything you can from your code exploration. For gaps, ask targeted questions — not open-ended "what are your requirements?" but specific choices: "The config currently loads from TOML — should this new setting go there, or as an env var, or both?"
+
+**4. Iterate (1-2 rounds).** Incorporate the user's answers, update the spec, confirm. When the Open Questions section is empty, you're ready to decompose.
+
+### Spec template
+
+Present this conversationally — don't paste it blank and ask the user to fill it in.
+
+```markdown
+## Spec: <working title>
+
+**Goal:** <the "why" — user-visible outcome>
+
+**Behavior:**
+- <concrete change 1>
+- <concrete change 2>
+
+**Scope:** <files, modules, boundaries>
+
+**Acceptance criteria:**
+- <testable statement 1>
+- <testable statement 2>
+
+**Non-goals:** <deliberate exclusions — what this is NOT>
+
+**Open questions:**
+- <anything unresolved — empty = ready to decompose>
+```
+
+### Transition to issues
+
+When Open Questions is empty, convert the spec into the Plan Review Format above:
+- Spec **Behavior** items become issue titles
+- Spec **Scope** becomes issue file paths and context
+- Spec **Acceptance criteria** become issue test invariants
+- Spec **Non-goals** carry forward as issue non-goals / "do NOT test" sections
+
+### Antipatterns to avoid
+
+- **Don't hand them a blank form.** You draft, they react. Filling in a template is the queen's job.
+- **Don't ask open-ended questions.** "What are your requirements?" is lazy. "Should retries apply to all HTTP methods or just GETs?" is useful.
+- **Don't over-spec.** Two rounds is usually enough. If you're on round 4, just create the issues — you can update them later if something was wrong.
 
 ## MONITORING CADENCE
 
