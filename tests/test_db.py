@@ -1269,3 +1269,306 @@ def test_project_column_backfill_null_issue_id():
     finally:
         db.close()
         os.unlink(db_path)
+
+
+# --- Project filtering tests ---
+
+
+@pytest.fixture
+def db_with_projects(temp_db):
+    """Create a DB with issues, agents, and notes for multiple projects."""
+    db = temp_db
+
+    # Create issues for project alpha
+    alpha_issue1 = db.create_issue("Alpha Issue 1", project="alpha")
+    alpha_issue2 = db.create_issue("Alpha Issue 2", project="alpha", priority=1)
+
+    # Create issues for project beta
+    beta_issue1 = db.create_issue("Beta Issue 1", project="beta")
+    beta_issue2 = db.create_issue("Beta Issue 2", project="beta")
+
+    # Create agent for alpha
+    alpha_agent = db.create_agent("alpha-agent", project="alpha")
+
+    # Create agent for beta
+    beta_agent = db.create_agent("beta-agent", project="beta")
+
+    # Create notes for alpha
+    db.add_note(issue_id=alpha_issue1, content="Alpha note 1", project="alpha")
+    db.add_note(issue_id=alpha_issue2, content="Alpha note 2", project="alpha")
+
+    # Create notes for beta
+    db.add_note(issue_id=beta_issue1, content="Beta note 1", project="beta")
+
+    # Create NULL-project note (should match any project query)
+    db.add_note(content="Global note", project=None)
+
+    # Add merge queue entries
+    db.update_issue_status(alpha_issue1, "done")
+    db.update_issue_status(beta_issue1, "done")
+    db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (alpha_issue1, alpha_agent, "alpha", "/tmp/alpha-wt", "agent/alpha-1"),
+    )
+    db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (beta_issue1, beta_agent, "beta", "/tmp/beta-wt", "agent/beta-1"),
+    )
+    db.conn.commit()
+
+    # Add token usage events
+    db.log_event(alpha_issue1, alpha_agent, "tokens_used", {"input_tokens": 1000, "output_tokens": 500, "model": "claude-sonnet-4-5-20250929"})
+    db.log_event(beta_issue1, beta_agent, "tokens_used", {"input_tokens": 2000, "output_tokens": 1000, "model": "claude-sonnet-4-5-20250929"})
+
+    # Update agents to working status
+    db.conn.execute("UPDATE agents SET status = 'working' WHERE id IN (?, ?)", (alpha_agent, beta_agent))
+    db.conn.commit()
+
+    return db, {
+        "alpha_issues": [alpha_issue1, alpha_issue2],
+        "beta_issues": [beta_issue1, beta_issue2],
+        "alpha_agent": alpha_agent,
+        "beta_agent": beta_agent,
+    }
+
+
+def test_get_ready_queue_filter_by_project(db_with_projects):
+    """Test get_ready_queue filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha issues
+    alpha_ready = db.get_ready_queue(project="alpha")
+    alpha_ids = [item["id"] for item in alpha_ready]
+
+    # Should only have alpha issues
+    assert ids["alpha_issues"][1] in alpha_ids  # alpha_issue2 (alpha_issue1 is done)
+    assert len([i for i in alpha_ids if i in ids["beta_issues"]]) == 0
+
+    # Get beta issues
+    beta_ready = db.get_ready_queue(project="beta")
+    beta_ids = [item["id"] for item in beta_ready]
+
+    # Should only have beta issues
+    assert ids["beta_issues"][1] in beta_ids  # beta_issue2 (beta_issue1 is done)
+    assert len([i for i in beta_ids if i in ids["alpha_issues"]]) == 0
+
+
+def test_get_ready_queue_no_project_filter(db_with_projects):
+    """Test get_ready_queue without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_ready = db.get_ready_queue()
+    all_ids = [item["id"] for item in all_ready]
+
+    # Should have both alpha and beta
+    assert ids["alpha_issues"][1] in all_ids
+    assert ids["beta_issues"][1] in all_ids
+
+
+def test_get_queued_merges_filter_by_project(db_with_projects):
+    """Test get_queued_merges filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha merges
+    alpha_merges = db.get_queued_merges(project="alpha")
+    assert len(alpha_merges) == 1
+    assert alpha_merges[0]["issue_id"] == ids["alpha_issues"][0]
+
+    # Get beta merges
+    beta_merges = db.get_queued_merges(project="beta")
+    assert len(beta_merges) == 1
+    assert beta_merges[0]["issue_id"] == ids["beta_issues"][0]
+
+
+def test_get_queued_merges_no_project_filter(db_with_projects):
+    """Test get_queued_merges without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_merges = db.get_queued_merges()
+    assert len(all_merges) == 2
+
+
+def test_get_active_agents_filter_by_project(db_with_projects):
+    """Test get_active_agents filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha agents
+    alpha_agents = db.get_active_agents(project="alpha")
+    assert len(alpha_agents) == 1
+    assert alpha_agents[0]["id"] == ids["alpha_agent"]
+
+    # Get beta agents
+    beta_agents = db.get_active_agents(project="beta")
+    assert len(beta_agents) == 1
+    assert beta_agents[0]["id"] == ids["beta_agent"]
+
+
+def test_get_active_agents_no_project_filter(db_with_projects):
+    """Test get_active_agents without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_agents = db.get_active_agents()
+    assert len(all_agents) == 2
+
+
+def test_get_notes_filter_by_project(db_with_projects):
+    """Test get_notes filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha notes
+    alpha_notes = db.get_notes(project="alpha")
+    alpha_contents = [note["content"] for note in alpha_notes]
+
+    # Should have alpha notes + NULL-project note
+    assert "Alpha note 1" in alpha_contents
+    assert "Alpha note 2" in alpha_contents
+    assert "Global note" in alpha_contents  # NULL-project notes match any query
+    assert "Beta note 1" not in alpha_contents
+
+    # Get beta notes
+    beta_notes = db.get_notes(project="beta")
+    beta_contents = [note["content"] for note in beta_notes]
+
+    # Should have beta notes + NULL-project note
+    assert "Beta note 1" in beta_contents
+    assert "Global note" in beta_contents
+    assert "Alpha note 1" not in beta_contents
+    assert "Alpha note 2" not in beta_contents
+
+
+def test_get_notes_no_project_filter(db_with_projects):
+    """Test get_notes without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_notes = db.get_notes()
+    all_contents = [note["content"] for note in all_notes]
+
+    # Should have all notes
+    assert "Alpha note 1" in all_contents
+    assert "Alpha note 2" in all_contents
+    assert "Beta note 1" in all_contents
+    assert "Global note" in all_contents
+
+
+def test_get_recent_project_notes_filter_by_project(db_with_projects):
+    """Test get_recent_project_notes filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha notes
+    alpha_notes = db.get_recent_project_notes(project="alpha")
+    alpha_contents = [note["content"] for note in alpha_notes]
+
+    # Should have alpha notes + NULL-project note
+    assert "Alpha note 1" in alpha_contents
+    assert "Alpha note 2" in alpha_contents
+    assert "Global note" in alpha_contents
+    assert "Beta note 1" not in alpha_contents
+
+
+def test_get_recent_project_notes_no_project_filter(db_with_projects):
+    """Test get_recent_project_notes without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_notes = db.get_recent_project_notes()
+
+    # Should have all notes
+    assert len(all_notes) == 4
+
+
+def test_get_token_usage_filter_by_project(db_with_projects):
+    """Test get_token_usage filters by project."""
+    db, ids = db_with_projects
+
+    # Get alpha tokens
+    alpha_usage = db.get_token_usage(project="alpha")
+    assert alpha_usage["total_input_tokens"] == 1000
+    assert alpha_usage["total_output_tokens"] == 500
+    assert alpha_usage["total_tokens"] == 1500
+
+    # Get beta tokens
+    beta_usage = db.get_token_usage(project="beta")
+    assert beta_usage["total_input_tokens"] == 2000
+    assert beta_usage["total_output_tokens"] == 1000
+    assert beta_usage["total_tokens"] == 3000
+
+
+def test_get_token_usage_no_project_filter(db_with_projects):
+    """Test get_token_usage without project filter returns all projects."""
+    db, ids = db_with_projects
+
+    all_usage = db.get_token_usage()
+    assert all_usage["total_input_tokens"] == 3000
+    assert all_usage["total_output_tokens"] == 1500
+    assert all_usage["total_tokens"] == 4500
+
+
+def test_get_metrics_filter_by_project(db_with_projects):
+    """Test get_metrics filters by project."""
+    db, ids = db_with_projects
+
+    # Add agent runs data
+    db.log_event(ids["alpha_issues"][0], ids["alpha_agent"], "worker_started", {})
+    db.log_event(ids["alpha_issues"][0], ids["alpha_agent"], "completed", {})
+    db.log_event(ids["beta_issues"][0], ids["beta_agent"], "worker_started", {})
+    db.log_event(ids["beta_issues"][0], ids["beta_agent"], "completed", {})
+
+    # Get alpha metrics
+    alpha_metrics = db.get_metrics(project="alpha")
+    assert len(alpha_metrics) >= 1
+
+    # Get beta metrics
+    beta_metrics = db.get_metrics(project="beta")
+    assert len(beta_metrics) >= 1
+
+
+def test_add_note_with_project(temp_db):
+    """Test add_note stores project."""
+    issue_id = temp_db.create_issue("Test issue", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    note_id = temp_db.add_note(issue_id=issue_id, agent_id=agent_id, content="Test note", project="test-project")
+
+    # Verify project was stored
+    cursor = temp_db.conn.execute("SELECT project FROM notes WHERE id = ?", (note_id,))
+    note_project = cursor.fetchone()["project"]
+    assert note_project == "test-project"
+
+
+def test_create_agent_with_project(temp_db):
+    """Test create_agent stores project."""
+    agent_id = temp_db.create_agent("test-agent", project="test-project")
+
+    # Verify project was stored
+    agent = temp_db.get_agent(agent_id)
+    assert agent["project"] == "test-project"
+
+
+def test_null_project_notes_match_any_project_query(temp_db):
+    """Test that NULL-project notes appear in all project-filtered queries."""
+    # Create issues for different projects
+    alpha_issue = temp_db.create_issue("Alpha issue", project="alpha")
+    beta_issue = temp_db.create_issue("Beta issue", project="beta")
+
+    # Create notes with NULL project
+    temp_db.add_note(content="Global note 1", project=None)
+    temp_db.add_note(content="Global note 2", project=None)
+
+    # Create project-specific notes
+    temp_db.add_note(issue_id=alpha_issue, content="Alpha note", project="alpha")
+    temp_db.add_note(issue_id=beta_issue, content="Beta note", project="beta")
+
+    # Query for alpha project - should include NULL-project notes
+    alpha_notes = temp_db.get_notes(project="alpha")
+    alpha_contents = [note["content"] for note in alpha_notes]
+    assert "Global note 1" in alpha_contents
+    assert "Global note 2" in alpha_contents
+    assert "Alpha note" in alpha_contents
+    assert "Beta note" not in alpha_contents
+
+    # Query for beta project - should include NULL-project notes
+    beta_notes = temp_db.get_notes(project="beta")
+    beta_contents = [note["content"] for note in beta_notes]
+    assert "Global note 1" in beta_contents
+    assert "Global note 2" in beta_contents
+    assert "Beta note" in beta_contents
+    assert "Alpha note" not in beta_contents

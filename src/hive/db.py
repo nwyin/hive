@@ -414,7 +414,7 @@ WHERE e_start.event_type = 'worker_started'
 
         return issue_id
 
-    def get_ready_queue(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_ready_queue(self, project: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Query for ready work items.
 
@@ -424,6 +424,7 @@ WHERE e_start.event_type = 'worker_started'
         - All blocking dependencies are resolved (done/finalized/canceled)
 
         Args:
+            project: Filter by project (optional)
             limit: Maximum number of items to return
 
         Returns:
@@ -442,13 +443,19 @@ WHERE e_start.event_type = 'worker_started'
                   AND d.type = 'blocks'
                   AND blocker.status NOT IN ('done', 'finalized', 'canceled')
               )
-            ORDER BY i.priority ASC, i.created_at ASC
         """
+
+        params = []
+        if project is not None:
+            query += " AND i.project = ?"
+            params.append(project)
+
+        query += " ORDER BY i.priority ASC, i.created_at ASC"
 
         if limit:
             query += f" LIMIT {limit}"
 
-        cursor = self.conn.execute(query)
+        cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def claim_issue(self, issue_id: str, agent_id: str) -> bool:
@@ -541,6 +548,7 @@ WHERE e_start.event_type = 'worker_started'
         name: str,
         model: str = "claude-sonnet-4-5-20250929",
         metadata: Optional[Dict[str, Any]] = None,
+        project: Optional[str] = None,
     ) -> str:
         """
         Create a new agent identity.
@@ -549,6 +557,7 @@ WHERE e_start.event_type = 'worker_started'
             name: Human-readable agent name
             model: Model identifier
             metadata: Additional metadata dict
+            project: Project identifier (optional)
 
         Returns:
             Generated agent ID
@@ -559,10 +568,10 @@ WHERE e_start.event_type = 'worker_started'
         with self.transaction() as conn:
             conn.execute(
                 """
-                INSERT INTO agents (id, name, model, metadata)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO agents (id, name, model, metadata, project)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (agent_id, name, model, metadata_json),
+                (agent_id, name, model, metadata_json, project),
             )
 
         return agent_id
@@ -805,46 +814,58 @@ WHERE e_start.event_type = 'worker_started'
         row = cursor.fetchone()
         return dict(row) if row else None
 
-    def get_active_agents(self) -> List[Dict[str, Any]]:
+    def get_active_agents(self, project: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get all currently active agents.
+
+        Args:
+            project: Filter by project (optional)
 
         Returns:
             List of active agent dicts
         """
-        cursor = self.conn.execute(
-            """
-            SELECT * FROM agents
-            WHERE status = 'working'
-            ORDER BY created_at ASC
-            """
-        )
+        query = "SELECT * FROM agents WHERE status = 'working'"
+        params = []
+
+        if project is not None:
+            query += " AND project = ?"
+            params.append(project)
+
+        query += " ORDER BY created_at ASC"
+
+        cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
     # --- Merge Queue Methods ---
 
-    def get_queued_merges(self, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_queued_merges(self, project: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Get queued merge queue entries, oldest first.
 
         Args:
+            project: Filter by project (optional)
             limit: Maximum entries to return
 
         Returns:
             List of merge queue entry dicts with joined issue/agent info
         """
-        cursor = self.conn.execute(
-            """
+        query = """
             SELECT mq.*, i.title as issue_title, a.name as agent_name
             FROM merge_queue mq
             JOIN issues i ON mq.issue_id = i.id
             LEFT JOIN agents a ON mq.agent_id = a.id
             WHERE mq.status = 'queued'
-            ORDER BY mq.enqueued_at ASC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+        """
+
+        params = []
+        if project is not None:
+            query += " AND mq.project = ?"
+            params.append(project)
+
+        query += " ORDER BY mq.enqueued_at ASC LIMIT ?"
+        params.append(limit)
+
+        cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
     def update_merge_queue_status(self, queue_id: int, status: str, completed_at: Optional[str] = None):
@@ -934,6 +955,7 @@ WHERE e_start.event_type = 'worker_started'
         self,
         issue_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        project: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get aggregated token usage from 'tokens_used' events.
@@ -941,6 +963,7 @@ WHERE e_start.event_type = 'worker_started'
         Args:
             issue_id: Filter by specific issue ID (optional)
             agent_id: Filter by specific agent ID (optional)
+            project: Filter by project via JOIN to issues (optional)
 
         Returns:
             Dict with aggregated token counts and cost estimates
@@ -948,14 +971,20 @@ WHERE e_start.event_type = 'worker_started'
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        conditions = ["event_type = 'tokens_used'"]
+        conditions = ["e.event_type = 'tokens_used'"]
         params = []
+        from_clause = "FROM events e"
+
+        if project is not None:
+            from_clause += " JOIN issues i ON e.issue_id = i.id"
+            conditions.append("i.project = ?")
+            params.append(project)
 
         if issue_id:
-            conditions.append("issue_id = ?")
+            conditions.append("e.issue_id = ?")
             params.append(issue_id)
         if agent_id:
-            conditions.append("agent_id = ?")
+            conditions.append("e.agent_id = ?")
             params.append(agent_id)
 
         where_clause = " AND ".join(conditions)
@@ -963,10 +992,10 @@ WHERE e_start.event_type = 'worker_started'
         # Get totals using json_extract
         totals_query = f"""
             SELECT
-                COALESCE(SUM(json_extract(detail, '$.input_tokens')), 0) as total_input,
-                COALESCE(SUM(json_extract(detail, '$.output_tokens')), 0) as total_output
-            FROM events
-            WHERE {where_clause} AND json_valid(detail)
+                COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as total_input,
+                COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as total_output
+            {from_clause}
+            WHERE {where_clause} AND json_valid(e.detail)
         """
 
         cursor = self.conn.execute(totals_query, params)
@@ -980,12 +1009,12 @@ WHERE e_start.event_type = 'worker_started'
         if issue_id is None:  # Only aggregate by issue if not filtering by specific issue
             issue_query = f"""
                 SELECT
-                    issue_id,
-                    COALESCE(SUM(json_extract(detail, '$.input_tokens')), 0) as input_tokens,
-                    COALESCE(SUM(json_extract(detail, '$.output_tokens')), 0) as output_tokens
-                FROM events
-                WHERE {where_clause} AND issue_id IS NOT NULL AND json_valid(detail)
-                GROUP BY issue_id
+                    e.issue_id,
+                    COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
+                    COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
+                {from_clause}
+                WHERE {where_clause} AND e.issue_id IS NOT NULL AND json_valid(e.detail)
+                GROUP BY e.issue_id
             """
             cursor = self.conn.execute(issue_query, params)
             for row in cursor.fetchall():
@@ -999,12 +1028,12 @@ WHERE e_start.event_type = 'worker_started'
         if agent_id is None:  # Only aggregate by agent if not filtering by specific agent
             agent_query = f"""
                 SELECT
-                    agent_id,
-                    COALESCE(SUM(json_extract(detail, '$.input_tokens')), 0) as input_tokens,
-                    COALESCE(SUM(json_extract(detail, '$.output_tokens')), 0) as output_tokens
-                FROM events
-                WHERE {where_clause} AND agent_id IS NOT NULL AND json_valid(detail)
-                GROUP BY agent_id
+                    e.agent_id,
+                    COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
+                    COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
+                {from_clause}
+                WHERE {where_clause} AND e.agent_id IS NOT NULL AND json_valid(e.detail)
+                GROUP BY e.agent_id
             """
             cursor = self.conn.execute(agent_query, params)
             for row in cursor.fetchall():
@@ -1016,12 +1045,12 @@ WHERE e_start.event_type = 'worker_started'
         # Get breakdown by model
         model_query = f"""
             SELECT
-                COALESCE(json_extract(detail, '$.model'), 'unknown') as model,
-                COALESCE(SUM(json_extract(detail, '$.input_tokens')), 0) as input_tokens,
-                COALESCE(SUM(json_extract(detail, '$.output_tokens')), 0) as output_tokens
-            FROM events
-            WHERE {where_clause} AND json_valid(detail)
-            GROUP BY json_extract(detail, '$.model')
+                COALESCE(json_extract(e.detail, '$.model'), 'unknown') as model,
+                COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
+                COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
+            {from_clause}
+            WHERE {where_clause} AND json_valid(e.detail)
+            GROUP BY json_extract(e.detail, '$.model')
         """
 
         model_breakdown = {}
@@ -1045,7 +1074,14 @@ WHERE e_start.event_type = 'worker_started'
 
     # --- Notes Methods ---
 
-    def add_note(self, issue_id: Optional[str] = None, agent_id: Optional[str] = None, content: str = "", category: str = "discovery") -> int:
+    def add_note(
+        self,
+        issue_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        content: str = "",
+        category: str = "discovery",
+        project: Optional[str] = None,
+    ) -> int:
         """
         Insert a note and return its ID.
 
@@ -1054,6 +1090,7 @@ WHERE e_start.event_type = 'worker_started'
             agent_id: Which agent wrote it. None = Queen-authored or system note.
             content: The note text. Short — typically 1-3 sentences.
             category: One of 'discovery', 'gotcha', 'dependency', 'pattern', 'context'.
+            project: Project identifier. If None and issue_id provided, backfilled via migration.
 
         Returns:
             The ID of the inserted note
@@ -1062,18 +1099,22 @@ WHERE e_start.event_type = 'worker_started'
             raise RuntimeError("Database not connected")
 
         cursor = self.conn.execute(
-            "INSERT INTO notes (issue_id, agent_id, category, content) VALUES (?, ?, ?, ?)", (issue_id, agent_id, category, content)
+            "INSERT INTO notes (issue_id, agent_id, category, content, project) VALUES (?, ?, ?, ?, ?)",
+            (issue_id, agent_id, category, content, project),
         )
         self.conn.commit()
         return cursor.lastrowid
 
-    def get_notes(self, issue_id: Optional[str] = None, category: Optional[str] = None, limit: int = 20) -> List[Dict]:
+    def get_notes(
+        self, issue_id: Optional[str] = None, category: Optional[str] = None, project: Optional[str] = None, limit: int = 20
+    ) -> List[Dict]:
         """
         Retrieve notes with optional filtering. Returns newest first.
 
         Args:
             issue_id: Filter by specific issue ID (optional)
             category: Filter by specific category (optional)
+            project: Filter by project (optional). NULL-project notes match any query for backward compat.
             limit: Maximum number of notes to return
 
         Returns:
@@ -1090,6 +1131,9 @@ WHERE e_start.event_type = 'worker_started'
         if category is not None:
             query += " AND category = ?"
             params.append(category)
+        if project is not None:
+            query += " AND (project = ? OR project IS NULL)"
+            params.append(project)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self.conn.execute(query, params).fetchall()
@@ -1157,11 +1201,12 @@ WHERE e_start.event_type = 'worker_started'
         )
         return cursor.fetchone()[0] == 0
 
-    def get_recent_project_notes(self, limit: int = 10) -> List[Dict]:
+    def get_recent_project_notes(self, project: Optional[str] = None, limit: int = 10) -> List[Dict]:
         """
         Get recent project-wide notes plus recent cross-issue notes.
 
         Args:
+            project: Filter by project (optional). NULL-project notes match any query for backward compat.
             limit: Maximum number of notes to return
 
         Returns:
@@ -1170,14 +1215,17 @@ WHERE e_start.event_type = 'worker_started'
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        rows = self.conn.execute(
-            """
-            SELECT * FROM notes 
-            ORDER BY created_at DESC 
-            LIMIT ?
-        """,
-            (limit,),
-        ).fetchall()
+        query = "SELECT * FROM notes WHERE 1=1"
+        params = []
+
+        if project is not None:
+            query += " AND (project = ? OR project IS NULL)"
+            params.append(project)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        rows = self.conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def get_model_performance(self, model: Optional[str] = None, tag: Optional[str] = None, group_by: str = "tag") -> List[Dict[str, Any]]:
@@ -1237,6 +1285,7 @@ WHERE e_start.event_type = 'worker_started'
         model: Optional[str] = None,
         tag: Optional[str] = None,
         issue_type: Optional[str] = None,
+        project: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Get aggregated metrics from agent_runs view.
 
@@ -1244,6 +1293,7 @@ WHERE e_start.event_type = 'worker_started'
             model: Filter to a specific model name.
             tag: Filter to issues containing this tag.
             issue_type: Filter to a specific issue type.
+            project: Filter to a specific project (optional).
 
         Returns:
             List of dicts with aggregated metrics per model:
@@ -1260,7 +1310,12 @@ WHERE e_start.event_type = 'worker_started'
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        query = """
+        # Join with issues table to filter by project
+        from_clause = "FROM agent_runs ar"
+        if project is not None:
+            from_clause += " JOIN issues i ON ar.issue_id = i.id"
+
+        query = f"""
             SELECT
                 ar.model,
                 COUNT(*) as runs,
@@ -1270,11 +1325,14 @@ WHERE e_start.event_type = 'worker_started'
                 ROUND(100.0 * SUM(CASE WHEN ar.outcome = 'done' THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate,
                 ROUND(AVG(ar.duration_s), 1) as avg_duration_s,
                 ROUND(AVG(ar.retry_count), 1) as avg_retries
-            FROM agent_runs ar
+            {from_clause}
             WHERE 1=1
         """
         params: list = []
 
+        if project:
+            query += " AND i.project = ?"
+            params.append(project)
         if model:
             query += " AND ar.model = ?"
             params.append(model)
@@ -1294,16 +1352,22 @@ WHERE e_start.event_type = 'worker_started'
         for result in results:
             model_name = result["model"]
             # Count merge-related events for issues run by this model
-            merge_query = """
+            merge_from_clause = "FROM events e JOIN agent_runs ar ON e.issue_id = ar.issue_id"
+            if project is not None:
+                merge_from_clause += " JOIN issues i ON ar.issue_id = i.id"
+
+            merge_query = f"""
                 SELECT
                     SUM(CASE WHEN e.event_type = 'tests_passed' THEN 1 ELSE 0 END) as tests_passed,
                     SUM(CASE WHEN e.event_type = 'test_failure' THEN 1 ELSE 0 END) as test_failure,
                     SUM(CASE WHEN e.event_type = 'rebase_conflict' THEN 1 ELSE 0 END) as rebase_conflict
-                FROM events e
-                JOIN agent_runs ar ON e.issue_id = ar.issue_id
+                {merge_from_clause}
                 WHERE ar.model = ?
             """
             merge_params = [model_name]
+            if project:
+                merge_query += " AND i.project = ?"
+                merge_params.append(project)
             if tag:
                 merge_query += " AND ar.tags LIKE ?"
                 merge_params.append(f'%"{tag}"%')
