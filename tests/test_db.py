@@ -1572,3 +1572,48 @@ def test_null_project_notes_match_any_project_query(temp_db):
     assert "Global note 2" in beta_contents
     assert "Beta note" in beta_contents
     assert "Alpha note" not in beta_contents
+
+
+def test_worker_started_event_includes_prompt_version(temp_db):
+    """Test worker_started event includes prompt_version in event detail."""
+    import re
+
+    from hive.prompts import get_prompt_version
+
+    # Create an issue
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+
+    # Create an agent (required for foreign key constraint)
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Directly test the event logging with prompt_version (simulating what happens in orchestrator)
+    event_detail = {
+        "session_id": "test-session-id",
+        "worktree": "/test/worktree",
+        "routing_method": "new_agent",
+        "prompt_version": get_prompt_version("worker"),
+    }
+
+    temp_db.log_event(issue_id, agent_id, "worker_started", event_detail)
+
+    # Get all events for this issue
+    events = temp_db.get_events(issue_id)
+
+    # Find the worker_started event
+    worker_started_events = [e for e in events if e["event_type"] == "worker_started"]
+    assert len(worker_started_events) == 1
+
+    event = worker_started_events[0]
+
+    # Parse the detail JSON if it's a string
+    detail = event["detail"]
+    if isinstance(detail, str):
+        detail = json.loads(detail)
+
+    assert "prompt_version" in detail
+
+    # Verify it's a valid 12-character hex string
+    prompt_version = detail["prompt_version"]
+    assert isinstance(prompt_version, str)
+    assert len(prompt_version) == 12
+    assert re.match(r"[0-9a-f]{12}", prompt_version)
