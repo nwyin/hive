@@ -418,13 +418,14 @@ def test_cli_agents(temp_db, tmp_path, capsys):
 
 
 def test_cli_events(temp_db, tmp_path, capsys):
-    """Test getting events."""
+    """Test getting events via logs command (which replaced events command)."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Create an issue to generate events
     temp_db.create_issue("Event test", project=tmp_path.name)
 
-    cli.get_events(limit=5)
+    # Use logs command (which now includes event filtering via --type)
+    cli.logs(n=5)
 
     captured = capsys.readouterr()
     assert "created" in captured.out
@@ -493,10 +494,10 @@ async def test_permission_unblocker_auto_resolve(temp_db, tmp_path):
 
 
 def test_cli_costs_no_data(temp_db, tmp_path, capsys):
-    """Test costs command with no token usage data."""
+    """Test metrics --costs with no token usage data."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    cli.costs()
+    cli.metrics(show_costs=True)
 
     captured = capsys.readouterr()
     assert "Token Usage & Costs" in captured.out
@@ -505,7 +506,7 @@ def test_cli_costs_no_data(temp_db, tmp_path, capsys):
 
 
 def test_cli_costs_with_data(temp_db, tmp_path, capsys):
-    """Test costs command with token usage data."""
+    """Test metrics --costs with token usage data."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Create issue and agent
@@ -516,7 +517,7 @@ def test_cli_costs_with_data(temp_db, tmp_path, capsys):
     temp_db.log_event(issue_id, agent_id, "tokens_used", {"input_tokens": 1000, "output_tokens": 500, "model": "claude-sonnet-4-5-20250929"})
     temp_db.log_event(issue_id, agent_id, "tokens_used", {"input_tokens": 2000, "output_tokens": 1000, "model": "claude-sonnet-4-5-20250929"})
 
-    cli.costs()
+    cli.metrics(show_costs=True)
 
     captured = capsys.readouterr()
     assert "Total tokens: 4,500" in captured.out
@@ -526,7 +527,7 @@ def test_cli_costs_with_data(temp_db, tmp_path, capsys):
 
 
 def test_cli_costs_json(temp_db, tmp_path, capsys):
-    """Test costs command with JSON output."""
+    """Test metrics --costs with JSON output."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Create issue and agent with token usage
@@ -535,7 +536,7 @@ def test_cli_costs_json(temp_db, tmp_path, capsys):
 
     temp_db.log_event(issue_id, agent_id, "tokens_used", {"input_tokens": 1000, "output_tokens": 500, "model": "claude-sonnet-4-5-20250929"})
 
-    cli.costs(json_mode=True)
+    cli.metrics(show_costs=True, json_mode=True)
 
     captured = capsys.readouterr()
     data = json.loads(captured.out)
@@ -549,7 +550,7 @@ def test_cli_costs_json(temp_db, tmp_path, capsys):
 
 
 def test_cli_costs_by_issue(temp_db, tmp_path, capsys):
-    """Test costs command filtered by issue."""
+    """Test metrics --costs filtered by issue."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Create issues and agents with token usage
@@ -562,7 +563,7 @@ def test_cli_costs_by_issue(temp_db, tmp_path, capsys):
     temp_db.log_event(issue2_id, agent_id, "tokens_used", {"input_tokens": 2000, "output_tokens": 1000})
 
     # Filter by issue1
-    cli.costs(issue_id=issue1_id)
+    cli.metrics(show_costs=True, issue_id=issue1_id)
 
     captured = capsys.readouterr()
     assert f"Issue: {issue1_id}" in captured.out
@@ -570,7 +571,7 @@ def test_cli_costs_by_issue(temp_db, tmp_path, capsys):
 
 
 def test_cli_costs_by_agent(temp_db, tmp_path, capsys):
-    """Test costs command filtered by agent."""
+    """Test metrics --costs filtered by agent."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Create issues and agents with token usage
@@ -583,7 +584,7 @@ def test_cli_costs_by_agent(temp_db, tmp_path, capsys):
     temp_db.log_event(issue_id, agent2_id, "tokens_used", {"input_tokens": 2000, "output_tokens": 1000})
 
     # Filter by agent1
-    cli.costs(agent_id=agent1_id)
+    cli.metrics(show_costs=True, agent_id=agent1_id)
 
     captured = capsys.readouterr()
     assert f"Agent: {agent1_id}" in captured.out

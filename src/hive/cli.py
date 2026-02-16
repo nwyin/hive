@@ -797,8 +797,46 @@ class HiveCLI:
             if total == 0:
                 print("\n  No issues yet. Create one with: hive create 'title' 'description'")
 
-    def list_agents(self, status: Optional[str] = None, *, json_mode: bool = False):
-        """List agents."""
+    def list_agents(self, agent_id: Optional[str] = None, status: Optional[str] = None, *, json_mode: bool = False):
+        """List agents, or show details for a specific agent if agent_id is provided."""
+        # If agent_id is provided, show that agent's details
+        if agent_id:
+            try:
+                cursor = self.db.conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise ValueError(f"Agent not found: {agent_id}")
+
+                agent = dict(row)
+
+                # Get current issue details
+                if agent.get("current_issue"):
+                    issue = self.db.get_issue(agent["current_issue"])
+                    agent["current_issue_details"] = issue
+
+                # Get recent events for this agent
+                agent["recent_events"] = self.db.get_events(agent_id=agent_id, limit=10)
+
+                result = agent
+            except Exception as e:
+                self._error(str(e), json_mode=json_mode)
+
+            if json_mode:
+                print(json.dumps(result, default=str))
+            else:
+                print(f"\nAgent: {result.get('id', agent_id)}")
+                print(f"Name: {result.get('name', '')}")
+                print(f"Status: {result.get('status', '')}")
+                if result.get("current_issue"):
+                    print(f"Current issue: {result['current_issue']}")
+                events = result.get("recent_events", [])
+                if events:
+                    print(f"\nRecent events ({len(events)}):")
+                    for event in events[:5]:
+                        print(f"  [{event['created_at']}] {event['event_type']}")
+            return
+
+        # Otherwise, list all agents
         try:
             query = "SELECT * FROM agents WHERE project = ?"
             params = [self.project_name]
@@ -835,81 +873,6 @@ class HiveCLI:
             for agent in agents:
                 issue_title = agent.get("current_issue_title", agent.get("current_issue", "")) or "-"
                 print(f"{agent['id']:<16} {agent['name']:<16} {agent['status']:<10} {str(issue_title)[:30]}")
-
-    def show_agent(self, agent_id: str, *, json_mode: bool = False):
-        """Show agent details."""
-        try:
-            cursor = self.db.conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
-            row = cursor.fetchone()
-            if not row:
-                raise ValueError(f"Agent not found: {agent_id}")
-
-            agent = dict(row)
-
-            # Get current issue details
-            if agent.get("current_issue"):
-                issue = self.db.get_issue(agent["current_issue"])
-                agent["current_issue_details"] = issue
-
-            # Get recent events for this agent
-            agent["recent_events"] = self.db.get_events(agent_id=agent_id, limit=10)
-
-            result = agent
-        except Exception as e:
-            self._error(str(e), json_mode=json_mode)
-
-        if json_mode:
-            print(json.dumps(result, default=str))
-        else:
-            print(f"\nAgent: {result.get('id', agent_id)}")
-            print(f"Name: {result.get('name', '')}")
-            print(f"Status: {result.get('status', '')}")
-            if result.get("current_issue"):
-                print(f"Current issue: {result['current_issue']}")
-            events = result.get("recent_events", [])
-            if events:
-                print(f"\nRecent events ({len(events)}):")
-                for event in events[:5]:
-                    print(f"  [{event['created_at']}] {event['event_type']}")
-
-    def get_events(
-        self,
-        issue_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        event_type: Optional[str] = None,
-        limit: int = 20,
-        *,
-        json_mode: bool = False,
-    ):
-        """Get events."""
-        try:
-            events = self.db.get_events(issue_id=issue_id, agent_id=agent_id, event_type=event_type, limit=limit)
-
-            result = {"count": len(events), "events": events}
-        except Exception as e:
-            self._error(str(e), json_mode=json_mode)
-
-        if json_mode:
-            print(json.dumps(result, default=str))
-        else:
-            events = result.get("events", [])
-            if not events:
-                print("No events found.")
-                return
-            for event in events:
-                ts = event.get("created_at", "")
-                etype = event.get("event_type", "")
-                iss = event.get("issue_id") or "-"
-                agent = event.get("agent_id") or "-"
-                line = f"{ts}  {etype:<24s}  issue={iss:<10s}  agent={agent:<10s}"
-                if event.get("detail"):
-                    try:
-                        detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
-                        parts = [f"{k}={v}" for k, v in detail.items()]
-                        line += "  " + " ".join(parts)
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        line += f"  {event['detail']}"
-                print(line)
 
     # ── Notes ─────────────────────────────────────────────────────────
 
@@ -1014,11 +977,19 @@ class HiveCLI:
         n: int = 20,
         issue_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        daemon: bool = False,
         *,
         json_mode: bool = False,
     ):
         """Show event log, optionally tailing for new events."""
-        recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id)
+        # If --daemon flag is set, show daemon logs instead of event logs
+        if daemon:
+            daemon_obj = self._make_daemon()
+            daemon_obj.logs(lines=n, follow=follow)
+            return
+
+        recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
 
         if json_mode:
             if follow:
@@ -1031,7 +1002,7 @@ class HiveCLI:
                 try:
                     while True:
                         time.sleep(0.5)
-                        new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id)
+                        new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
                         for event in new_events:
                             print(json.dumps(self._event_to_json(event), default=str))
                             cursor = event["id"]
@@ -1053,72 +1024,12 @@ class HiveCLI:
         try:
             while True:
                 time.sleep(0.5)
-                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id)
+                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
                 for event in new_events:
                     print(self._format_event(event))
                     cursor = event["id"]
         except KeyboardInterrupt:
             pass
-
-    def costs(
-        self,
-        issue_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        *,
-        json_mode: bool = False,
-    ):
-        """Show token usage and cost estimates."""
-        usage = self.db.get_token_usage(issue_id=issue_id, agent_id=agent_id, project=self.project_name)
-
-        if json_mode:
-            print(json.dumps(usage, indent=2))
-            return
-
-        print("\n=== Token Usage & Costs ===")
-        if issue_id:
-            print(f"Issue: {issue_id}")
-        elif agent_id:
-            print(f"Agent: {agent_id}")
-        else:
-            print("Project-wide")
-
-        print(f"\nTotal tokens: {usage['total_tokens']:,}")
-        print(f"  Input tokens: {usage['total_input_tokens']:,}")
-        print(f"  Output tokens: {usage['total_output_tokens']:,}")
-        print(f"Estimated cost: ${usage['estimated_cost_usd']:.4f}")
-
-        # Show breakdowns if not filtered
-        if not issue_id and not agent_id:
-            issue_breakdown = usage.get("issue_breakdown", {})
-            if issue_breakdown:
-                print("\n=== Top Issues by Token Usage ===")
-                sorted_issues = sorted(
-                    issue_breakdown.items(),
-                    key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
-                    reverse=True,
-                )
-                for issue, tokens in sorted_issues[:10]:  # Top 10
-                    total = tokens["input_tokens"] + tokens["output_tokens"]
-                    print(f"{issue}: {total:,} tokens")
-
-            agent_breakdown = usage.get("agent_breakdown", {})
-            if agent_breakdown:
-                print("\n=== Top Agents by Token Usage ===")
-                sorted_agents = sorted(
-                    agent_breakdown.items(),
-                    key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
-                    reverse=True,
-                )
-                for agent, tokens in sorted_agents[:10]:  # Top 10
-                    total = tokens["input_tokens"] + tokens["output_tokens"]
-                    print(f"{agent}: {total:,} tokens")
-
-            model_breakdown = usage.get("model_breakdown", {})
-            if model_breakdown:
-                print("\n=== Usage by Model ===")
-                for model, tokens in model_breakdown.items():
-                    total = tokens["input_tokens"] + tokens["output_tokens"]
-                    print(f"{model}: {total:,} tokens")
 
     def doctor(self, fix: bool = False, *, json_mode: bool = False):
         """Run system health checks."""
@@ -1182,29 +1093,87 @@ class HiveCLI:
         else:
             print("Summary: All checks passed")
 
-    def stats(self, model=None, tag=None, group_by="tag", json_mode=False):
-        results = self.db.get_model_performance(model=model, tag=tag, group_by=group_by)
-        if json_mode:
-            print(json.dumps(results, default=str))
-            return
-
-        if not results:
-            print("No performance data yet.")
-            return
-
-        group_label = "Tag" if group_by == "tag" else "Type"
-        group_key = "tag" if group_by == "tag" else "type"
-        print(f"{'Model':<35} {group_label:<15} {'Issues':>6} {'OK':>4} {'Fail':>4} {'Retries':>7} {'Avg Min':>8}")
-        print("-" * 85)
-        for r in results:
-            model_name = (r.get("model") or "unknown")[:34]
-            group_val = str(r.get(group_key, ""))[:14]
-            print(
-                f"{model_name:<35} {group_val:<15} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('failures', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
-            )
-
-    def metrics(self, model=None, tag=None, issue_type=None, json_mode=False):
+    def metrics(self, model=None, tag=None, issue_type=None, group_by=None, show_costs=False, issue_id=None, agent_id=None, json_mode=False):
         """Show aggregated agent run metrics."""
+        # If --group-by is specified, use the stats-style output
+        if group_by:
+            results = self.db.get_model_performance(model=model, tag=tag, group_by=group_by)
+            if json_mode:
+                print(json.dumps(results, default=str))
+                return
+
+            if not results:
+                print("No performance data yet.")
+                return
+
+            group_label = "Tag" if group_by == "tag" else "Type"
+            group_key = "tag" if group_by == "tag" else "type"
+            print(f"{'Model':<35} {group_label:<15} {'Issues':>6} {'OK':>4} {'Fail':>4} {'Retries':>7} {'Avg Min':>8}")
+            print("-" * 85)
+            for r in results:
+                model_name = (r.get("model") or "unknown")[:34]
+                group_val = str(r.get(group_key, ""))[:14]
+                print(
+                    f"{model_name:<35} {group_val:<15} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('failures', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
+                )
+            return
+
+        # If --costs is specified, show token usage data
+        if show_costs:
+            usage = self.db.get_token_usage(issue_id=issue_id, agent_id=agent_id, project=self.project_name)
+
+            if json_mode:
+                print(json.dumps(usage, indent=2))
+                return
+
+            print("\n=== Token Usage & Costs ===")
+            if issue_id:
+                print(f"Issue: {issue_id}")
+            elif agent_id:
+                print(f"Agent: {agent_id}")
+            else:
+                print("Project-wide")
+
+            print(f"\nTotal tokens: {usage['total_tokens']:,}")
+            print(f"  Input tokens: {usage['total_input_tokens']:,}")
+            print(f"  Output tokens: {usage['total_output_tokens']:,}")
+            print(f"Estimated cost: ${usage['estimated_cost_usd']:.4f}")
+
+            # Show breakdowns if not filtered
+            if not issue_id and not agent_id:
+                issue_breakdown = usage.get("issue_breakdown", {})
+                if issue_breakdown:
+                    print("\n=== Top Issues by Token Usage ===")
+                    sorted_issues = sorted(
+                        issue_breakdown.items(),
+                        key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+                        reverse=True,
+                    )
+                    for issue, tokens in sorted_issues[:10]:  # Top 10
+                        total = tokens["input_tokens"] + tokens["output_tokens"]
+                        print(f"{issue}: {total:,} tokens")
+
+                agent_breakdown = usage.get("agent_breakdown", {})
+                if agent_breakdown:
+                    print("\n=== Top Agents by Token Usage ===")
+                    sorted_agents = sorted(
+                        agent_breakdown.items(),
+                        key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
+                        reverse=True,
+                    )
+                    for agent, tokens in sorted_agents[:10]:  # Top 10
+                        total = tokens["input_tokens"] + tokens["output_tokens"]
+                        print(f"{agent}: {total:,} tokens")
+
+                model_breakdown = usage.get("model_breakdown", {})
+                if model_breakdown:
+                    print("\n=== Usage by Model ===")
+                    for model, tokens in model_breakdown.items():
+                        total = tokens["input_tokens"] + tokens["output_tokens"]
+                        print(f"{model}: {total:,} tokens")
+            return
+
+        # Default metrics output
         results = self.db.get_metrics(model=model, tag=tag, issue_type=issue_type, project=self.project_name)
 
         if json_mode:
@@ -1481,56 +1450,6 @@ class HiveCLI:
                 sys.exit(1)
             else:
                 print(f"Failed to stop daemon (PID {pid})")
-
-    def daemon_restart(self, *, json_mode: bool = False):
-        """Restart the orchestrator daemon."""
-        daemon = self._make_daemon()
-        status = daemon.status()
-
-        if json_mode:
-            # For JSON mode, perform restart silently and return final result
-            if status["running"]:
-                stopped = daemon.stop()
-                if not stopped:
-                    print(json.dumps({"error": "Failed to stop daemon for restart"}))
-                    sys.exit(1)
-                time.sleep(0.5)
-
-            # Start daemon
-            started = daemon.start(db_path=self.db.db_path)
-            if started:
-                final_status = daemon.status()
-                print(json.dumps({"status": "restarted", "pid": final_status["pid"]}))
-            else:
-                print(json.dumps({"error": "Failed to restart daemon"}))
-                sys.exit(1)
-        else:
-            # For regular mode, use existing stop/start with output
-            if status["running"]:
-                self.stop(json_mode=False)
-                time.sleep(0.5)
-            self.start(json_mode=False)
-
-    def daemon_status(self, *, json_mode: bool = False):
-        """Show daemon status."""
-        daemon = self._make_daemon()
-        status = daemon.status()
-        if json_mode:
-            result = {
-                "running": status["running"],
-                "pid": status.get("pid"),
-                "log_file": status.get("log_file"),
-            }
-            print(json.dumps(result))
-        else:
-            print(status["message"])
-            if status["running"]:
-                print(f"Log file: {status.get('log_file', 'N/A')}")
-
-    def daemon_logs(self, lines: int = 50, follow: bool = False):
-        """Show daemon logs."""
-        daemon = self._make_daemon()
-        daemon.logs(lines=lines, follow=follow)
 
     # ── Queen Bee TUI ─────────────────────────────────────────────────
 
@@ -2050,18 +1969,8 @@ def main():
 
     # agents command (hidden — advanced)
     agents_parser = subparsers.add_parser("agents", help=argparse.SUPPRESS)
+    agents_parser.add_argument("agent_id", nargs="?", help="Agent ID (optional - if provided, show agent details)")
     agents_parser.add_argument("--status", help="Filter by status (idle, working, stalled, failed)")
-
-    # agent command (hidden — advanced)
-    agent_parser = subparsers.add_parser("agent", help=argparse.SUPPRESS)
-    agent_parser.add_argument("agent_id", help="Agent ID")
-
-    # events command (hidden — advanced)
-    events_parser = subparsers.add_parser("events", help=argparse.SUPPRESS)
-    events_parser.add_argument("--issue", help="Filter by issue ID")
-    events_parser.add_argument("--agent", help="Filter by agent ID")
-    events_parser.add_argument("--type", dest="event_type", help="Filter by event type")
-    events_parser.add_argument("--limit", type=int, default=20, help="Number of events (default: 20)")
 
     # logs command (hidden — advanced)
     logs_parser = subparsers.add_parser("logs", help=argparse.SUPPRESS)
@@ -2075,58 +1984,27 @@ def main():
     )
     logs_parser.add_argument("--issue", help="Filter by issue ID")
     logs_parser.add_argument("--agent", help="Filter by agent ID")
+    logs_parser.add_argument("--type", dest="event_type", help="Filter by event type")
+    logs_parser.add_argument("--daemon", action="store_true", help="Show daemon logs instead of event logs")
 
     # merges command (hidden — advanced)
     merges_parser = subparsers.add_parser("merges", help=argparse.SUPPRESS)
     merges_parser.add_argument("--status", help="Filter by status (queued|running|merged|failed)")
 
-    # costs command (hidden — advanced)
-    costs_parser = subparsers.add_parser("costs", help=argparse.SUPPRESS)
-    costs_parser.add_argument("--issue", help="Filter by specific issue ID")
-    costs_parser.add_argument("--agent", help="Filter by specific agent ID")
-
     # status command
     subparsers.add_parser("status", help="Show orchestrator status")
-
-    # stats command (hidden — advanced)
-    stats_parser = subparsers.add_parser("stats", help=argparse.SUPPRESS)
-    stats_parser.add_argument("--model", type=str, help="Filter by model name")
-    stats_parser.add_argument("--tag", type=str, help="Filter by tag")
-    stats_parser.add_argument("--by-type", action="store_true", help="Group by issue type instead of tag")
 
     # metrics command (hidden — advanced)
     metrics_parser = subparsers.add_parser("metrics", help=argparse.SUPPRESS)
     metrics_parser.add_argument("--model", type=str, help="Filter by model name")
     metrics_parser.add_argument("--tag", type=str, help="Filter by tag")
     metrics_parser.add_argument("--type", dest="issue_type", type=str, help="Filter by issue type")
+    metrics_parser.add_argument("--group-by", choices=["tag", "type"], help="Group results by tag or type")
+    metrics_parser.add_argument("--costs", action="store_true", help="Show token usage and cost estimates")
+    metrics_parser.add_argument("--issue", help="Filter costs by specific issue ID (use with --costs)")
+    metrics_parser.add_argument("--agent", help="Filter costs by specific agent ID (use with --costs)")
 
-    # daemon command (hidden — advanced)
-    daemon_parser = subparsers.add_parser("daemon", help=argparse.SUPPRESS)
-    daemon_subparsers = daemon_parser.add_subparsers(dest="daemon_command", help="Daemon command")
-
-    daemon_start = daemon_subparsers.add_parser("start", help="Start daemon")
-    daemon_start.add_argument(
-        "--foreground",
-        "-f",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-
-    daemon_subparsers.add_parser("stop", help="Stop daemon")
-    daemon_subparsers.add_parser("restart", help="Restart daemon")
-    daemon_subparsers.add_parser("status", help="Show daemon status")
-
-    daemon_logs = daemon_subparsers.add_parser("logs", help="Show daemon logs")
-    daemon_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
-    daemon_logs.add_argument(
-        "-n",
-        "--lines",
-        type=int,
-        default=50,
-        help="Number of lines to show (default: 50)",
-    )
-
-    # top-level start/stop aliases (delegate to daemon start/stop)
+    # top-level start/stop commands
     start_parser = subparsers.add_parser("start", help="Start hive (live dashboard by default)")
     start_parser.add_argument(
         "-d",
@@ -2298,19 +2176,7 @@ def main():
                 dep_parser.print_help()
 
         elif args.command == "agents":
-            cli.list_agents(status=args.status, json_mode=json_mode)
-
-        elif args.command == "agent":
-            cli.show_agent(args.agent_id, json_mode=json_mode)
-
-        elif args.command == "events":
-            cli.get_events(
-                issue_id=args.issue,
-                agent_id=args.agent,
-                event_type=args.event_type,
-                limit=args.limit,
-                json_mode=json_mode,
-            )
+            cli.list_agents(agent_id=getattr(args, "agent_id", None), status=args.status, json_mode=json_mode)
 
         elif args.command == "logs":
             cli.logs(
@@ -2318,48 +2184,34 @@ def main():
                 n=args.lines,
                 issue_id=args.issue,
                 agent_id=args.agent,
+                event_type=getattr(args, "event_type", None),
+                daemon=getattr(args, "daemon", False),
                 json_mode=json_mode,
             )
 
         elif args.command == "merges":
             cli.merges(status=args.status, json_mode=json_mode)
 
-        elif args.command == "costs":
-            cli.costs(
-                issue_id=args.issue,
-                agent_id=args.agent,
-                json_mode=json_mode,
-            )
-
         elif args.command == "status":
             cli.status(json_mode=json_mode)
 
-        elif args.command == "stats":
-            group_by = "type" if args.by_type else "tag"
-            cli.stats(model=args.model, tag=args.tag, group_by=group_by, json_mode=json_mode)
-
         elif args.command == "metrics":
-            cli.metrics(model=args.model, tag=args.tag, issue_type=args.issue_type, json_mode=json_mode)
+            cli.metrics(
+                model=args.model,
+                tag=args.tag,
+                issue_type=getattr(args, "issue_type", None),
+                group_by=getattr(args, "group_by", None),
+                show_costs=getattr(args, "costs", False),
+                issue_id=getattr(args, "issue", None),
+                agent_id=getattr(args, "agent", None),
+                json_mode=json_mode,
+            )
 
         elif args.command == "start":
             cli.start(detach=args.detach, json_mode=json_mode)
 
         elif args.command == "stop":
             cli.stop(json_mode=json_mode)
-
-        elif args.command == "daemon":
-            if args.daemon_command == "start":
-                cli.start(foreground=args.foreground, json_mode=json_mode)
-            elif args.daemon_command == "stop":
-                cli.stop(json_mode=json_mode)
-            elif args.daemon_command == "restart":
-                cli.daemon_restart(json_mode=json_mode)
-            elif args.daemon_command == "status":
-                cli.daemon_status(json_mode=json_mode)
-            elif args.daemon_command == "logs":
-                cli.daemon_logs(lines=args.lines, follow=args.follow)
-            else:
-                daemon_parser.print_help()
 
         elif args.command == "queen":
             cli.queen(backend=args.backend)
