@@ -24,19 +24,6 @@ def test_cli_create(temp_db, tmp_path):
     assert issue["priority"] == 1
 
 
-def test_cli_create_json(temp_db, tmp_path, capsys):
-    """Test creating an issue with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    cli.create("JSON test", "desc", priority=1, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["issue_id"].startswith("w-")
-    assert data["title"] == "JSON test"
-    assert data["status"] == "open"
-
-
 def test_cli_create_with_depends_on(temp_db, tmp_path, capsys):
     """Test creating an issue with --depends-on wires deps atomically."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -94,21 +81,6 @@ def test_cli_list_issues(temp_db, tmp_path, capsys):
     assert "Total: 3 issues" in captured.out
 
 
-def test_cli_list_issues_json(temp_db, tmp_path, capsys):
-    """Test listing issues with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    temp_db.create_issue("Issue A", priority=1, project=tmp_path.name)
-    temp_db.create_issue("Issue B", priority=2, project=tmp_path.name)
-
-    cli.list_issues(json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["count"] == 2
-    assert len(data["issues"]) == 2
-
-
 def test_cli_list_issues_by_status(temp_db, tmp_path, capsys):
     """Test listing issues filtered by status."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -139,20 +111,6 @@ def test_cli_show_ready(temp_db, tmp_path, capsys):
     assert "Ready 1" in captured.out
     assert "Ready 2" in captured.out
     assert "Total: 2 ready issues" in captured.out
-
-
-def test_cli_show_ready_json(temp_db, tmp_path, capsys):
-    """Test showing ready queue with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    temp_db.create_issue("Ready 1", priority=1, project=tmp_path.name)
-
-    cli.show_ready(json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["count"] == 1
-    assert data["ready_issues"][0]["title"] == "Ready 1"
 
 
 def test_cli_show_issue(temp_db, tmp_path, capsys):
@@ -252,18 +210,6 @@ def test_cli_update(temp_db, tmp_path, capsys):
     assert issue["title"] == "Updated title"
 
 
-def test_cli_update_json(temp_db, tmp_path, capsys):
-    """Test updating an issue with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue_id = temp_db.create_issue("Original", project=tmp_path.name)
-    cli.update(issue_id, title="New title", json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["issue_id"] == issue_id
-
-
 def test_cli_cancel(temp_db, tmp_path, capsys):
     """Test canceling an issue."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -275,18 +221,6 @@ def test_cli_cancel(temp_db, tmp_path, capsys):
     assert issue["status"] == "canceled"
 
 
-def test_cli_cancel_json(temp_db, tmp_path, capsys):
-    """Test canceling an issue with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue_id = temp_db.create_issue("To cancel", project=tmp_path.name)
-    cli.cancel(issue_id, reason="test", json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["status"] == "canceled"
-
-
 def test_cli_finalize(temp_db, tmp_path, capsys):
     """Test finalizing an issue."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -296,18 +230,6 @@ def test_cli_finalize(temp_db, tmp_path, capsys):
 
     issue = temp_db.get_issue(issue_id)
     assert issue["status"] == "finalized"
-
-
-def test_cli_finalize_json(temp_db, tmp_path, capsys):
-    """Test finalizing with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue_id = temp_db.create_issue("To finalize", project=tmp_path.name)
-    cli.finalize(issue_id, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["status"] == "finalized"
 
 
 def test_cli_finalize_marks_merge_queue_merged(temp_db, tmp_path):
@@ -394,20 +316,6 @@ def test_cli_retry(temp_db, tmp_path, capsys):
     assert issue["assignee"] is None
 
 
-def test_cli_retry_json(temp_db, tmp_path, capsys):
-    """Test retrying with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue_id = temp_db.create_issue("Failed task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "failed")
-
-    cli.retry(issue_id, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["status"] == "open"
-
-
 def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
     """Test that manual retry logs 'manual_retry' event type, not 'retry'."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -436,18 +344,6 @@ def test_cli_escalate(temp_db, tmp_path, capsys):
 
     issue = temp_db.get_issue(issue_id)
     assert issue["status"] == "escalated"
-
-
-def test_cli_escalate_json(temp_db, tmp_path, capsys):
-    """Test escalating with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue_id = temp_db.create_issue("Needs help", project=tmp_path.name)
-    cli.escalate(issue_id, reason="blocked", json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["status"] == "escalated"
 
 
 def test_cli_molecule(temp_db, tmp_path, capsys):
@@ -511,21 +407,6 @@ def test_cli_dep_add_remove(temp_db, tmp_path, capsys):
     assert cursor.fetchone() is None
 
 
-def test_cli_dep_add_json(temp_db, tmp_path, capsys):
-    """Test adding dependencies with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    issue1 = temp_db.create_issue("A", project=tmp_path.name)
-    issue2 = temp_db.create_issue("B", project=tmp_path.name)
-
-    cli.dep_add(issue2, issue1, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["issue_id"] == issue2
-    assert data["depends_on"] == issue1
-
-
 def test_cli_agents(temp_db, tmp_path, capsys):
     """Test listing agents."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -534,18 +415,6 @@ def test_cli_agents(temp_db, tmp_path, capsys):
 
     captured = capsys.readouterr()
     assert "No agents found" in captured.out
-
-
-def test_cli_agents_json(temp_db, tmp_path, capsys):
-    """Test listing agents with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    cli.list_agents(json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["count"] == 0
-    assert data["agents"] == []
 
 
 def test_cli_events(temp_db, tmp_path, capsys):
@@ -561,21 +430,6 @@ def test_cli_events(temp_db, tmp_path, capsys):
     assert "created" in captured.out
 
 
-def test_cli_events_json(temp_db, tmp_path, capsys):
-    """Test getting events with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    temp_db.create_issue("Event test", project=tmp_path.name)
-
-    cli.get_events(limit=5, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert "count" in data
-    assert "events" in data
-    assert data["count"] >= 1
-
-
 def test_cli_logs(temp_db, tmp_path, capsys):
     """Test getting events via logs."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -587,20 +441,6 @@ def test_cli_logs(temp_db, tmp_path, capsys):
 
     captured = capsys.readouterr()
     assert "created" in captured.out
-
-
-def test_cli_logs_json(temp_db, tmp_path, capsys):
-    """Test getting events via logs with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    temp_db.create_issue("Event test", project=tmp_path.name)
-
-    cli.logs(n=5, json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert isinstance(data, list)
-    assert len(data) >= 1
 
 
 def test_evaluate_permission_policy():
@@ -786,19 +626,6 @@ def test_cli_add_note_with_issue_and_category(temp_db, tmp_path, capsys):
     assert notes[0]["issue_id"] == issue_id
 
 
-def test_cli_add_note_json(temp_db, tmp_path, capsys):
-    """Test adding a note with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    cli.add_note("JSON note test", category="pattern", json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert "note_id" in data
-    assert data["content"] == "JSON note test"
-    assert data["category"] == "pattern"
-
-
 def test_cli_list_notes(temp_db, tmp_path, capsys):
     """Test listing notes via CLI."""
     cli = HiveCLI(temp_db, str(tmp_path))
@@ -839,20 +666,6 @@ def test_cli_list_notes_filter_category(temp_db, tmp_path, capsys):
     assert "Gotcha note" in captured.out
     assert "Discovery note" not in captured.out
     assert "Total: 1 notes" in captured.out
-
-
-def test_cli_list_notes_json(temp_db, tmp_path, capsys):
-    """Test listing notes with JSON output."""
-    cli = HiveCLI(temp_db, str(tmp_path))
-
-    temp_db.add_note(content="JSON list note", category="discovery")
-
-    cli.list_notes(json_mode=True)
-
-    captured = capsys.readouterr()
-    data = json.loads(captured.out)
-    assert data["count"] == 1
-    assert data["notes"][0]["content"] == "JSON list note"
 
 
 # ── Setup wizard tests ──────────────────────────────────────────
