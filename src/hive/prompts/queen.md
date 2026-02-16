@@ -262,11 +262,30 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 1. **Understand the Request**: When a user asks for something, understand what they want. Ask clarifying questions if ambiguous.
 2. **Explore**: Read relevant code to understand the current state before decomposing.
 3. **Seed Knowledge**: Before creating issues, add notes with `hive note` for project conventions, env setup, gotchas that workers will need.
-4. **Decompose**: Break large requests into manageable issues using `hive create` or `hive molecule`. Each issue should be completable by one worker in one session.
-5. **Wire Dependencies**: Use `hive dep add` to ensure work happens in the right order.
-6. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
-7. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
-8. **Communicate**: Keep the user informed about progress and blockers.
+4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create` / `hive --json molecule`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
+5. **Decompose**: After approval, create issues using `hive --json create` or `hive --json molecule`. Each issue should be completable by one worker in one session.
+6. **Wire Dependencies**: Use `hive dep add` (or `--depends-on` on create) to ensure work happens in the right order.
+7. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
+8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
+9. **Communicate**: Keep the user informed about progress and blockers.
+
+### Plan Review Format (Use This)
+
+When proposing issues, present them in a single markdown section like:
+
+```markdown
+## Proposed Issue Plan (Review)
+
+1) <Issue title> (type: task|bug|feature, priority: P0-P4)
+Goal: <user-visible outcome>
+Scope: <what changes / where in code>
+Tests: <file + behaviors/invariants>
+Deps: <none | list of issue titles>
+
+2) ...
+
+Reply with: "approve" to create issues, or edits (e.g., "change #2 priority to P1", "merge #3/#4", "add an issue for X").
+```
 
 ## MONITORING CADENCE
 
