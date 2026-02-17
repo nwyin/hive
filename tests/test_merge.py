@@ -128,6 +128,35 @@ async def test_process_queue_once_empty(temp_db, mock_opencode):
 
 
 @pytest.mark.asyncio
+async def test_process_queue_once_pauses_when_main_worktree_dirty(merge_entry_with_worktree, temp_db, mock_opencode):
+    """Merge queue should pause safely when the main repo worktree is dirty."""
+    info = merge_entry_with_worktree
+    mp = MergeProcessor(temp_db, mock_opencode, str(info["git_repo"]), "test")
+
+    # Dirty the main repo worktree with an uncommitted tracked-file change
+    (info["git_repo"] / "README.md").write_text("# Dirty Main Tree\n")
+
+    with patch.object(mp, "_try_mechanical_merge", new_callable=AsyncMock) as mock_try_mech:
+        with patch.object(mp, "_send_to_refinery", new_callable=AsyncMock) as mock_send_refinery:
+            await mp.process_queue_once()
+            mock_try_mech.assert_not_called()
+            mock_send_refinery.assert_not_called()
+
+    # Queue entry remains queued (nothing consumed while dirty)
+    row = temp_db.conn.execute("SELECT status FROM merge_queue WHERE id = 1").fetchone()
+    assert row is not None
+    assert row["status"] == "queued"
+
+    # System event explains why processing was paused
+    paused = temp_db.get_events(event_type="merge_paused_dirty_main")
+    assert len(paused) == 1
+    import json
+
+    detail = json.loads(paused[0]["detail"])
+    assert "README.md" in detail.get("changes", "")
+
+
+@pytest.mark.asyncio
 async def test_mechanical_merge_success(merge_entry_with_worktree, temp_db, mock_opencode):
     """Test successful mechanical merge (rebase + ff-merge)."""
     info = merge_entry_with_worktree

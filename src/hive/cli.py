@@ -16,6 +16,7 @@ os.environ["HIVE_CLI_CONTEXT"] = "1"
 from .config import Config
 from .daemon import HiveDaemon
 from .db import Database, validate_tags
+from .git import GitWorktreeError, get_worktree_dirty_status
 from .utils import detect_project
 
 
@@ -690,6 +691,38 @@ class HiveCLI:
             # Get merge queue stats
             merge_stats = self.db.get_merge_queue_stats()
 
+            # Merge preflight visibility: report when dirty main worktree blocks merges.
+            main_worktree = {
+                "dirty": False,
+                "changes": [],
+                "status": "clean",
+            }
+            merge_blockers: List[Dict[str, Any]] = []
+            try:
+                dirty, dirty_output = get_worktree_dirty_status(str(self.project_path))
+                if dirty:
+                    changes = dirty_output.splitlines()
+                    main_worktree = {
+                        "dirty": True,
+                        "changes": changes[:20],
+                        "status": "dirty",
+                    }
+                    if merge_stats.get("queued", 0) > 0 or merge_stats.get("running", 0) > 0:
+                        merge_blockers.append(
+                            {
+                                "type": "dirty_main_worktree",
+                                "message": "Merges are paused: main worktree has uncommitted tracked changes",
+                                "changes": changes[:20],
+                            }
+                        )
+            except GitWorktreeError as e:
+                main_worktree = {
+                    "dirty": False,
+                    "changes": [],
+                    "status": "error",
+                    "error": str(e),
+                }
+
             # Get daemon status
             daemon = self._make_daemon()
             daemon_status = daemon.status()
@@ -701,6 +734,8 @@ class HiveCLI:
                 "active_agents": len(active_agents),
                 "ready_queue": len(ready),
                 "merge_queue": merge_stats,
+                "merge_blockers": merge_blockers,
+                "main_worktree": main_worktree,
                 "ready_issues": [{"id": i["id"], "title": i["title"]} for i in ready[:5]],
                 "daemon": {
                     "running": daemon_status.get("running", False),
@@ -741,6 +776,15 @@ class HiveCLI:
                 print(f"Merge queue: {', '.join(parts) if parts else 'empty'}")
             else:
                 print(f"Merge queue: {mq} pending")
+
+            blockers = result.get("merge_blockers", [])
+            if blockers:
+                print("\nMerge blockers:")
+                for blocker in blockers:
+                    print(f"  - {blocker.get('message', blocker.get('type', 'unknown blocker'))}")
+                    changes = blocker.get("changes") or []
+                    for line in changes[:5]:
+                        print(f"    {line}")
 
             # Daemon info
             daemon_info = result.get("daemon", {})

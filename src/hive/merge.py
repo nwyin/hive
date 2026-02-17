@@ -16,6 +16,7 @@ from .git import (
     GitWorktreeError,
     abort_rebase_async,
     delete_branch_async,
+    get_worktree_dirty_status_async,
     merge_to_main_async,
     rebase_onto_main_async,
     remove_worktree_async,
@@ -42,6 +43,8 @@ class MergeProcessor:
         self.refinery_session_id: Optional[str] = None
         self._refinery_message_count: int = 0
         self._refinery_token_estimate: int = 0
+        self._main_dirty_blocked: bool = False
+        self._main_dirty_snapshot: Optional[str] = None
 
     async def shutdown(self):
         """Clean up the refinery session on shutdown."""
@@ -132,6 +135,37 @@ class MergeProcessor:
         entries = self.db.get_queued_merges(project=self.project_name, limit=1)
         if not entries:
             return
+
+        # Merge operations run in the project root worktree. If that worktree is
+        # dirty, attempting ff-merge can fail in confusing ways. Pause the queue
+        # until the worktree is clean instead of burning merge attempts.
+        try:
+            main_dirty, dirty_output = await get_worktree_dirty_status_async(self.project_path)
+        except GitWorktreeError as e:
+            self.db.log_system_event(
+                "merge_preflight_error",
+                {"path": self.project_path, "error": str(e)},
+            )
+            return
+
+        if main_dirty:
+            snapshot = "\n".join(dirty_output.splitlines()[:20])
+            if (not self._main_dirty_blocked) or (snapshot != self._main_dirty_snapshot):
+                self.db.log_system_event(
+                    "merge_paused_dirty_main",
+                    {"path": self.project_path, "project": self.project_name, "changes": snapshot},
+                )
+            self._main_dirty_blocked = True
+            self._main_dirty_snapshot = snapshot
+            return
+
+        if self._main_dirty_blocked:
+            self.db.log_system_event(
+                "merge_resumed_main_clean",
+                {"path": self.project_path, "project": self.project_name},
+            )
+            self._main_dirty_blocked = False
+            self._main_dirty_snapshot = None
 
         entry = entries[0]
         queue_id = entry["id"]

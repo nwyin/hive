@@ -1,6 +1,7 @@
 """Tests for CLI interface."""
 
 import json
+import subprocess
 import unittest.mock
 
 import pytest
@@ -160,6 +161,39 @@ def test_cli_status_json(temp_db, tmp_path, capsys):
     assert "issues" in data
     assert "total_issues" in data
     assert data["project"] == tmp_path.name
+
+
+def test_cli_status_json_includes_dirty_main_merge_blocker(temp_db, tmp_path, capsys):
+    """JSON status should include structured dirty-main merge blocker details."""
+    repo = tmp_path / "repo-json"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, capture_output=True)
+    (repo / "README.md").write_text("# Repo\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True, capture_output=True)
+
+    cli = HiveCLI(temp_db, str(repo))
+    issue_id = temp_db.create_issue("Queued merge", project=repo.name)
+    temp_db.update_issue_status(issue_id, "done")
+    temp_db.conn.execute(
+        """
+        INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status)
+        VALUES (?, ?, ?, ?, ?, 'queued')
+        """,
+        (issue_id, "agent-2", repo.name, str(repo / ".worktrees" / "agent-2"), "agent/agent-2"),
+    )
+    temp_db.conn.commit()
+    (repo / "README.md").write_text("# Dirty Repo\n")
+
+    cli.status(json_mode=True)
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["main_worktree"]["dirty"] is True
+    assert data["merge_blockers"]
+    assert data["merge_blockers"][0]["type"] == "dirty_main_worktree"
 
 
 def test_cli_show_issue_with_dependencies(temp_db, tmp_path, capsys):

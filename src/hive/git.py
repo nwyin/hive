@@ -233,6 +233,34 @@ def merge_to_main(project_path: str, branch_name: str, main_branch: str = "main"
         raise GitWorktreeError(f"Failed to merge {branch_name} to {main_branch}: {e.stderr}") from e
 
 
+def get_worktree_dirty_status(project_path: str) -> tuple[bool, str]:
+    """
+    Check whether a repository worktree has local changes.
+
+    Args:
+        project_path: Path to the git repository worktree
+
+    Returns:
+        Tuple of (is_dirty, porcelain_output)
+
+    Raises:
+        GitWorktreeError: If git status cannot be read
+    """
+    project_path = Path(project_path).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=str(project_path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        output = result.stdout.strip()
+        return (bool(output), output)
+    except subprocess.CalledProcessError as e:
+        raise GitWorktreeError(f"Failed to check worktree status: {e.stderr}") from e
+
+
 def run_command_in_worktree(worktree_path: str, cmd: str, timeout: int = 300) -> tuple:
     """
     Run an arbitrary shell command in a worktree.
@@ -354,6 +382,12 @@ async def merge_to_main_async(project_path: str, branch_name: str, main_branch: 
     """Async wrapper for merge_to_main. Runs in a thread executor."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, merge_to_main, project_path, branch_name, main_branch)
+
+
+async def get_worktree_dirty_status_async(project_path: str) -> tuple[bool, str]:
+    """Async wrapper for get_worktree_dirty_status. Runs in a thread executor."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_worktree_dirty_status, project_path)
 
 
 async def run_command_in_worktree_async(worktree_path: str, cmd: str, timeout: int = 300) -> tuple:

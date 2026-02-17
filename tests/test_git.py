@@ -11,6 +11,7 @@ from hive.git import (
     create_worktree,
     delete_branch,
     get_commit_hash,
+    get_worktree_dirty_status,
     has_diff_from_main,
     merge_to_main,
     rebase_onto_main,
@@ -291,6 +292,20 @@ def test_run_command_in_worktree_timeout(git_repo):
     success, output = run_command_in_worktree(str(git_repo), "sleep 10", timeout=1)
     assert success is False
     assert "timed out" in output.lower()
+
+
+def test_get_worktree_dirty_status(git_repo):
+    """Dirty status helper should report clean and dirty states accurately."""
+    is_dirty, output = get_worktree_dirty_status(str(git_repo))
+    assert is_dirty is False
+    assert output == ""
+
+    # Make uncommitted change
+    (git_repo / "README.md").write_text("# Modified\n")
+
+    is_dirty, output = get_worktree_dirty_status(str(git_repo))
+    assert is_dirty is True
+    assert "README.md" in output
 
 
 def test_has_diff_from_main_with_commits(git_repo):
