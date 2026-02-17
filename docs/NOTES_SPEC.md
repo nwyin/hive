@@ -21,11 +21,12 @@ Prompt reminders alone are not deterministic enough to prevent this.
 1. Recreating full Gas Town mail complexity (lists/channels/queues) in v1.
 2. Requiring workers to manually run `hive mail` as primary behavior.
 3. Adding mandatory note categories.
+4. Implicit graph-based fan-out routing in v1.
 
 ## 4. Core Principles
 
 1. **Orchestrator-enforced delivery**: notes are injected before turns; workers do not need to remember to check mail.
-2. **Addressed routing over categorization**: use issue graph + explicit targets.
+2. **Addressed routing over categorization**: use explicit targets + issue-following delivery.
 3. **Persistent per-recipient state**: queued/delivered/read/acked tracking per worker.
 4. **Hard gate for required notes**: no completion while required unread/unacked notes exist.
 
@@ -44,16 +45,26 @@ Required fields:
 - `must_read` (bool, default `false`)
 - `created_at`
 
-Optional addressing fields:
-- `to_agent_id` (nullable)
-- `to_issue_id` (nullable, repeatable via mapping table if needed)
-
-Dedup fields:
-- `content_hash`
-
 ### 5.2 Deliveries
 
-Add `note_deliveries` table (one row per recipient agent):
+`note_deliveries` is the canonical routing + recipient state table.
+
+It represents three kinds of rows:
+
+1. **Agent-global delivery**:
+   - `recipient_agent_id` is set
+   - `recipient_issue_id` is `NULL`
+   - the note is injected for that agent regardless of current issue
+2. **Issue-following target**:
+   - `recipient_issue_id` is set
+   - `recipient_agent_id` is `NULL`
+   - this does not get injected directly; it exists so the note can follow the issue across reassignment
+3. **Materialized issue delivery**:
+   - `recipient_agent_id` is set
+   - `recipient_issue_id` is set
+   - created when an issue-following target is materialized to the current assignee
+
+At least one of `recipient_agent_id` or `recipient_issue_id` must be non-null.
 
 - `id`
 - `note_id`
@@ -65,23 +76,30 @@ Add `note_deliveries` table (one row per recipient agent):
 - `acked_at` (nullable)
 - `created_at`
 
-`acked` is required only when `must_read=true`.
+`acked` is required only when `must_read=true`, and is always per-delivery (not a global property of a note).
 
-## 6. Routing Rules (Deterministic)
+## 6. Targeting and Routing (Deterministic)
 
-Given a new note `N`, recipients are resolved in this order:
+### 6.1 Target Resolution (No Implicit Fan-Out)
 
-1. Explicit `to_agent_id` (if present).
-2. Active worker on explicit `to_issue_id` (if present).
-3. Active workers on sibling issues of `from_issue_id` within the same epic.
-4. Active workers on dependency neighbors of `from_issue_id`:
-   - upstream (`depends_on`)
-   - downstream (reverse dependencies)
+When a note is created, the sender must specify at least one explicit target:
+- one or more `--to-agent <agent_id>` targets, and/or
+- one or more `--to-issue <issue_id>` targets.
 
-Rules:
-- Recipients are deduplicated by `agent_id`.
-- Sender is excluded unless explicitly targeted.
-- If no active recipient exists for an explicitly targeted issue, keep pending delivery for the next assignee of that issue.
+No graph-based fan-out is performed in v1 (no sibling/dependency routing).
+
+For each `--to-agent <agent_id>` target, create an **agent-global delivery** row.
+
+For each `--to-issue <issue_id>` target, create an **issue-following target** row.
+
+### 6.2 Issue-Following Materialization
+
+Issue-following targets must “follow the issue” across reassignment.
+
+Before sending a worker turn for `(project, issue_id=I, agent_id=A)`, the orchestrator must:
+1. Find all issue-following target rows for `I`.
+2. For each, ensure there is a materialized **issue delivery** row for `(note_id, A, I)`.
+3. If the issue has no active assignee, do nothing (the target stays pending until assignment exists).
 
 ## 7. Delivery Semantics
 
@@ -89,10 +107,16 @@ Rules:
 
 Before each orchestrator `send_message_async(...)` to a worker:
 
-1. Query unread routed notes for `(agent_id, issue_id, project)`.
-2. Build a compact “Notes Inbox Update” section.
-3. Prepend that section to the worker turn payload.
-4. Mark included deliveries as `delivered`.
+1. Materialize issue-following targets for the worker’s current `(agent_id, issue_id, project)` (see 6.2).
+2. Query inject-able deliveries for this `(agent_id, issue_id, project)`:
+   - **Agent-global**: `recipient_agent_id = <agent_id> AND recipient_issue_id IS NULL`
+   - **Issue-scoped**: `recipient_agent_id = <agent_id> AND recipient_issue_id = <current issue>`
+3. Include deliveries using these rules:
+   - Normal notes: include while `status IN (queued, delivered)` (until `read`)
+   - `must_read` notes: include while `status != acked` (until `acked`)
+4. Build a compact “Notes Inbox Update” section.
+5. Prepend that section to the worker turn payload.
+6. For any included delivery with `status=queued`, set `status=delivered` and populate `delivered_at` (idempotent).
 
 This makes note visibility deterministic per turn without requiring worker polling.
 
@@ -118,17 +142,24 @@ APIs:
  
 Ack is valid only through CLI/API mail commands. Orchestrator must not treat completion payload text as acknowledgment.
 
+Rules:
+- `hive mail ack` is valid only when the underlying note has `must_read=true`.
+- For issue-following notes, each assignee acknowledges their own materialized delivery; acknowledgments do not “carry” across reassignment.
+
 ## 9. Completion Gate
 
 When worker signals completion:
 
-1. Query required note deliveries for this worker/issue where `status != acked`.
-2. If any exist:
+1. Materialize issue-following targets for this `(agent_id, issue_id, project)` (see 6.2).
+2. Query required deliveries where `status != acked` for:
+   - agent-global deliveries (`recipient_agent_id = <agent_id> AND recipient_issue_id IS NULL`), and
+   - current-issue deliveries (`recipient_agent_id = <agent_id> AND recipient_issue_id = <current issue>`).
+3. If any exist:
    - reject completion transition,
    - send a forced follow-up turn containing pending required notes,
    - require acknowledgment,
    - re-check.
-3. Only proceed to `done/finalized` path once required notes are acknowledged.
+4. Only proceed to `done/finalized` path once required notes are acknowledged.
 
 This gate is the main control preventing “missed critical context” regressions.
 
@@ -139,12 +170,12 @@ This gate is the main control preventing “missed critical context” regressio
 ```bash
 hive note send "text..." \
   [--issue <from_issue>] \
-  [--to-agent <agent_id>] \
-  [--to-issue <issue_id>] \
+  [--to-agent <agent_id> ...] \
+  [--to-issue <issue_id> ...] \
   [--must-read]
 ```
 
-`--to-issue` may be repeated to target multiple issues.
+At least one of `--to-agent` or `--to-issue` must be provided.
 
 ### 10.2 Inbox
 
@@ -184,9 +215,9 @@ Use a stable text format so models can parse it reliably:
 
 ```text
 ### Notes Inbox Update (3 unread)
-- [delivery:d-102][note:n-44][must_read] from agent=agent-7 issue=w-a1b2
+- [delivery:d-102][note:n-44][must_read][scope:issue issue=w-a1b2] from agent=agent-7
   Replace legacy migration path with `db/migrations/v2`.
-- [delivery:d-103][note:n-45] from agent=agent-9 issue=w-c3d4
+- [delivery:d-103][note:n-45][scope:agent] from agent=agent-9
   Reuse shared parser in `src/foo/parser.py`; do not duplicate.
 
 Required actions:
@@ -205,13 +236,13 @@ Required actions:
 Deduplication is required.
 
 1. **Transport dedupe (required)**:
-   - enforce unique delivery row per `(note_id, recipient_agent_id)`.
-   - if a delivery exists, update state; do not insert duplicate.
-2. **Content dedupe (required)**:
-   - compute `content_hash = sha256(normalized_content)` for every note.
-   - treat `(project, from_issue_id, content_hash)` as duplicate candidate in a bounded window.
+   - enforce unique rows per delivery scope:
+     - agent-global deliveries: one row per `(note_id, recipient_agent_id)` where `recipient_issue_id IS NULL`
+     - issue deliveries: one row per `(note_id, recipient_agent_id, recipient_issue_id)` where `recipient_issue_id IS NOT NULL`
+     - issue-following targets: one row per `(note_id, recipient_issue_id)` where `recipient_agent_id IS NULL`
+   - if a row exists, update state; do not insert duplicates.
 
-Dedup must run on both note creation and delivery creation.
+Content-based dedupe is intentionally omitted in v1 to avoid suppressing legitimate repeated notes. If needed, add an explicit idempotency key later.
 
 ## 13. Observability
 
@@ -249,14 +280,12 @@ Implement in `src/hive/db.py` (`SCHEMA` + `_migrate_if_needed`).
 | Change | Type | Notes |
 |---|---|---|
 | `notes.must_read` | new column | `INTEGER NOT NULL DEFAULT 0` |
-| `notes.to_agent_id` | new column | nullable target agent |
-| `notes.to_issue_id` | new column | nullable target issue |
-| `notes.content_hash` | new column | required for content dedupe |
 | `note_deliveries` | new table | per-recipient delivery state |
 | `idx_note_deliveries_note` | index | lookup by note |
 | `idx_note_deliveries_agent_status` | index | inbox query fast path |
-| `uidx_note_deliveries_note_agent` | unique index | transport dedupe for agent recipients |
-| `uidx_note_deliveries_note_issue_pending` | unique index (partial) | one pending issue-target row per note/issue |
+| `uidx_note_deliveries_note_agent_global` | unique index (partial) | one agent-global row per note/agent (`recipient_issue_id IS NULL`) |
+| `uidx_note_deliveries_note_agent_issue` | unique index | one issue row per note/agent/issue (`recipient_issue_id IS NOT NULL`) |
+| `uidx_note_deliveries_note_issue_target` | unique index (partial) | one issue-target row per note/issue (`recipient_agent_id IS NULL`) |
 
 `note_deliveries` fields:
 - `id INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -288,13 +317,15 @@ Implement in `src/hive/db.py` (`SCHEMA` + `_migrate_if_needed`).
 1. **DB migration and APIs**
    - add columns/table/indexes.
    - add methods:
-     - `create_note(...)` (or extend `add_note`) with `must_read`, `to_agent_id`, `to_issue_id`, `content_hash`
-     - `create_note_deliveries(...)`
-     - `get_unread_deliveries(agent_id, issue_id, project)`
+     - `create_note(...)` (or extend `add_note`) with `must_read`
+     - `create_note_targets(...)` to add:
+       - agent-global deliveries (`recipient_agent_id`, `recipient_issue_id=NULL`)
+       - issue-following targets (`recipient_issue_id`, `recipient_agent_id=NULL`)
+     - `materialize_issue_target_deliveries(issue_id, agent_id, project)`
+     - `get_injectable_deliveries(agent_id, issue_id, project)`
      - `mark_delivery_read(delivery_id, agent_id)`
      - `mark_delivery_acked(delivery_id, agent_id)`
      - `get_required_unacked_deliveries(agent_id, issue_id)`
-     - `materialize_issue_target_deliveries(issue_id, agent_id)`
 2. **CLI control plane**
    - implement:
      - `hive note send ... [--to-agent] [--to-issue] [--must-read]`
@@ -319,17 +350,17 @@ Implement in `src/hive/db.py` (`SCHEMA` + `_migrate_if_needed`).
 
 | Test file | Required Phase 1 coverage |
 |---|---|
-| `tests/test_db.py` | migration adds columns/table/indexes; dedupe; delivery state transitions; pending issue-target rows |
+| `tests/test_db.py` | migration adds columns/table/indexes; delivery state transitions; agent-global + issue-scoped semantics; pending issue-target rows |
 | `tests/test_cli.py` | note send targeting flags; inbox/read/ack command behavior; auth checks on read/ack |
 | `tests/test_orchestrator.py` | turn-boundary injection includes routed notes; completion blocked on unacked required notes; unblock after ack |
 | `tests/test_prompts.py` | canonical injected inbox format rendering |
-| `tests/test_multiworker.py` | parallel workers receive routed notes; required note gate prevents unsafe completion |
+| `tests/test_multiworker.py` | reassignment: issue-following notes deliver to new assignee; required note gate prevents unsafe completion |
 
 ### 15.6 Phase 2 Scope
 
 1. Improve targeting ergonomics:
-   - repeatable `--to-issue` fanout UX,
-   - convenience expansions (epic/dependency selectors).
+   - bulk selectors (epic/dependency targeting)
+   - group shortcuts (roles, labels, teams)
 2. Inbox UX improvements:
    - richer filters (`--required`, `--since`, `--from-issue`),
    - compact vs verbose output modes.
