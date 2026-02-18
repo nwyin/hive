@@ -39,41 +39,47 @@ def create_worktree(project_path: str, agent_name: str, base_branch: str = "main
     worktree_dir = project_path / ".worktrees" / agent_name
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Branch name: agent/<agent_name>
     branch_name = f"agent/{agent_name}"
 
-    # Retry with backoff — concurrent worktree creation can transiently fail
-    # with "invalid reference: main" when git ref resolution hits contention.
-    # TODO: Investigate a proper fix for git ref contention instead of this
-    # sleep-and-retry hack. It's unclear whether longer sleeps actually help
-    # or if the root cause is something else entirely (e.g. packed-refs
-    # rewriting, loose ref gc, or worktree metadata races).
+    # Two-step worktree creation: detached first, then create branch.
+    # Using --detach avoids writing to .git/refs/heads/agent/ during worktree
+    # setup, which fails with EPERM on macOS when the daemon process inherits
+    # com.apple.provenance (e.g. when started from Claude Code's sandbox).
+    # The branch is created inside the worktree afterward, which works
+    # because git checkout -b operates locally without the ref-lock contention.
     max_retries = 4
     for attempt in range(max_retries):
         try:
             subprocess.run(
-                [
-                    "git",
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch_name,
-                    str(worktree_dir),
-                    base_branch,
-                ],
+                ["git", "worktree", "add", "--detach", str(worktree_dir), base_branch],
                 cwd=str(project_path),
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            return str(worktree_dir)
-
+            break
         except subprocess.CalledProcessError as e:
             is_transient = "invalid reference" in e.stderr or "index.lock" in e.stderr
             if is_transient and attempt < max_retries - 1:
                 time.sleep(1.0 * (attempt + 1))
                 continue
             raise GitWorktreeError(f"Failed to create worktree: {e.stderr}") from e
+
+    # Create the named branch inside the worktree (needed by merge path).
+    try:
+        subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            cwd=str(worktree_dir),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Clean up the detached worktree on branch creation failure
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree_dir)], capture_output=True, cwd=str(project_path))
+        raise GitWorktreeError(f"Failed to create branch in worktree: {e.stderr}") from e
+
+    return str(worktree_dir)
 
 
 def remove_worktree(worktree_path: str) -> bool:
