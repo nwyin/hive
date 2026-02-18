@@ -153,6 +153,11 @@ class Orchestrator:
         # Heartbeat tracking for debug logging
         self._last_heartbeat: float = 0
 
+        # Guard against TOCTOU race in main_loop: tracks issue_ids currently
+        # being spawned. Prevents duplicate spawn_worker calls when
+        # create_worktree_async yields control back to the event loop.
+        self._spawning_issues: set[str] = set()
+
     def _setup_sse_handlers(self):
         """Set up SSE event handlers."""
 
@@ -672,6 +677,9 @@ class Orchestrator:
 
                     if ready:
                         issue = ready[0]
+                        if issue["id"] in self._spawning_issues:
+                            await asyncio.sleep(1)  # Back off briefly while spawn completes
+                            continue
                         try:
                             # Try to claim and spawn worker
                             await self.spawn_worker(issue)
@@ -707,6 +715,15 @@ class Orchestrator:
             issue: Issue dict from database
         """
         issue_id = issue["id"]
+        self._spawning_issues.add(issue_id)
+        try:
+            await self._spawn_worker_inner(issue)
+        finally:
+            self._spawning_issues.discard(issue_id)
+
+    async def _spawn_worker_inner(self, issue: Dict[str, str]):
+        """Inner spawn logic, wrapped by spawn_worker's TOCTOU guard."""
+        issue_id = issue["id"]
         agent_name = generate_id("worker")
         model = issue.get("model") or Config.WORKER_MODEL or Config.DEFAULT_MODEL
 
@@ -726,7 +743,7 @@ class Orchestrator:
                 issue_id,
                 agent_id,
                 "worktree_error",
-                {"error": str(e)},
+                {"error": str(e) or type(e).__name__},
             )
             self._delete_agent_row(agent_id)
             return
@@ -788,11 +805,12 @@ class Orchestrator:
             )
 
         except Exception as e:
+            error_desc = str(e) or type(e).__name__
             self.db.log_event(
                 issue_id,
                 agent_id,
                 "spawn_error",
-                {"error": str(e)},
+                {"error": error_desc},
             )
             # Clean up the OpenCode session if it was created (best-effort —
             # don't let cleanup failure prevent DB/worktree cleanup below)
