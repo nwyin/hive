@@ -25,6 +25,7 @@ from .prompts import (
     read_result_file,
     remove_notes_file,
     remove_result_file,
+    render_inbox_section,
 )
 from .backends import SSEClient
 
@@ -821,6 +822,43 @@ class Orchestrator:
 
         return notes if notes else None
 
+    def _prepare_inbox_for_worker(self, agent_id: str, issue_id: str) -> Optional[str]:
+        """Materialize and render inbox deliveries for a worker turn.
+
+        1. Materialize issue-following targets for (issue_id, agent_id, project)
+        2. Get injectable deliveries
+        3. Mark queued deliveries as delivered
+        4. Render inbox section
+
+        Returns rendered inbox section string, or None if no deliveries.
+        """
+        # Step 1: materialize any issue-following targets for this agent/issue
+        self.db.materialize_issue_deliveries(issue_id, agent_id, self.project_name)
+
+        # Step 2: get injectable deliveries
+        deliveries, has_more = self.db.get_injectable_deliveries(agent_id, issue_id, self.project_name)
+
+        if not deliveries:
+            return None
+
+        # Step 3: mark queued deliveries as delivered
+        for d in deliveries:
+            if d.get("status") == "queued":
+                self.db.mark_delivery_delivered(d["delivery_id"])
+
+        # Step 4: render inbox section
+        inbox_section = render_inbox_section(deliveries, has_more)
+
+        # Step 5: log delivery event
+        self.db.log_event(
+            issue_id,
+            agent_id,
+            "note_delivered",
+            {"count": len(deliveries), "delivery_ids": [d["delivery_id"] for d in deliveries]},
+        )
+
+        return inbox_section
+
     def _is_issue_canceled(self, issue_id: str) -> bool:
         """Check if an issue has been canceled in the database."""
         try:
@@ -1081,6 +1119,9 @@ class Orchestrator:
         if worker_notes:
             self.db.log_event(issue_id, agent.agent_id, "notes_injected", {"count": len(worker_notes)})
 
+        # New: prepare delivery-based inbox
+        inbox_section = self._prepare_inbox_for_worker(agent.agent_id, issue_id)
+
         retry_context = build_retry_context(self.db, issue_id)
         branch_name = f"agent/{agent.name}"
         prompt = build_worker_prompt(
@@ -1090,6 +1131,7 @@ class Orchestrator:
             branch_name=branch_name,
             project=self.project_name,
             notes=worker_notes,
+            inbox_section=inbox_section,
             completed_steps=completed_steps,
             retry_context=retry_context,
         )
@@ -1154,6 +1196,26 @@ class Orchestrator:
                         summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
                     ),
                 )
+
+        # Check for required unacked notes — block completion if any exist
+        # Materialize first so we catch issue-following targets
+        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, self.project_name)
+        unacked = self.db.get_required_unacked_deliveries(agent.agent_id, agent.issue_id)
+        if unacked:
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "completion_blocked_unacked_notes",
+                {"count": len(unacked), "delivery_ids": [d["delivery_id"] for d in unacked]},
+            )
+            return CompletionDecision(
+                transition=CompletionTransition.FAIL_ASSESSMENT,
+                result=CompletionResult(
+                    success=False,
+                    reason=(f"Cannot complete: {len(unacked)} required note(s) not acknowledged. Acknowledge via: hive mail ack <delivery_id>"),
+                    summary=f"Blocked by {len(unacked)} unacknowledged required note(s)",
+                ),
+            )
 
         result = assess_completion(messages, file_result=file_result)
         if not result.success:
