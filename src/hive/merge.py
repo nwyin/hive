@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import Config, WORKER_PERMISSIONS
+from .config import CANONICAL_MERGE_POLICIES, Config, WORKER_PERMISSIONS, parse_merge_policy
 from .db import Database
 from .git import (
     GitWorktreeError,
@@ -132,6 +132,10 @@ class MergeProcessor:
 
     async def process_queue_once(self):
         """Process the next item in the merge queue. One at a time, sequential."""
+        merge_policy = self._resolve_merge_policy()
+        if merge_policy == "manual":
+            return
+
         entries = self.db.get_queued_merges(project=self.project_name, limit=1)
         if not entries:
             return
@@ -176,18 +180,26 @@ class MergeProcessor:
             entry["issue_id"],
             entry.get("agent_id"),
             "merge_started",
-            {"queue_id": queue_id, "branch": entry["branch_name"]},
+            {"queue_id": queue_id, "branch": entry["branch_name"], "merge_policy": merge_policy},
         )
 
         try:
-            # Tier 1: Mechanical merge
-            success, test_output = await self._try_mechanical_merge(entry)
-
-            if success:
-                await self._finalize_issue(entry)
+            if merge_policy == "refinery_first":
+                # Policy-driven route: skip mechanical checks and dispatch directly.
+                await self._send_to_refinery(
+                    entry,
+                    test_output=None,
+                    dispatch_reason="policy_refinery_first",
+                    merge_policy=merge_policy,
+                )
             else:
-                # Tier 2: Send to Refinery LLM
-                await self._send_to_refinery(entry, test_output)
+                # mechanical_then_refinery
+                success, test_output = await self._try_mechanical_merge(entry)
+
+                if success:
+                    await self._finalize_issue(entry)
+                else:
+                    await self._send_to_refinery(entry, test_output, merge_policy=merge_policy)
 
         except Exception as e:
             # Unexpected error — mark queue entry failed, leave issue as-is
@@ -198,6 +210,15 @@ class MergeProcessor:
                 "merge_error",
                 {"error": str(e), "queue_id": queue_id},
             )
+
+    def _resolve_merge_policy(self) -> str:
+        """Resolve and validate policy consumed by merge routing."""
+        raw_policy = getattr(Config, "MERGE_POLICY", "mechanical_then_refinery")
+        if not isinstance(raw_policy, str):
+            return "mechanical_then_refinery"
+        resolved = parse_merge_policy(raw_policy)
+        assert resolved in CANONICAL_MERGE_POLICIES
+        return resolved
 
     async def _try_mechanical_merge(self, entry: Dict[str, Any]) -> tuple:
         """
@@ -323,7 +344,13 @@ class MergeProcessor:
         self.db.log_event(issue_id, agent_id, "merged", {"branch": branch_name})
         return (True, None)
 
-    async def _send_to_refinery(self, entry: Dict[str, Any], test_output: Optional[str] = None):
+    async def _send_to_refinery(
+        self,
+        entry: Dict[str, Any],
+        test_output: Optional[str] = None,
+        dispatch_reason: Optional[str] = None,
+        merge_policy: Optional[str] = None,
+    ):
         """
         Hand a merge to the Refinery LLM for processing.
 
@@ -334,7 +361,10 @@ class MergeProcessor:
         queue_id = entry["id"]
         issue_id = entry["issue_id"]
         agent_id = entry.get("agent_id")
-        rebase_ok = test_output is not None  # If we have test_output, rebase succeeded
+        reason = dispatch_reason or ("test_failure" if test_output is not None else "rebase_conflict")
+        rebase_ok = reason in ("test_failure", "policy_refinery_first")
+        if merge_policy is None:
+            merge_policy = self._resolve_merge_policy()
 
         self.db.log_event(
             issue_id,
@@ -342,7 +372,8 @@ class MergeProcessor:
             "refinery_dispatched",
             {
                 "queue_id": queue_id,
-                "reason": "test_failure" if rebase_ok else "rebase_conflict",
+                "reason": reason,
+                "merge_policy": merge_policy,
             },
         )
 
@@ -360,6 +391,12 @@ class MergeProcessor:
             # Build the refinery prompt
             # Prefer worker test_command over global Config.TEST_COMMAND
             test_cmd = entry.get("test_command") or Config.TEST_COMMAND
+            policy_test_context = test_output
+            if reason == "policy_refinery_first":
+                policy_test_context = (
+                    "No mechanical pre-checks were run because merge policy is 'refinery_first'. "
+                    "Perform full validation before deciding merge/reject/escalate."
+                )
             prompt = build_refinery_prompt(
                 issue_title=entry.get("issue_title", "Unknown"),
                 issue_id=issue_id,
@@ -367,7 +404,7 @@ class MergeProcessor:
                 worktree_path=worktree_path,
                 agent_name=entry.get("agent_name"),
                 rebase_succeeded=rebase_ok,
-                test_output=test_output,
+                test_output=policy_test_context,
                 test_command=test_cmd,
             )
 

@@ -11,6 +11,12 @@ import os
 import tomllib
 from pathlib import Path
 
+CANONICAL_MERGE_POLICIES = (
+    "mechanical_then_refinery",
+    "refinery_first",
+    "manual",
+)
+
 
 # ── Mapping from TOML [hive] keys → (env var, type, default) ────────────
 
@@ -32,6 +38,7 @@ _FIELDS: dict[str, tuple[str, type, object]] = {
     "merge_poll_interval": ("HIVE_MERGE_POLL_INTERVAL", int, 10),
     "test_command": ("HIVE_TEST_COMMAND", str, None),
     "merge_queue_enabled": ("HIVE_MERGE_QUEUE_ENABLED", bool, True),
+    "merge_policy": ("HIVE_MERGE_POLICY", str, "mechanical_then_refinery"),
     "default_model": ("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
     "worker_model": ("HIVE_WORKER_MODEL", str, "claude-sonnet-4-5-20250929"),
     "refinery_model": ("HIVE_REFINERY_MODEL", str, "claude-opus-4-6"),
@@ -79,6 +86,8 @@ class _Config:
             val = default
             if key == "db_path" and val is None:
                 val = _DEFAULT_DB_PATH
+            if key == "merge_policy":
+                val = parse_merge_policy(val)
             setattr(self, key.upper(), val)
         self.HIVE_DIR = HIVE_DIR
 
@@ -91,14 +100,20 @@ class _Config:
         section = data.get("hive", {})
         for key, (_env, typ, _default) in _FIELDS.items():
             if key in section:
-                setattr(self, key.upper(), _coerce(section[key], typ))
+                raw_value = _coerce(section[key], typ)
+                if key == "merge_policy":
+                    raw_value = parse_merge_policy(raw_value)
+                setattr(self, key.upper(), raw_value)
 
     def _apply_env(self):
         """Overlay values from environment variables."""
         for key, (env, typ, _default) in _FIELDS.items():
             raw = os.environ.get(env)
             if raw is not None:
-                setattr(self, key.upper(), _coerce(raw, typ))
+                coerced = _coerce(raw, typ)
+                if key == "merge_policy":
+                    coerced = parse_merge_policy(coerced)
+                setattr(self, key.upper(), coerced)
 
     # ── public API ───────────────────────────────────────────────────
 
@@ -172,6 +187,16 @@ def _coerce(value: object, typ: type) -> object:
             return value
         return str(value).lower() in ("true", "1", "yes")
     return typ(value)
+
+
+def parse_merge_policy(value: object) -> str:
+    """Validate and normalize merge policy values."""
+    normalized = str(value).strip().lower()
+    if normalized in CANONICAL_MERGE_POLICIES:
+        return normalized
+
+    allowed = ", ".join(CANONICAL_MERGE_POLICIES)
+    raise ValueError(f"Invalid merge policy '{value}'. Set HIVE_MERGE_POLICY (or [hive].merge_policy) to one of: {allowed}.")
 
 
 # ── Module-level singleton ───────────────────────────────────────────────
