@@ -17,7 +17,7 @@ uv tool update-shell   # ensures uv's tool bin dir is on PATH
 Notes:
 
 - Use `uv tool install -e ".[dev]"` if you want the dev extras too.
-- If you previously ran `uv tool install .`, you may need `--force` to refresh the installed snapshot: `uv tool install --force .`
+- If you previously ran `uv tool install .`, you may need `--force --reinstall` to refresh the installed snapshot: `uv tool install --force --reinstall .` (plain `--force` reuses the cached wheel and won't pick up source changes).
 
 ### Install (project venv)
 
