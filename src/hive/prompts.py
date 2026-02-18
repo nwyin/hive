@@ -122,6 +122,54 @@ Address these specific failure reasons. Do not repeat the same mistakes."""
     return None
 
 
+def render_inbox_section(deliveries: List[Dict[str, Any]], has_more: bool = False) -> str:
+    """Render the canonical Notes Inbox Update section for worker turn injection.
+
+    Args:
+        deliveries: List of delivery dicts, each with keys:
+            delivery_id, note_id, content, must_read, status,
+            from_agent_id, scope ('agent' or 'issue'), recipient_issue_id
+        has_more: Whether there are more normal deliveries not shown
+
+    Returns:
+        Formatted inbox section string, or empty string if no deliveries
+    """
+    if not deliveries:
+        return ""
+
+    lines = [f"### Notes Inbox Update ({len(deliveries)} pending)"]
+
+    has_required = False
+    for d in deliveries:
+        parts = [f"[delivery:{d['delivery_id']}]", f"[note:{d['note_id']}]"]
+        if d.get("must_read"):
+            parts.append("[must_read]")
+            has_required = True
+
+        if d.get("scope") == "issue" and d.get("recipient_issue_id"):
+            parts.append(f"[scope:issue issue={d['recipient_issue_id']}]")
+        else:
+            parts.append("[scope:agent]")
+
+        from_label = f"agent={d['from_agent_id']}" if d.get("from_agent_id") else "system"
+        parts.append(f"from {from_label}")
+
+        lines.append(f"- {''.join(parts)}")
+        lines.append(f"  {d.get('content', '')}")
+
+    if has_more:
+        lines.append("")
+        lines.append("More notes pending — run: hive mail inbox --issue <issue_id>")
+
+    if has_required:
+        lines.append("")
+        lines.append("Required actions:")
+        lines.append("1. Acknowledge required notes via: hive mail ack <delivery_id>")
+        lines.append("2. Proceed with implementation using the updates above.")
+
+    return "\n".join(lines)
+
+
 def build_worker_prompt(
     agent_name: str,
     issue: Dict[str, Any],
@@ -131,6 +179,7 @@ def build_worker_prompt(
     completed_steps: Optional[List[str]] = None,
     notes: Optional[List[Dict[str, Any]]] = None,
     retry_context: Optional[str] = None,
+    inbox_section: Optional[str] = None,
 ) -> str:
     """
     Build the worker prompt for an issue.
@@ -144,6 +193,7 @@ def build_worker_prompt(
         completed_steps: List of completed step summaries (for epics)
         notes: List of note dicts from other workers
         retry_context: Optional retry context from previous failures
+        inbox_section: Pre-rendered inbox section from render_inbox_section()
 
     Returns:
         Formatted worker prompt string
@@ -173,6 +223,10 @@ def build_worker_prompt(
             source = note.get("issue_id", "project")
             note_lines.append(f"- [{category}] {content} (from {source})")
         notes_section = "\n\n### Project Notes (from other workers)\n" + "\n".join(note_lines)
+
+    # Append inbox section if provided
+    if inbox_section:
+        notes_section += f"\n\n{inbox_section}"
 
     # Build retry section
     retry_section = ""

@@ -99,6 +99,14 @@ This is especially valuable for:
 
 Keep notes brief and actionable. This is optional — only write if genuinely useful.
 
+## Notes Inbox
+
+If your prompt includes a **Notes Inbox Update** section, read the notes carefully.
+They may contain context about schema changes, API modifications, or other work that
+affects the branch you're processing. Adapt your conflict resolution accordingly.
+
+If any notes are marked `must_read`, acknowledge them via `hive mail ack <delivery_id>`.
+
 ## COMPLETION SIGNAL
 
 After processing, write your result to `.hive-result.jsonl` in the worktree root

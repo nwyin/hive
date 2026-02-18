@@ -150,6 +150,25 @@ These are discoveries, gotchas, and patterns from workers who ran before you.
 They may save you from hitting the same pitfalls or help you follow established
 conventions. Treat them as trusted intel from colleagues.
 
+### Notes Inbox (Orchestrator-Injected)
+
+Your prompt may include a **Notes Inbox Update** section injected by the orchestrator.
+These are targeted messages from other workers or the queen, routed specifically to you
+or to the issue you're working on.
+
+- **Read all injected notes carefully** — they contain authoritative coordination context.
+- **`must_read` notes require acknowledgment** before you can complete your task.
+  Acknowledge them via: `hive mail ack <delivery_id>`
+- **Acknowledgment must be via CLI command**, not prose. Writing "I acknowledge" in your
+  output does NOT count.
+- If a note conflicts with your current plan, adapt your approach and continue
+  (or report a blocker if the conflict is irreconcilable).
+
+Before writing your completion signal:
+1. Run `hive mail inbox --issue <issue_id> --unread` to check for pending notes
+2. Acknowledge any `must_read` notes via `hive mail ack <delivery_id>`
+3. Only then write `.hive-result.jsonl`
+
 ### Writing notes for future workers
 
 If you discover something useful that future workers should know, write it to

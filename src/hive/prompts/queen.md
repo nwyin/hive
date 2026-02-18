@@ -88,22 +88,39 @@ hive --json dep add <issue_id> <depends_on_id> [--type blocks|related]
 hive --json dep remove <issue_id> <depends_on_id>
 ```
 
-### Notes (Inter-Worker Knowledge Sharing)
+### Notes & Mail Commands
 
-Workers write discoveries, gotchas, and patterns to `.hive-notes.jsonl` in their worktrees. The orchestrator harvests these on completion and injects relevant notes into future workers' prompts. You can also add and view notes via CLI.
+Workers write discoveries to `.hive-notes.jsonl` in their worktrees. The orchestrator harvests these on completion. You can also send targeted notes to specific workers or issues.
 
-#### Add a note
+#### Send targeted notes
 ```
-hive --json note "content" [--issue ISSUE_ID] [--category discovery|gotcha|dependency|pattern]
+hive --json note send "message text" --to-agent <agent_id> [--to-issue <issue_id>] [--must-read]
+hive --json note send "message text" --to-issue <issue_id> [--must-read]
 ```
 
-**Notes are visible:**
-- Per-issue: use `hive --json show <issue_id>` to see notes associated with that issue
-- Bulk queries: use datasette (install and run: `datasette ~/.hive/hive.db`) to explore the notes table
+#### Add a project-wide note (legacy)
+```
+hive --json note "content" [--issue ISSUE_ID]
+```
+
+#### Check delivery status and manage inbox
+```
+hive --json mail inbox --issue <issue_id> [--agent <agent_id>] [--unread]
+hive --json mail read <delivery_id>
+hive --json mail ack <delivery_id>
+```
+
+**Targeting:**
+- `--to-agent` delivers directly to a specific agent regardless of their current issue
+- `--to-issue` follows the issue — when the issue is reassigned, the note reaches the new assignee
+- `--must-read` creates a hard gate: the worker CANNOT complete until they acknowledge via `hive mail ack`
+- At least one of `--to-agent` or `--to-issue` is required for `note send`
 
 **When to use notes:**
-- Before creating a batch of related issues, add a note with project-wide context that all workers should know (e.g., "this project uses ruff with line-length=144")
-- After reviewing a failed worker, add a note about what went wrong so retries benefit
+- Before creating a batch of related issues, add a note with project-wide context that all workers should know
+- Use `--must-read` when a worker MUST see an update before completing (e.g., schema change, API contract change)
+- Use `--to-issue` when the note should follow the issue across reassignment
+- After reviewing a failed worker, send a note about what went wrong so retries benefit
 - Notes are especially valuable for epic steps — each step's notes are injected into subsequent steps
 
 ### Monitoring
