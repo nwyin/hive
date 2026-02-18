@@ -1599,6 +1599,7 @@ permission:
         codex_cmd = os.environ.get("CODEX_CMD", "codex")
         sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "workspace-write")
         approval = os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never")
+        hive_state_dir = str(Path.home() / ".hive")
         cmd = [
             codex_cmd,
             "--sandbox",
@@ -1609,6 +1610,8 @@ permission:
             f'developer_instructions="{developer_instructions}"',
             "-c",
             f'compact_prompt="{compact_prompt}"',
+            "--add-dir",
+            hive_state_dir,
             "--cd",
             str(self.project_path),
             short_prompt,
