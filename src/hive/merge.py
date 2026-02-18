@@ -45,6 +45,7 @@ class MergeProcessor:
         self._refinery_token_estimate: int = 0
         self._main_dirty_blocked: bool = False
         self._main_dirty_snapshot: Optional[str] = None
+        self._manual_blocked: bool = False
 
     async def shutdown(self):
         """Clean up the refinery session on shutdown."""
@@ -202,8 +203,17 @@ class MergeProcessor:
     async def process_queue_once(self):
         """Process the next item in the merge queue. One at a time, sequential."""
         merge_policy = self._resolve_merge_policy()
+        assert merge_policy in CANONICAL_MERGE_POLICIES
         if merge_policy == "manual":
+            if not self._manual_blocked:
+                self.db.log_system_event(
+                    "merge_paused_manual",
+                    {"project": self.project_name, "path": self.project_path},
+                )
+                self._manual_blocked = True
             return
+        if self._manual_blocked:
+            self._manual_blocked = False
 
         entries = self.db.get_queued_merges(project=self.project_name, limit=1)
         if not entries:
@@ -397,6 +407,8 @@ class MergeProcessor:
         rebase_ok = reason in ("test_failure", "policy_refinery_first")
         if merge_policy is None:
             merge_policy = self._resolve_merge_policy()
+        if reason == "policy_refinery_first":
+            assert test_output is None
 
         self.db.log_event(
             issue_id,
@@ -546,11 +558,18 @@ class MergeProcessor:
 
         except Exception as e:
             self.db.update_merge_queue_status(queue_id, "failed")
+            self.db.update_issue_status(issue_id, "escalated")
             self.db.log_event(
                 issue_id,
                 agent_id,
                 "refinery_error",
                 {"error": str(e)},
+            )
+            self.db.log_event(
+                issue_id,
+                agent_id,
+                "merge_escalated",
+                {"summary": f"Refinery error: {str(e)}"},
             )
             # Force reset refinery session so next merge gets a fresh session
             await self._force_reset_refinery_session(f"Exception in _send_to_refinery: {str(e)}")
