@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -148,6 +149,9 @@ class Orchestrator:
 
         # Cost guardrails
         self._budget_paused = False
+
+        # Heartbeat tracking for debug logging
+        self._last_heartbeat: float = 0
 
     def _setup_sse_handlers(self):
         """Set up SSE event handlers."""
@@ -617,6 +621,15 @@ class Orchestrator:
         """Main orchestration loop."""
         while self.running:
             try:
+                # Periodic heartbeat so DEBUG logs prove the daemon is alive when idle
+                now = time.monotonic()
+                if now - self._last_heartbeat >= 60:
+                    logger.debug(
+                        "Main loop heartbeat: %d active agents",
+                        len(self.active_agents),
+                    )
+                    self._last_heartbeat = now
+
                 # Check if OpenCode is healthy before scheduling work
                 if not self._opencode_healthy:
                     # In degraded mode - check health with exponential backoff
