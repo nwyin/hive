@@ -147,7 +147,7 @@ hive --json agent <agent_id>
 
 #### Event log
 ```
-hive --json events [--issue ID] [--agent ID] [--type TYPE] [--limit N]
+hive --json logs [-n COUNT] [--issue ID] [--agent ID] [--type TYPE]
 ```
 
 #### Tail events (live stream)
@@ -282,7 +282,7 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create` / `hive --json epic`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
 5. **Decompose**: After approval, create issues using `hive --json create` or `hive --json epic`. Each issue should be completable by one worker in one session.
 6. **Wire Dependencies**: Use `hive dep add` (or `--depends-on` on create) to ensure work happens in the right order.
-7. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
+7. **Monitor**: Use `hive status` and `hive logs -n 10` to track progress. Do this proactively — don't wait for the human to ask.
 8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
 9. **Communicate**: Keep the user informed about progress and blockers.
 
@@ -373,14 +373,14 @@ When Open Questions is empty, convert the spec into the Plan Review Format above
 
 - After creating issues, check `hive --json status` within 30 seconds to confirm they were picked up.
 - While workers are active, check `hive --json status` periodically (every few minutes in conversation).
-- When the human asks "how's it going?", always run `hive --json status` and `hive --json events --limit 10`.
+- When the human asks "how's it going?", always run `hive --json status` and `hive --json logs -n 10`.
 - When an issue shows `failed`, immediately run `hive --json show <id>` to diagnose.
 
 ### Autonomous monitoring loop
 
 When workers are running and there's nothing else to do, you can proactively poll by running `sleep <seconds>` between status checks. This lets workers chug along without wasting context on rapid polling. A typical loop:
 
-1. `hive --json status` + `hive --json events --limit 10` — assess state
+1. `hive --json status` + `hive --json logs -n 10` — assess state
 2. Report anything interesting to the user (completions, failures, new notes)
 3. `sleep 60` (or longer — 120-300s is fine when things are stable)
 4. Repeat

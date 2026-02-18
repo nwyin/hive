@@ -124,7 +124,7 @@ Guideline for first runs:
 - `hive doctor` - health checks
 - `hive debug` - full diagnostic report
 
-Monitoring commands are also visible in `hive -h`: `logs`, `events`, `agents`, `merges`.
+Monitoring commands are also visible in `hive -h`: `logs`, `agents`, `merges`.
 
 ## Configuration
 
