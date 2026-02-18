@@ -940,7 +940,8 @@ def test_setup_creates_config(tmp_path, capsys):
 
     config = (tmp_path / ".hive.toml").read_text()
     assert 'backend = "claude"' in config
-    assert "merge_queue_enabled = false" in config
+    assert 'merge_policy = "manual"' in config
+    assert "merge_queue_enabled" not in config
     assert tmp_path.name in config
 
 

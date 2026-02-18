@@ -1833,7 +1833,7 @@ class Orchestrator:
 
         while self.running:
             try:
-                if Config.MERGE_QUEUE_ENABLED:
+                if Config.MERGE_POLICY != "manual":
                     await self.merge_processor.process_queue_once()
 
                 # Health check every 6 iterations (~60s at 10s poll interval)

@@ -4,7 +4,7 @@ Resolution order (later wins):
   1. Built-in defaults
   2. ~/.hive/config.toml   (global user prefs)
   3. .hive.toml             (per-project overrides)
-  4. Environment variables   (HIVE_* — backwards compat)
+  4. Environment variables   (HIVE_*)
 """
 
 import os
@@ -37,7 +37,6 @@ _FIELDS: dict[str, tuple[str, type, object]] = {
     "max_agent_switches": ("HIVE_MAX_AGENT_SWITCHES", int, 2),
     "merge_poll_interval": ("HIVE_MERGE_POLL_INTERVAL", int, 10),
     "test_command": ("HIVE_TEST_COMMAND", str, None),
-    "merge_queue_enabled": ("HIVE_MERGE_QUEUE_ENABLED", bool, True),
     "merge_policy": ("HIVE_MERGE_POLICY", str, "mechanical_then_refinery"),
     "default_model": ("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
     "worker_model": ("HIVE_WORKER_MODEL", str, "claude-sonnet-4-5-20250929"),

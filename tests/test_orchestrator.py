@@ -664,7 +664,7 @@ async def test_merge_processor_loop_health_check(temp_db, tmp_path):
     orch.merge_processor.health_check = AsyncMock()
 
     with patch("hive.orchestrator.Config") as mock_config:
-        mock_config.MERGE_QUEUE_ENABLED = True
+        mock_config.MERGE_POLICY = "mechanical_then_refinery"
         mock_config.MERGE_POLL_INTERVAL = 0.01  # Very fast for testing
 
         # Run the loop for a short time to trigger multiple iterations
@@ -2106,3 +2106,66 @@ async def test_completion_gate_blocks_issue_following_must_read(temp_db, tmp_pat
     assert decision.transition == CompletionTransition.FAIL_ASSESSMENT
     assert decision.result is not None
     assert "required note(s) not acknowledged" in decision.result.reason
+
+
+# ── Merge policy gate tests ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_merge_processor_loop_skips_queue_when_manual_policy(temp_db, tmp_path):
+    """merge_processor_loop must not call process_queue_once when policy is 'manual'."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_oc,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+    orch.merge_processor = AsyncMock()
+    orch.merge_processor.process_queue_once = AsyncMock()
+    orch.merge_processor.health_check = AsyncMock()
+
+    with patch("hive.orchestrator.Config") as mock_cfg:
+        mock_cfg.MERGE_POLICY = "manual"
+        mock_cfg.MERGE_POLL_INTERVAL = 0.01
+
+        orch.running = True
+        loop_task = asyncio.create_task(orch.merge_processor_loop())
+        await asyncio.sleep(0.05)
+        orch.running = False
+        try:
+            await asyncio.wait_for(loop_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            loop_task.cancel()
+
+    orch.merge_processor.process_queue_once.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_merge_processor_loop_runs_queue_when_non_manual_policy(temp_db, tmp_path):
+    """merge_processor_loop calls process_queue_once for non-manual policies."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_oc,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+    orch.merge_processor = AsyncMock()
+    orch.merge_processor.process_queue_once = AsyncMock()
+    orch.merge_processor.health_check = AsyncMock()
+
+    with patch("hive.orchestrator.Config") as mock_cfg:
+        mock_cfg.MERGE_POLICY = "mechanical_then_refinery"
+        mock_cfg.MERGE_POLL_INTERVAL = 0.01
+
+        orch.running = True
+        loop_task = asyncio.create_task(orch.merge_processor_loop())
+        await asyncio.sleep(0.05)
+        orch.running = False
+        try:
+            await asyncio.wait_for(loop_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            loop_task.cancel()
+
+    assert orch.merge_processor.process_queue_once.call_count >= 1
