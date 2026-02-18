@@ -143,7 +143,7 @@ class CodexAppServerBackend(HiveBackend):
             "cwd": directory,
             "ephemeral": True,
             "approvalPolicy": approval_policy,
-            "sandbox": sandbox_mode,
+            "sandbox": self._sandbox_for_thread_start(sandbox_mode),
             "personality": personality,
         }
 
@@ -193,7 +193,7 @@ class CodexAppServerBackend(HiveBackend):
 
         approval_policy = getattr(Config, "CODEX_APPROVAL_POLICY", state.approval_policy or "never")
         personality = getattr(Config, "CODEX_PERSONALITY", "pragmatic")
-        sandbox_mode = self._normalize_sandbox_mode(getattr(Config, "CODEX_SANDBOX", state.sandbox_mode or "workspaceWrite"))
+        sandbox_mode = self._normalize_sandbox_mode(getattr(Config, "CODEX_SANDBOX", state.sandbox_mode or "workspace-write"))
         turn_cwd = directory or state.directory
 
         params: Dict[str, Any] = {
@@ -644,34 +644,65 @@ class CodexAppServerBackend(HiveBackend):
             state.heartbeat_task = None
 
     def _normalize_sandbox_mode(self, value: Optional[str]) -> str:
-        if value in {"readOnly", "workspaceWrite", "dangerFullAccess"}:
-            return value
-
-        normalized = str(value or "").strip().replace("-", "").replace("_", "").lower()
-        aliases = {
-            "readonly": "readOnly",
-            "workspacewrite": "workspaceWrite",
-            "dangerfullaccess": "dangerFullAccess",
-            "fullaccess": "dangerFullAccess",
+        # Internal canonical modes. We accept both wire forms because Codex
+        # currently uses kebab-case for thread/start.sandbox and camelCase for
+        # turn/start.sandboxPolicy.type.
+        mapping = {
+            "read": "read",
+            "read-only": "read",
+            "readonly": "read",
+            "readOnly": "read",
+            "workspace": "workspace",
+            "workspace-write": "workspace",
+            "workspacewrite": "workspace",
+            "workspaceWrite": "workspace",
+            "danger": "danger",
+            "danger-full-access": "danger",
+            "dangerfullaccess": "danger",
+            "dangerFullAccess": "danger",
         }
-        mapped = aliases.get(normalized)
+        normalized = str(value or "").strip()
+        mapped = mapping.get(normalized)
         if mapped:
             return mapped
+        raise ValueError(
+            f"Invalid CODEX_SANDBOX={value!r}. Expected one of: "
+            "read-only/workspace-write/danger-full-access "
+            "or readOnly/workspaceWrite/dangerFullAccess."
+        )
 
-        if value:
-            logger.warning(f"Unknown CODEX_SANDBOX value {value!r}; defaulting to workspaceWrite")
-        return "workspaceWrite"
+    def _sandbox_for_thread_start(self, sandbox_mode: str) -> str:
+        mapping = {
+            "read": "read-only",
+            "workspace": "workspace-write",
+            "danger": "danger-full-access",
+        }
+        try:
+            return mapping[sandbox_mode]
+        except KeyError as e:
+            raise ValueError(f"Invalid sandbox mode {sandbox_mode!r}") from e
+
+    def _sandbox_policy_type_for_turn_start(self, sandbox_mode: str) -> str:
+        mapping = {
+            "read": "readOnly",
+            "workspace": "workspaceWrite",
+            "danger": "dangerFullAccess",
+        }
+        try:
+            return mapping[sandbox_mode]
+        except KeyError as e:
+            raise ValueError(f"Invalid sandbox mode {sandbox_mode!r}") from e
 
     def _build_turn_sandbox_policy(self, sandbox_mode: str, cwd: Optional[str]) -> Dict[str, Any]:
-        if sandbox_mode == "dangerFullAccess":
-            return {"type": "dangerFullAccess"}
-        if sandbox_mode == "workspaceWrite":
+        if sandbox_mode == "danger":
+            return {"type": self._sandbox_policy_type_for_turn_start(sandbox_mode)}
+        if sandbox_mode == "workspace":
             return {
-                "type": "workspaceWrite",
+                "type": self._sandbox_policy_type_for_turn_start(sandbox_mode),
                 "writableRoots": self._workspace_writable_roots(cwd),
                 "networkAccess": True,
             }
-        return {"type": "readOnly"}
+        return {"type": self._sandbox_policy_type_for_turn_start("read")}
 
     def _workspace_writable_roots(self, cwd: Optional[str]) -> List[str]:
         roots: List[str] = []

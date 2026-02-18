@@ -1597,7 +1597,16 @@ permission:
         )
 
         codex_cmd = os.environ.get("CODEX_CMD", "codex")
-        sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "danger-full-access")
+        sandbox_cfg = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "danger-full-access")
+        sandbox_map = {
+            "read-only": "read-only",
+            "workspace-write": "workspace-write",
+            "danger-full-access": "danger-full-access",
+        }
+        if sandbox_cfg not in sandbox_map:
+            self._error(f"Invalid Codex sandbox value: {sandbox_cfg!r}. Expected one of: read-only, workspace-write, danger-full-access.")
+            return
+        sandbox = sandbox_map[sandbox_cfg]
         approval = os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never")
         hive_state_dir = str(Path.home() / ".hive")
         cmd = [
