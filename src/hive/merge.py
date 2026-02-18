@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import CANONICAL_MERGE_POLICIES, Config, WORKER_PERMISSIONS, parse_merge_policy
+from .config import Config, WORKER_PERMISSIONS
 from .db import Database
 from .git import (
     GitWorktreeError,
@@ -45,7 +45,6 @@ class MergeProcessor:
         self._refinery_token_estimate: int = 0
         self._main_dirty_blocked: bool = False
         self._main_dirty_snapshot: Optional[str] = None
-        self._manual_blocked: bool = False
 
     async def shutdown(self):
         """Clean up the refinery session on shutdown."""
@@ -131,15 +130,15 @@ class MergeProcessor:
             self.refinery_session_id = None
             return False
 
-    async def _mechanical_preflight(self) -> bool:
-        """Check main worktree cleanliness before attempting any merge.
+    async def process_queue_once(self):
+        """Process the next item in the merge queue. One at a time, sequential."""
+        entries = self.db.get_queued_merges(project=self.project_name, limit=1)
+        if not entries:
+            return
 
-        Logs appropriate events and updates dirty-main pause/resume state.
-
-        Returns:
-            True if the main worktree is clean and merges may proceed.
-            False if dirty (queue should pause) or if the git status check itself fails.
-        """
+        # Merge operations run in the project root worktree. If that worktree is
+        # dirty, attempting ff-merge can fail in confusing ways. Pause the queue
+        # until the worktree is clean instead of burning merge attempts.
         try:
             main_dirty, dirty_output = await get_worktree_dirty_status_async(self.project_path)
         except GitWorktreeError as e:
@@ -147,7 +146,7 @@ class MergeProcessor:
                 "merge_preflight_error",
                 {"path": self.project_path, "error": str(e)},
             )
-            return False
+            return
 
         if main_dirty:
             snapshot = "\n".join(dirty_output.splitlines()[:20])
@@ -158,7 +157,7 @@ class MergeProcessor:
                 )
             self._main_dirty_blocked = True
             self._main_dirty_snapshot = snapshot
-            return False
+            return
 
         if self._main_dirty_blocked:
             self.db.log_system_event(
@@ -167,63 +166,6 @@ class MergeProcessor:
             )
             self._main_dirty_blocked = False
             self._main_dirty_snapshot = None
-
-        return True
-
-    async def _mechanical_ff_merge(self, entry: Dict[str, Any]) -> tuple:
-        """Perform the fast-forward merge of a branch to main.
-
-        This is the final step in the mechanical merge path, run after rebase
-        and tests have both succeeded.
-
-        Args:
-            entry: Merge queue entry dict with at least 'branch_name', 'issue_id', 'agent_id'.
-
-        Returns:
-            (success: bool, error_str: str | None)
-        """
-        branch_name = entry["branch_name"]
-        issue_id = entry["issue_id"]
-        agent_id = entry.get("agent_id")
-
-        try:
-            await merge_to_main_async(self.project_path, branch_name)
-        except GitWorktreeError as e:
-            self.db.log_event(
-                issue_id,
-                agent_id,
-                "merge_failed",
-                {"error": str(e), "branch": branch_name},
-            )
-            return (False, str(e))
-
-        self.db.log_event(issue_id, agent_id, "merged", {"branch": branch_name})
-        return (True, None)
-
-    async def process_queue_once(self):
-        """Process the next item in the merge queue. One at a time, sequential."""
-        merge_policy = self._resolve_merge_policy()
-        assert merge_policy in CANONICAL_MERGE_POLICIES
-        if merge_policy == "manual":
-            if not self._manual_blocked:
-                self.db.log_system_event(
-                    "merge_paused_manual",
-                    {"project": self.project_name, "path": self.project_path},
-                )
-                self._manual_blocked = True
-            return
-        if self._manual_blocked:
-            self._manual_blocked = False
-
-        entries = self.db.get_queued_merges(project=self.project_name, limit=1)
-        if not entries:
-            return
-
-        # Merge operations run in the project root worktree. If that worktree is
-        # dirty, attempting ff-merge can fail in confusing ways. Pause the queue
-        # until the worktree is clean instead of burning merge attempts.
-        if not await self._mechanical_preflight():
-            return
 
         entry = entries[0]
         queue_id = entry["id"]
@@ -234,26 +176,18 @@ class MergeProcessor:
             entry["issue_id"],
             entry.get("agent_id"),
             "merge_started",
-            {"queue_id": queue_id, "branch": entry["branch_name"], "merge_policy": merge_policy},
+            {"queue_id": queue_id, "branch": entry["branch_name"]},
         )
 
         try:
-            if merge_policy == "refinery_first":
-                # Policy-driven route: skip mechanical checks and dispatch directly.
-                await self._send_to_refinery(
-                    entry,
-                    test_output=None,
-                    dispatch_reason="policy_refinery_first",
-                    merge_policy=merge_policy,
-                )
-            else:
-                # mechanical_then_refinery
-                success, test_output = await self._try_mechanical_merge(entry)
+            # Tier 1: Mechanical merge
+            success, test_output = await self._try_mechanical_merge(entry)
 
-                if success:
-                    await self._finalize_issue(entry)
-                else:
-                    await self._send_to_refinery(entry, test_output, merge_policy=merge_policy)
+            if success:
+                await self._finalize_issue(entry)
+            else:
+                # Tier 2: Send to Refinery LLM
+                await self._send_to_refinery(entry, test_output)
 
         except Exception as e:
             # Unexpected error — mark queue entry failed, leave issue as-is
@@ -264,15 +198,6 @@ class MergeProcessor:
                 "merge_error",
                 {"error": str(e), "queue_id": queue_id},
             )
-
-    def _resolve_merge_policy(self) -> str:
-        """Resolve and validate policy consumed by merge routing."""
-        raw_policy = getattr(Config, "MERGE_POLICY", "mechanical_then_refinery")
-        if not isinstance(raw_policy, str):
-            return "mechanical_then_refinery"
-        resolved = parse_merge_policy(raw_policy)
-        assert resolved in CANONICAL_MERGE_POLICIES
-        return resolved
 
     async def _try_mechanical_merge(self, entry: Dict[str, Any]) -> tuple:
         """
@@ -384,15 +309,21 @@ class MergeProcessor:
         # If neither test command exists, skip tests
 
         # Step 3: Merge to main (ff-only, in executor to avoid blocking event loop)
-        return await self._mechanical_ff_merge(entry)
+        try:
+            await merge_to_main_async(self.project_path, branch_name)
+        except GitWorktreeError as e:
+            self.db.log_event(
+                issue_id,
+                agent_id,
+                "merge_failed",
+                {"error": str(e), "branch": branch_name},
+            )
+            return (False, str(e))
 
-    async def _send_to_refinery(
-        self,
-        entry: Dict[str, Any],
-        test_output: Optional[str] = None,
-        dispatch_reason: Optional[str] = None,
-        merge_policy: Optional[str] = None,
-    ):
+        self.db.log_event(issue_id, agent_id, "merged", {"branch": branch_name})
+        return (True, None)
+
+    async def _send_to_refinery(self, entry: Dict[str, Any], test_output: Optional[str] = None):
         """
         Hand a merge to the Refinery LLM for processing.
 
@@ -403,12 +334,7 @@ class MergeProcessor:
         queue_id = entry["id"]
         issue_id = entry["issue_id"]
         agent_id = entry.get("agent_id")
-        reason = dispatch_reason or ("test_failure" if test_output is not None else "rebase_conflict")
-        rebase_ok = reason in ("test_failure", "policy_refinery_first")
-        if merge_policy is None:
-            merge_policy = self._resolve_merge_policy()
-        if reason == "policy_refinery_first":
-            assert test_output is None
+        rebase_ok = test_output is not None  # If we have test_output, rebase succeeded
 
         self.db.log_event(
             issue_id,
@@ -416,8 +342,7 @@ class MergeProcessor:
             "refinery_dispatched",
             {
                 "queue_id": queue_id,
-                "reason": reason,
-                "merge_policy": merge_policy,
+                "reason": "test_failure" if rebase_ok else "rebase_conflict",
             },
         )
 
@@ -435,12 +360,6 @@ class MergeProcessor:
             # Build the refinery prompt
             # Prefer worker test_command over global Config.TEST_COMMAND
             test_cmd = entry.get("test_command") or Config.TEST_COMMAND
-            policy_test_context = test_output
-            if reason == "policy_refinery_first":
-                policy_test_context = (
-                    "No mechanical pre-checks were run because merge policy is 'refinery_first'. "
-                    "Perform full validation before deciding merge/reject/escalate."
-                )
             prompt = build_refinery_prompt(
                 issue_title=entry.get("issue_title", "Unknown"),
                 issue_id=issue_id,
@@ -448,7 +367,7 @@ class MergeProcessor:
                 worktree_path=worktree_path,
                 agent_name=entry.get("agent_name"),
                 rebase_succeeded=rebase_ok,
-                test_output=policy_test_context,
+                test_output=test_output,
                 test_command=test_cmd,
             )
 
@@ -558,18 +477,11 @@ class MergeProcessor:
 
         except Exception as e:
             self.db.update_merge_queue_status(queue_id, "failed")
-            self.db.update_issue_status(issue_id, "escalated")
             self.db.log_event(
                 issue_id,
                 agent_id,
                 "refinery_error",
                 {"error": str(e)},
-            )
-            self.db.log_event(
-                issue_id,
-                agent_id,
-                "merge_escalated",
-                {"summary": f"Refinery error: {str(e)}"},
             )
             # Force reset refinery session so next merge gets a fresh session
             await self._force_reset_refinery_session(f"Exception in _send_to_refinery: {str(e)}")

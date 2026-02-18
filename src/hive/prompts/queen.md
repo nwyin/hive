@@ -88,39 +88,22 @@ hive --json dep add <issue_id> <depends_on_id> [--type blocks|related]
 hive --json dep remove <issue_id> <depends_on_id>
 ```
 
-### Notes & Mail Commands
+### Notes (Inter-Worker Knowledge Sharing)
 
-Workers write discoveries to `.hive-notes.jsonl` in their worktrees. The orchestrator harvests these on completion. You can also send targeted notes to specific workers or issues.
+Workers write discoveries, gotchas, and patterns to `.hive-notes.jsonl` in their worktrees. The orchestrator harvests these on completion and injects relevant notes into future workers' prompts. You can also add and view notes via CLI.
 
-#### Send targeted notes
+#### Add a note
 ```
-hive --json note send "message text" --to-agent <agent_id> [--to-issue <issue_id>] [--must-read]
-hive --json note send "message text" --to-issue <issue_id> [--must-read]
-```
-
-#### Add a project-wide note (legacy)
-```
-hive --json note "content" [--issue ISSUE_ID]
+hive --json note "content" [--issue ISSUE_ID] [--category discovery|gotcha|dependency|pattern]
 ```
 
-#### Check delivery status and manage inbox
-```
-hive --json mail inbox --issue <issue_id> [--agent <agent_id>] [--unread]
-hive --json mail read <delivery_id>
-hive --json mail ack <delivery_id>
-```
-
-**Targeting:**
-- `--to-agent` delivers directly to a specific agent regardless of their current issue
-- `--to-issue` follows the issue — when the issue is reassigned, the note reaches the new assignee
-- `--must-read` creates a hard gate: the worker CANNOT complete until they acknowledge via `hive mail ack`
-- At least one of `--to-agent` or `--to-issue` is required for `note send`
+**Notes are visible:**
+- Per-issue: use `hive --json show <issue_id>` to see notes associated with that issue
+- Bulk queries: use datasette (install and run: `datasette ~/.hive/hive.db`) to explore the notes table
 
 **When to use notes:**
-- Before creating a batch of related issues, add a note with project-wide context that all workers should know
-- Use `--must-read` when a worker MUST see an update before completing (e.g., schema change, API contract change)
-- Use `--to-issue` when the note should follow the issue across reassignment
-- After reviewing a failed worker, send a note about what went wrong so retries benefit
+- Before creating a batch of related issues, add a note with project-wide context that all workers should know (e.g., "this project uses ruff with line-length=144")
+- After reviewing a failed worker, add a note about what went wrong so retries benefit
 - Notes are especially valuable for epic steps — each step's notes are injected into subsequent steps
 
 ### Monitoring
@@ -147,7 +130,7 @@ hive --json agent <agent_id>
 
 #### Event log
 ```
-hive --json logs [-n COUNT] [--issue ID] [--agent ID] [--type TYPE]
+hive --json events [--issue ID] [--agent ID] [--type TYPE] [--limit N]
 ```
 
 #### Tail events (live stream)
@@ -282,7 +265,7 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create` / `hive --json epic`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
 5. **Decompose**: After approval, create issues using `hive --json create` or `hive --json epic`. Each issue should be completable by one worker in one session.
 6. **Wire Dependencies**: Use `hive dep add` (or `--depends-on` on create) to ensure work happens in the right order.
-7. **Monitor**: Use `hive status` and `hive logs -n 10` to track progress. Do this proactively — don't wait for the human to ask.
+7. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
 8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
 9. **Communicate**: Keep the user informed about progress and blockers.
 
@@ -373,14 +356,14 @@ When Open Questions is empty, convert the spec into the Plan Review Format above
 
 - After creating issues, check `hive --json status` within 30 seconds to confirm they were picked up.
 - While workers are active, check `hive --json status` periodically (every few minutes in conversation).
-- When the human asks "how's it going?", always run `hive --json status` and `hive --json logs -n 10`.
+- When the human asks "how's it going?", always run `hive --json status` and `hive --json events --limit 10`.
 - When an issue shows `failed`, immediately run `hive --json show <id>` to diagnose.
 
 ### Autonomous monitoring loop
 
 When workers are running and there's nothing else to do, you can proactively poll by running `sleep <seconds>` between status checks. This lets workers chug along without wasting context on rapid polling. A typical loop:
 
-1. `hive --json status` + `hive --json logs -n 10` — assess state
+1. `hive --json status` + `hive --json events --limit 10` — assess state
 2. Report anything interesting to the user (completions, failures, new notes)
 3. `sleep 60` (or longer — 120-300s is fine when things are stable)
 4. Repeat

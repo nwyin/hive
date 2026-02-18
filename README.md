@@ -17,7 +17,7 @@ uv tool update-shell   # ensures uv's tool bin dir is on PATH
 Notes:
 
 - Use `uv tool install -e ".[dev]"` if you want the dev extras too.
-- If you previously ran `uv tool install .`, you may need `--force --reinstall` to refresh the installed snapshot: `uv tool install --force --reinstall .` (plain `--force` reuses the cached wheel and won't pick up source changes).
+- If you previously ran `uv tool install .`, you may need `--force` to refresh the installed snapshot: `uv tool install --force .`
 
 ### Install (project venv)
 
@@ -124,7 +124,7 @@ Guideline for first runs:
 - `hive doctor` - health checks
 - `hive debug` - full diagnostic report
 
-Monitoring commands are also visible in `hive -h`: `logs`, `agents`, `merges`.
+Monitoring commands are also visible in `hive -h`: `logs`, `events`, `agents`, `merges`.
 
 ## Configuration
 

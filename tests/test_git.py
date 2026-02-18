@@ -268,7 +268,7 @@ def test_merge_to_main_not_ff(git_repo_with_worktree):
         capture_output=True,
     )
 
-    with pytest.raises(GitWorktreeError, match="(Failed to merge|Cannot fast-forward)"):
+    with pytest.raises(GitWorktreeError, match="Failed to merge"):
         merge_to_main(str(git_repo), branch_name)
 
     remove_worktree(worktree_path)

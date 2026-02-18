@@ -39,7 +39,6 @@ import os
 import shlex
 import signal
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import Config
@@ -136,14 +135,14 @@ class CodexAppServerBackend(HiveBackend):
         await self.server_ready.wait()
 
         approval_policy = getattr(Config, "CODEX_APPROVAL_POLICY", "never")
-        sandbox_mode = self._normalize_sandbox_mode(getattr(Config, "CODEX_SANDBOX", "workspace-write"))
+        sandbox_mode = getattr(Config, "CODEX_SANDBOX", "workspace-write")
         personality = getattr(Config, "CODEX_PERSONALITY", "pragmatic")
 
         params: Dict[str, Any] = {
             "cwd": directory,
             "ephemeral": True,
             "approvalPolicy": approval_policy,
-            "sandbox": self._sandbox_for_thread_start(sandbox_mode),
+            "sandbox": sandbox_mode,
             "personality": personality,
         }
 
@@ -193,19 +192,15 @@ class CodexAppServerBackend(HiveBackend):
 
         approval_policy = getattr(Config, "CODEX_APPROVAL_POLICY", state.approval_policy or "never")
         personality = getattr(Config, "CODEX_PERSONALITY", "pragmatic")
-        sandbox_mode = self._normalize_sandbox_mode(getattr(Config, "CODEX_SANDBOX", state.sandbox_mode or "workspace-write"))
-        turn_cwd = directory or state.directory
 
         params: Dict[str, Any] = {
             "threadId": session_id,
             "input": [{"type": "text", "text": text}],
             "approvalPolicy": approval_policy,
-            "cwd": turn_cwd,
+            "cwd": directory or state.directory,
             "personality": personality,
             "model": model_id,
-            "sandboxPolicy": self._build_turn_sandbox_policy(sandbox_mode, turn_cwd),
         }
-        state.sandbox_mode = sandbox_mode
 
         # Inject developer instructions once per thread so the turn runs with
         # Hive's system prompt (agent identity + project rules).
@@ -642,102 +637,3 @@ class CodexAppServerBackend(HiveBackend):
         if state.heartbeat_task:
             state.heartbeat_task.cancel()
             state.heartbeat_task = None
-
-    def _normalize_sandbox_mode(self, value: Optional[str]) -> str:
-        # Internal canonical modes. We accept both wire forms because Codex
-        # currently uses kebab-case for thread/start.sandbox and camelCase for
-        # turn/start.sandboxPolicy.type.
-        mapping = {
-            "read": "read",
-            "read-only": "read",
-            "readonly": "read",
-            "readOnly": "read",
-            "workspace": "workspace",
-            "workspace-write": "workspace",
-            "workspacewrite": "workspace",
-            "workspaceWrite": "workspace",
-            "danger": "danger",
-            "danger-full-access": "danger",
-            "dangerfullaccess": "danger",
-            "dangerFullAccess": "danger",
-        }
-        normalized = str(value or "").strip()
-        mapped = mapping.get(normalized)
-        if mapped:
-            return mapped
-        raise ValueError(
-            f"Invalid CODEX_SANDBOX={value!r}. Expected one of: "
-            "read-only/workspace-write/danger-full-access "
-            "or readOnly/workspaceWrite/dangerFullAccess."
-        )
-
-    def _sandbox_for_thread_start(self, sandbox_mode: str) -> str:
-        mapping = {
-            "read": "read-only",
-            "workspace": "workspace-write",
-            "danger": "danger-full-access",
-        }
-        try:
-            return mapping[sandbox_mode]
-        except KeyError as e:
-            raise ValueError(f"Invalid sandbox mode {sandbox_mode!r}") from e
-
-    def _sandbox_policy_type_for_turn_start(self, sandbox_mode: str) -> str:
-        mapping = {
-            "read": "readOnly",
-            "workspace": "workspaceWrite",
-            "danger": "dangerFullAccess",
-        }
-        try:
-            return mapping[sandbox_mode]
-        except KeyError as e:
-            raise ValueError(f"Invalid sandbox mode {sandbox_mode!r}") from e
-
-    def _build_turn_sandbox_policy(self, sandbox_mode: str, cwd: Optional[str]) -> Dict[str, Any]:
-        if sandbox_mode == "danger":
-            return {"type": self._sandbox_policy_type_for_turn_start(sandbox_mode)}
-        if sandbox_mode == "workspace":
-            return {
-                "type": self._sandbox_policy_type_for_turn_start(sandbox_mode),
-                "writableRoots": self._workspace_writable_roots(cwd),
-                "networkAccess": True,
-            }
-        return {"type": self._sandbox_policy_type_for_turn_start("read")}
-
-    def _workspace_writable_roots(self, cwd: Optional[str]) -> List[str]:
-        roots: List[str] = []
-
-        def _add(value: Any):
-            if value is None:
-                return
-            try:
-                resolved = str(Path(value).expanduser().resolve())
-            except Exception:
-                return
-            if resolved not in roots:
-                roots.append(resolved)
-
-        _add(cwd)
-        _add(self._infer_project_root(cwd))
-        _add(getattr(Config, "HIVE_DIR", None))
-        return roots
-
-    def _infer_project_root(self, cwd: Optional[str]) -> Optional[Path]:
-        if not cwd:
-            return None
-
-        try:
-            path = Path(cwd).expanduser().resolve()
-        except Exception:
-            return None
-
-        # Hive worker worktrees are created at <project>/.worktrees/<worker>.
-        parts = path.parts
-        if ".worktrees" in parts:
-            idx = parts.index(".worktrees")
-            if idx > 0:
-                return Path(*parts[:idx])
-
-        if (path / ".git").exists():
-            return path
-        return None

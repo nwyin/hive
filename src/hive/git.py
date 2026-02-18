@@ -39,47 +39,41 @@ def create_worktree(project_path: str, agent_name: str, base_branch: str = "main
     worktree_dir = project_path / ".worktrees" / agent_name
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
 
+    # Branch name: agent/<agent_name>
     branch_name = f"agent/{agent_name}"
 
-    # Two-step worktree creation: detached first, then create branch.
-    # Using --detach avoids writing to .git/refs/heads/agent/ during worktree
-    # setup, which fails with EPERM on macOS when the daemon process inherits
-    # com.apple.provenance (e.g. when started from Claude Code's sandbox).
-    # The branch is created inside the worktree afterward, which works
-    # because git checkout -b operates locally without the ref-lock contention.
+    # Retry with backoff — concurrent worktree creation can transiently fail
+    # with "invalid reference: main" when git ref resolution hits contention.
+    # TODO: Investigate a proper fix for git ref contention instead of this
+    # sleep-and-retry hack. It's unclear whether longer sleeps actually help
+    # or if the root cause is something else entirely (e.g. packed-refs
+    # rewriting, loose ref gc, or worktree metadata races).
     max_retries = 4
     for attempt in range(max_retries):
         try:
             subprocess.run(
-                ["git", "worktree", "add", "--detach", str(worktree_dir), base_branch],
+                [
+                    "git",
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch_name,
+                    str(worktree_dir),
+                    base_branch,
+                ],
                 cwd=str(project_path),
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            break
+            return str(worktree_dir)
+
         except subprocess.CalledProcessError as e:
             is_transient = "invalid reference" in e.stderr or "index.lock" in e.stderr
             if is_transient and attempt < max_retries - 1:
                 time.sleep(1.0 * (attempt + 1))
                 continue
             raise GitWorktreeError(f"Failed to create worktree: {e.stderr}") from e
-
-    # Create the named branch inside the worktree (needed by merge path).
-    try:
-        subprocess.run(
-            ["git", "checkout", "-b", branch_name],
-            cwd=str(worktree_dir),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        # Clean up the detached worktree on branch creation failure
-        subprocess.run(["git", "worktree", "remove", "--force", str(worktree_dir)], capture_output=True, cwd=str(project_path))
-        raise GitWorktreeError(f"Failed to create branch in worktree: {e.stderr}") from e
-
-    return str(worktree_dir)
 
 
 def remove_worktree(worktree_path: str) -> bool:
@@ -204,9 +198,8 @@ def merge_to_main(project_path: str, branch_name: str, main_branch: str = "main"
     """
     Fast-forward merge a branch into main from the main project repo.
 
-    Uses git update-ref instead of checkout+merge to avoid creating
-    .git/index.lock, which fails with EPERM on macOS when the daemon
-    process inherits com.apple.provenance from Claude Code's sandbox.
+    This runs in the MAIN repo (not a worktree). The branch should already
+    be rebased onto main so ff-only succeeds.
 
     Args:
         project_path: Path to the main git repository
@@ -219,31 +212,18 @@ def merge_to_main(project_path: str, branch_name: str, main_branch: str = "main"
     project_path = Path(project_path).resolve()
 
     try:
-        # Verify fast-forward is possible: main must be an ancestor of branch
+        # Ensure we're on main
         subprocess.run(
-            ["git", "merge-base", "--is-ancestor", main_branch, branch_name],
-            cwd=str(project_path),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError:
-        raise GitWorktreeError(f"Cannot fast-forward {main_branch} to {branch_name}: {main_branch} is not an ancestor of {branch_name}")
-
-    try:
-        # Update the ref directly (no checkout, no index.lock needed)
-        subprocess.run(
-            ["git", "update-ref", f"refs/heads/{main_branch}", branch_name],
+            ["git", "checkout", main_branch],
             cwd=str(project_path),
             check=True,
             capture_output=True,
             text=True,
         )
 
-        # Sync working tree to match the updated ref. update-ref only moves
-        # the branch pointer; without this the working tree is stale.
+        # Fast-forward only merge
         subprocess.run(
-            ["git", "reset", "--hard", main_branch],
+            ["git", "merge", "--ff-only", branch_name],
             cwd=str(project_path),
             check=True,
             capture_output=True,

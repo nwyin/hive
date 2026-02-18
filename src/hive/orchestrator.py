@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,7 +25,6 @@ from .prompts import (
     read_result_file,
     remove_notes_file,
     remove_result_file,
-    render_inbox_section,
 )
 from .backends import SSEClient
 
@@ -149,14 +147,6 @@ class Orchestrator:
 
         # Cost guardrails
         self._budget_paused = False
-
-        # Heartbeat tracking for debug logging
-        self._last_heartbeat: float = 0
-
-        # Guard against TOCTOU race in main_loop: tracks issue_ids currently
-        # being spawned. Prevents duplicate spawn_worker calls when
-        # create_worktree_async yields control back to the event loop.
-        self._spawning_issues: set[str] = set()
 
     def _setup_sse_handlers(self):
         """Set up SSE event handlers."""
@@ -494,8 +484,6 @@ class Orchestrator:
         self.active_agents.clear()
         self._session_to_agent.clear()
         self._issue_to_agent.clear()
-        self.session_status_events.clear()
-        self._session_last_activity.clear()
         logger.info("All sessions shut down")
 
     def _log_token_usage(self, agent: AgentIdentity, messages: List[Dict[str, Any]]):
@@ -626,15 +614,6 @@ class Orchestrator:
         """Main orchestration loop."""
         while self.running:
             try:
-                # Periodic heartbeat so DEBUG logs prove the daemon is alive when idle
-                now = time.monotonic()
-                if now - self._last_heartbeat >= 60:
-                    logger.debug(
-                        "Main loop heartbeat: %d active agents",
-                        len(self.active_agents),
-                    )
-                    self._last_heartbeat = now
-
                 # Check if OpenCode is healthy before scheduling work
                 if not self._opencode_healthy:
                     # In degraded mode - check health with exponential backoff
@@ -677,9 +656,6 @@ class Orchestrator:
 
                     if ready:
                         issue = ready[0]
-                        if issue["id"] in self._spawning_issues:
-                            await asyncio.sleep(1)  # Back off briefly while spawn completes
-                            continue
                         try:
                             # Try to claim and spawn worker
                             await self.spawn_worker(issue)
@@ -715,15 +691,6 @@ class Orchestrator:
             issue: Issue dict from database
         """
         issue_id = issue["id"]
-        self._spawning_issues.add(issue_id)
-        try:
-            await self._spawn_worker_inner(issue)
-        finally:
-            self._spawning_issues.discard(issue_id)
-
-    async def _spawn_worker_inner(self, issue: Dict[str, str]):
-        """Inner spawn logic, wrapped by spawn_worker's TOCTOU guard."""
-        issue_id = issue["id"]
         agent_name = generate_id("worker")
         model = issue.get("model") or Config.WORKER_MODEL or Config.DEFAULT_MODEL
 
@@ -743,7 +710,7 @@ class Orchestrator:
                 issue_id,
                 agent_id,
                 "worktree_error",
-                {"error": str(e) or type(e).__name__},
+                {"error": str(e)},
             )
             self._delete_agent_row(agent_id)
             return
@@ -805,12 +772,11 @@ class Orchestrator:
             )
 
         except Exception as e:
-            error_desc = str(e) or type(e).__name__
             self.db.log_event(
                 issue_id,
                 agent_id,
                 "spawn_error",
-                {"error": error_desc},
+                {"error": str(e)},
             )
             # Clean up the OpenCode session if it was created (best-effort —
             # don't let cleanup failure prevent DB/worktree cleanup below)
@@ -854,43 +820,6 @@ class Orchestrator:
                 notes.append(note)
 
         return notes if notes else None
-
-    def _prepare_inbox_for_worker(self, agent_id: str, issue_id: str) -> Optional[str]:
-        """Materialize and render inbox deliveries for a worker turn.
-
-        1. Materialize issue-following targets for (issue_id, agent_id, project)
-        2. Get injectable deliveries
-        3. Mark queued deliveries as delivered
-        4. Render inbox section
-
-        Returns rendered inbox section string, or None if no deliveries.
-        """
-        # Step 1: materialize any issue-following targets for this agent/issue
-        self.db.materialize_issue_deliveries(issue_id, agent_id, self.project_name)
-
-        # Step 2: get injectable deliveries
-        deliveries, has_more = self.db.get_injectable_deliveries(agent_id, issue_id, self.project_name)
-
-        if not deliveries:
-            return None
-
-        # Step 3: mark queued deliveries as delivered
-        for d in deliveries:
-            if d.get("status") == "queued":
-                self.db.mark_delivery_delivered(d["delivery_id"])
-
-        # Step 4: render inbox section
-        inbox_section = render_inbox_section(deliveries, has_more)
-
-        # Step 5: log delivery event
-        self.db.log_event(
-            issue_id,
-            agent_id,
-            "note_delivered",
-            {"count": len(deliveries), "delivery_ids": [d["delivery_id"] for d in deliveries]},
-        )
-
-        return inbox_section
 
     def _is_issue_canceled(self, issue_id: str) -> bool:
         """Check if an issue has been canceled in the database."""
@@ -1110,12 +1039,6 @@ class Orchestrator:
         """Best-effort cleanup for session, in-memory registration, and worktree."""
         await self._best_effort_cleanup("cleanup_session", self._cleanup_session(agent))
 
-        # Clean up session tracking dicts (these are only cleaned in
-        # monitor_agent's finally block otherwise, so any teardown path
-        # that bypasses monitor — stalls, cancels, errors — would leak).
-        self.session_status_events.pop(agent.session_id, None)
-        self._session_last_activity.pop(agent.session_id, None)
-
         if agent.agent_id in self.active_agents:
             self._unregister_agent(agent.agent_id)
 
@@ -1158,9 +1081,6 @@ class Orchestrator:
         if worker_notes:
             self.db.log_event(issue_id, agent.agent_id, "notes_injected", {"count": len(worker_notes)})
 
-        # New: prepare delivery-based inbox
-        inbox_section = self._prepare_inbox_for_worker(agent.agent_id, issue_id)
-
         retry_context = build_retry_context(self.db, issue_id)
         branch_name = f"agent/{agent.name}"
         prompt = build_worker_prompt(
@@ -1170,7 +1090,6 @@ class Orchestrator:
             branch_name=branch_name,
             project=self.project_name,
             notes=worker_notes,
-            inbox_section=inbox_section,
             completed_steps=completed_steps,
             retry_context=retry_context,
         )
@@ -1235,26 +1154,6 @@ class Orchestrator:
                         summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
                     ),
                 )
-
-        # Check for required unacked notes — block completion if any exist
-        # Materialize first so we catch issue-following targets
-        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, self.project_name)
-        unacked = self.db.get_required_unacked_deliveries(agent.agent_id, agent.issue_id)
-        if unacked:
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "completion_blocked_unacked_notes",
-                {"count": len(unacked), "delivery_ids": [d["delivery_id"] for d in unacked]},
-            )
-            return CompletionDecision(
-                transition=CompletionTransition.FAIL_ASSESSMENT,
-                result=CompletionResult(
-                    success=False,
-                    reason=(f"Cannot complete: {len(unacked)} required note(s) not acknowledged. Acknowledge via: hive mail ack <delivery_id>"),
-                    summary=f"Blocked by {len(unacked)} unacknowledged required note(s)",
-                ),
-            )
 
         result = assess_completion(messages, file_result=file_result)
         if not result.success:
@@ -1626,8 +1525,6 @@ class Orchestrator:
                     "cycle_session_cleanup",
                     self.opencode.cleanup_session(new_session_id, directory=agent.worktree),
                 )
-                self.session_status_events.pop(new_session_id, None)
-                self._session_last_activity.pop(new_session_id, None)
             # Release agent
             if agent.agent_id in self.active_agents:
                 self._unregister_agent(agent.agent_id)
@@ -1864,7 +1761,7 @@ class Orchestrator:
 
         while self.running:
             try:
-                if Config.MERGE_POLICY != "manual":
+                if Config.MERGE_QUEUE_ENABLED:
                     await self.merge_processor.process_queue_once()
 
                 # Health check every 6 iterations (~60s at 10s poll interval)
