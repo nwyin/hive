@@ -1597,7 +1597,7 @@ permission:
         )
 
         codex_cmd = os.environ.get("CODEX_CMD", "codex")
-        sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "workspace-write")
+        sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "danger-full-access")
         approval = os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never")
         hive_state_dir = str(Path.home() / ".hive")
         cmd = [
