@@ -31,6 +31,20 @@ from .backends import SSEClient
 logger = logging.getLogger(__name__)
 
 
+def _exc_detail(e: BaseException) -> str:
+    """Return a non-empty, human-readable string describing an exception.
+
+    str(e) is empty for exceptions like asyncio.TimeoutError that carry no
+    message. In that case fall back to the exception type name, and if a
+    message is present prefix it with the type name for extra clarity.
+    """
+    msg = str(e)
+    name = type(e).__name__
+    if not msg:
+        return name
+    return f"{name}: {msg}"
+
+
 class CompletionTransition(str, Enum):
     """Transition outcomes for completion handling."""
 
@@ -727,7 +741,7 @@ class Orchestrator:
                 issue_id,
                 agent_id,
                 "worktree_error",
-                {"error": str(e) or type(e).__name__},
+                {"error": _exc_detail(e)},
             )
             self._delete_agent_row(agent_id)
             return
@@ -789,12 +803,11 @@ class Orchestrator:
             )
 
         except Exception as e:
-            error_desc = str(e) or type(e).__name__
             self.db.log_event(
                 issue_id,
                 agent_id,
                 "spawn_error",
-                {"error": error_desc},
+                {"error": _exc_detail(e)},
             )
             # Clean up the OpenCode session if it was created (best-effort —
             # don't let cleanup failure prevent DB/worktree cleanup below)

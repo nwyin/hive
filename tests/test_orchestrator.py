@@ -1885,3 +1885,99 @@ async def test_validation_no_commits_routes_to_failure(temp_db, tmp_path):
             detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
             assert "No commits relative to main despite claiming success" in detail["reason"]
             assert detail["original_summary"] == "Task completed successfully"
+
+
+# --- _exc_detail helper tests ---
+
+
+def test_exc_detail_with_message():
+    """Exception with a message returns 'TypeName: message'."""
+    from hive.orchestrator import _exc_detail
+
+    e = ValueError("something went wrong")
+    result = _exc_detail(e)
+    assert result == "ValueError: something went wrong"
+
+
+def test_exc_detail_empty_message():
+    """Exception with empty str() returns just the type name."""
+    from hive.orchestrator import _exc_detail
+
+    e = asyncio.TimeoutError()
+    result = _exc_detail(e)
+    assert result == "TimeoutError"
+    assert result != ""
+
+
+def test_exc_detail_subclass_no_message():
+    """Custom exception subclass with no message returns type name."""
+    from hive.orchestrator import _exc_detail
+
+    class MyError(Exception):
+        pass
+
+    e = MyError()
+    result = _exc_detail(e)
+    assert result == "MyError"
+    assert result != ""
+
+
+@pytest.mark.asyncio
+async def test_spawn_error_event_non_empty_on_timeout(temp_db, tmp_path):
+    """spawn_error event detail must not be empty for TimeoutError (regression test)."""
+    from unittest.mock import AsyncMock, patch
+    from hive.backends import OpenCodeClient
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Raise asyncio.TimeoutError (str(e) == "") during create_session
+    mock_opencode.create_session = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Timeout task", "Will timeout")
+    issue = temp_db.get_issue(issue_id)
+
+    with patch("hive.orchestrator.create_worktree_async", return_value=str(tmp_path)):
+        with patch("hive.orchestrator.remove_worktree_async"):
+            await orch.spawn_worker(issue)
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="spawn_error")
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    # Must not be empty string — this is the regression being fixed
+    assert detail["error"] != ""
+    assert detail["error"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_worktree_error_event_non_empty_on_timeout(temp_db, tmp_path):
+    """worktree_error event detail must not be empty for TimeoutError."""
+    from unittest.mock import AsyncMock, patch
+    from hive.backends import OpenCodeClient
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+
+    orch = Orchestrator(
+        db=temp_db,
+        opencode_client=mock_opencode,
+        project_path=str(tmp_path),
+        project_name="test",
+    )
+
+    issue_id = temp_db.create_issue("Worktree timeout task", "Will fail at worktree")
+    issue = temp_db.get_issue(issue_id)
+
+    # Raise TimeoutError during worktree creation
+    with patch("hive.orchestrator.create_worktree_async", side_effect=asyncio.TimeoutError()):
+        await orch.spawn_worker(issue)
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="worktree_error")
+    assert len(events) == 1
+    detail = json.loads(events[0]["detail"])
+    assert detail["error"] != ""
+    assert detail["error"] == "TimeoutError"
