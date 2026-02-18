@@ -354,8 +354,6 @@ def build_refinery_prompt(
     branch_name: str,
     worktree_path: str,
     agent_name: Optional[str] = None,
-    rebase_succeeded: bool = False,
-    test_output: Optional[str] = None,
     test_command: Optional[str] = None,
 ) -> str:
     """
@@ -367,22 +365,24 @@ def build_refinery_prompt(
         branch_name: Git branch name
         worktree_path: Path to the worktree
         agent_name: Name of the worker agent (optional)
-        rebase_succeeded: Whether mechanical rebase succeeded
-        test_output: Output from test run (if tests failed)
-        test_command: Test command that was run
+        test_command: Preferred test command from queue metadata
 
     Returns:
         Formatted refinery prompt string
     """
-    if not rebase_succeeded:
-        problem = "Mechanical rebase FAILED — conflicts detected. Please resolve them."
-    elif test_output:
-        problem = f"Rebase succeeded but TESTS FAILED. Please diagnose.\n\nTest command: {test_command}\nTest output:\n{test_output[:3000]}"
+    if test_command:
+        problem = (
+            "Perform full first-pass merge review and integration. "
+            f"Preferred test command: {test_command}. "
+            "You may run additional tests as needed."
+        )
     else:
-        problem = "Unknown merge issue. Investigate and resolve."
+        problem = "Perform full first-pass merge review and integration. Determine and run the appropriate tests."
 
     worker_line = f"- **Worker**: {agent_name}" if agent_name else ""
-    test_step = f"Run tests: `{test_command}`" if test_command else "Verify the code compiles/looks correct"
+    test_step = (
+        f"Run tests: `{test_command}` (plus any additional coverage needed)" if test_command else "Determine and run an appropriate test suite"
+    )
 
     template_str = _load_template("refinery")
     return Template(template_str).safe_substitute(

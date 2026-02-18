@@ -1,8 +1,8 @@
 """Merge queue processor for Hive orchestrator.
 
 Processes the done→finalized pipeline:
-  1. Mechanical fast-path: rebase, test, ff-merge (no LLM)
-  2. Refinery LLM: conflict resolution, test failure diagnosis
+  1. Refinery LLM: rebase, test, integration review
+  2. Orchestrator ff-merge + finalize on refinery approval
 """
 
 import asyncio
@@ -14,13 +14,10 @@ from .config import Config, WORKER_PERMISSIONS
 from .db import Database
 from .git import (
     GitWorktreeError,
-    abort_rebase_async,
     delete_branch_async,
     get_worktree_dirty_status_async,
     merge_to_main_async,
-    rebase_onto_main_async,
     remove_worktree_async,
-    run_command_in_worktree_async,
 )
 from .backends import OpenCodeClient, make_model_config
 from .prompts import build_refinery_prompt, read_notes_file, read_result_file, remove_notes_file, remove_result_file
@@ -136,9 +133,9 @@ class MergeProcessor:
         if not entries:
             return
 
-        # Merge operations run in the project root worktree. If that worktree is
-        # dirty, attempting ff-merge can fail in confusing ways. Pause the queue
-        # until the worktree is clean instead of burning merge attempts.
+        # The final ff-merge runs in the project root worktree. If that worktree
+        # is dirty, the merge will fail after a full refinery cycle. Pause the
+        # queue until clean instead of wasting a refinery call.
         try:
             main_dirty, dirty_output = await get_worktree_dirty_status_async(self.project_path)
         except GitWorktreeError as e:
@@ -180,14 +177,8 @@ class MergeProcessor:
         )
 
         try:
-            # Tier 1: Mechanical merge
-            success, test_output = await self._try_mechanical_merge(entry)
-
-            if success:
-                await self._finalize_issue(entry)
-            else:
-                # Tier 2: Send to Refinery LLM
-                await self._send_to_refinery(entry, test_output)
+            # Single path: refinery review/integration
+            await self._send_to_refinery(entry)
 
         except Exception as e:
             # Unexpected error — mark queue entry failed, leave issue as-is
@@ -199,150 +190,24 @@ class MergeProcessor:
                 {"error": str(e), "queue_id": queue_id},
             )
 
-    async def _try_mechanical_merge(self, entry: Dict[str, Any]) -> tuple:
-        """
-        Try mechanical rebase + test + merge. No LLM involved.
-
-        Returns:
-            (success: bool, test_output: str | None)
-        """
-        worktree = entry["worktree"]
-        branch_name = entry["branch_name"]
-        issue_id = entry["issue_id"]
-        agent_id = entry.get("agent_id")
-
-        # Step 1: Rebase onto main (in executor to avoid blocking event loop)
-        rebase_ok = await rebase_onto_main_async(worktree)
-        if not rebase_ok:
-            self.db.log_event(issue_id, agent_id, "rebase_conflict", {"branch": branch_name})
-            await abort_rebase_async(worktree)
-
-            # Create structured rejection note for rebase conflict
-            self.db.add_note(
-                issue_id=issue_id,
-                agent_id=agent_id,
-                category="rejection",
-                content=f"[Merge conflict] Rebase onto main failed.\nBranch: {branch_name}",
-                project=self.project_name,
-            )
-
-            return (False, None)
-
-        self.db.log_event(issue_id, agent_id, "rebase_success", {"branch": branch_name})
-
-        # Step 2: Run tests (if configured, in executor to avoid blocking event loop)
-        test_output = None
-        worker_test_cmd = entry.get("test_command")
-        global_test_cmd = Config.TEST_COMMAND
-
-        # Helper to create rejection note on test failure
-        def _log_test_rejection(cmd, output):
-            truncated_output = output[:500] if output else ""
-            self.db.add_note(
-                issue_id=issue_id,
-                agent_id=agent_id,
-                category="rejection",
-                content=f"[Test failure] Tests failed after rebase.\nCommand: {cmd}\n```\n{truncated_output}\n```",
-                project=self.project_name,
-            )
-
-        # If both worker and global test commands exist: run worker first (fast), then global (comprehensive)
-        if worker_test_cmd and global_test_cmd:
-            # Run worker-specific tests first (timeout 120s)
-            worker_ok, worker_output = await run_command_in_worktree_async(worktree, worker_test_cmd, timeout=120)
-            if not worker_ok:
-                self.db.log_event(
-                    issue_id,
-                    agent_id,
-                    "test_failure",
-                    {"command": worker_test_cmd, "type": "worker", "output": worker_output[:2000]},
-                )
-                _log_test_rejection(worker_test_cmd, worker_output)
-                return (False, worker_output)
-
-            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": worker_test_cmd, "type": "worker"})
-
-            # Run global tests (timeout 300s)
-            global_ok, global_output = await run_command_in_worktree_async(worktree, global_test_cmd, timeout=300)
-            if not global_ok:
-                self.db.log_event(
-                    issue_id,
-                    agent_id,
-                    "test_failure",
-                    {"command": global_test_cmd, "type": "global", "output": global_output[:2000]},
-                )
-                _log_test_rejection(global_test_cmd, global_output)
-                return (False, global_output)
-
-            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": global_test_cmd, "type": "global"})
-
-        elif worker_test_cmd:
-            # Only worker test command - run it (timeout 120s)
-            test_ok, test_output = await run_command_in_worktree_async(worktree, worker_test_cmd, timeout=120)
-            if not test_ok:
-                self.db.log_event(
-                    issue_id,
-                    agent_id,
-                    "test_failure",
-                    {"command": worker_test_cmd, "type": "worker", "output": test_output[:2000]},
-                )
-                _log_test_rejection(worker_test_cmd, test_output)
-                return (False, test_output)
-
-            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": worker_test_cmd, "type": "worker"})
-
-        elif global_test_cmd:
-            # Only global test command - run it (timeout 300s)
-            test_ok, test_output = await run_command_in_worktree_async(worktree, global_test_cmd, timeout=300)
-            if not test_ok:
-                self.db.log_event(
-                    issue_id,
-                    agent_id,
-                    "test_failure",
-                    {"command": global_test_cmd, "type": "global", "output": test_output[:2000]},
-                )
-                _log_test_rejection(global_test_cmd, test_output)
-                return (False, test_output)
-
-            self.db.log_event(issue_id, agent_id, "tests_passed", {"command": global_test_cmd, "type": "global"})
-
-        # If neither test command exists, skip tests
-
-        # Step 3: Merge to main (ff-only, in executor to avoid blocking event loop)
-        try:
-            await merge_to_main_async(self.project_path, branch_name)
-        except GitWorktreeError as e:
-            self.db.log_event(
-                issue_id,
-                agent_id,
-                "merge_failed",
-                {"error": str(e), "branch": branch_name},
-            )
-            return (False, str(e))
-
-        self.db.log_event(issue_id, agent_id, "merged", {"branch": branch_name})
-        return (True, None)
-
-    async def _send_to_refinery(self, entry: Dict[str, Any], test_output: Optional[str] = None):
+    async def _send_to_refinery(self, entry: Dict[str, Any]):
         """
         Hand a merge to the Refinery LLM for processing.
 
         Args:
             entry: Merge queue entry dict
-            test_output: Test output if tests failed (None if rebase conflict)
         """
         queue_id = entry["id"]
         issue_id = entry["issue_id"]
         agent_id = entry.get("agent_id")
-        rebase_ok = test_output is not None  # If we have test_output, rebase succeeded
 
         self.db.log_event(
             issue_id,
             agent_id,
-            "refinery_dispatched",
+            "refinery_review_started",
             {
                 "queue_id": queue_id,
-                "reason": "test_failure" if rebase_ok else "rebase_conflict",
+                "branch": entry["branch_name"],
             },
         )
 
@@ -366,8 +231,6 @@ class MergeProcessor:
                 branch_name=entry["branch_name"],
                 worktree_path=worktree_path,
                 agent_name=entry.get("agent_name"),
-                rebase_succeeded=rebase_ok,
-                test_output=test_output,
                 test_command=test_cmd,
             )
 
@@ -415,7 +278,7 @@ class MergeProcessor:
                 self.db.log_event(
                     issue_id,
                     agent_id,
-                    "refinery_merged",
+                    "refinery_review_passed",
                     {"conflicts_resolved": result.get("conflicts_resolved", 0)},
                 )
             elif result["status"] == "rejected":
@@ -425,16 +288,13 @@ class MergeProcessor:
                 self.db.log_event(
                     issue_id,
                     agent_id,
-                    "merge_rejected",
+                    "refinery_review_rejected",
                     {"summary": result.get("summary", "")},
                 )
 
                 # Create structured rejection note from refinery
                 rejection_reason = result.get("summary", "Unknown reason")
-                truncated_test_output = test_output[:500] if test_output else "N/A"
                 note_content = f"[Refinery rejection] {rejection_reason}\nBranch: {entry['branch_name']}"
-                if test_output:
-                    note_content += f"\nTest output (truncated):\n```\n{truncated_test_output}\n```"
 
                 self.db.add_note(
                     issue_id=issue_id,
@@ -450,7 +310,7 @@ class MergeProcessor:
                 self.db.log_event(
                     issue_id,
                     agent_id,
-                    "merge_escalated",
+                    "refinery_review_escalated",
                     {"summary": result.get("summary", "")},
                 )
 

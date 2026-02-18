@@ -70,38 +70,36 @@ def test_assess_completion_file_result_blocked():
 
 
 def test_build_refinery_prompt_conflict():
-    """Test refinery prompt for rebase conflict."""
+    """Test refinery prompt includes first-pass review structure."""
     prompt = build_refinery_prompt(
         issue_title="Add auth middleware",
         issue_id="w-abc123",
         branch_name="agent/worker-1",
         worktree_path="/tmp/wt1",
         agent_name="worker-1",
-        rebase_succeeded=False,
     )
 
     # Keep structural checks: issue_id and branch should appear
     assert "w-abc123" in prompt
     assert "Add auth middleware" in prompt
     assert "agent/worker-1" in prompt
+    assert "Merge Review Scope" in prompt
     assert ".hive-result.jsonl" in prompt
 
 
 def test_build_refinery_prompt_test_failure():
-    """Test refinery prompt for test failure."""
+    """Test refinery prompt includes preferred test command when provided."""
     prompt = build_refinery_prompt(
         issue_title="Fix login bug",
         issue_id="w-def456",
         branch_name="agent/worker-2",
         worktree_path="/tmp/wt2",
-        rebase_succeeded=True,
-        test_output="FAILED test_login.py::test_auth - AssertionError",
         test_command="pytest tests/",
     )
 
-    # Keep structural checks: test_command and test_output should appear
+    # Keep structural checks: test command should appear
     assert "pytest tests/" in prompt
-    assert "FAILED test_login" in prompt
+    assert "Perform full first-pass merge review and integration" in prompt
 
 
 def test_assess_completion_no_file_result():
