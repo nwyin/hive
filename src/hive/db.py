@@ -6,7 +6,7 @@ import sqlite3
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .utils import generate_id
 
@@ -264,6 +264,9 @@ class Database:
         self._ensure_column("notes", "project", "TEXT")
         self._ensure_column("agents", "project", "TEXT")
 
+        # Add must_read column to notes table for delivery system
+        self._ensure_column("notes", "must_read", "INTEGER NOT NULL DEFAULT 0")
+
         # Create tags index (safe after column exists via CREATE TABLE or migration)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)")
         self.conn.commit()
@@ -284,6 +287,56 @@ class Database:
 
         # Create index on agents.project if it doesn't exist
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)")
+        self.conn.commit()
+
+        # --- Note deliveries table and indexes ---
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS note_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL REFERENCES notes(id),
+                recipient_agent_id TEXT,
+                recipient_issue_id TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                delivered_at TEXT,
+                read_at TEXT,
+                acked_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        self.conn.commit()
+
+        # Basic indexes
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_note_deliveries_note ON note_deliveries(note_id)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_note_deliveries_inbox"
+            " ON note_deliveries(recipient_agent_id, recipient_issue_id, status, created_at)"
+        )
+        self.conn.commit()
+
+        # Unique indexes for deduplication
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_agent_global"
+            " ON note_deliveries(note_id, recipient_agent_id)"
+            " WHERE recipient_issue_id IS NULL"
+        )
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_agent_issue"
+            " ON note_deliveries(note_id, recipient_agent_id, recipient_issue_id)"
+            " WHERE recipient_issue_id IS NOT NULL"
+        )
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_issue_target"
+            " ON note_deliveries(note_id, recipient_issue_id)"
+            " WHERE recipient_agent_id IS NULL"
+        )
+        self.conn.commit()
+
+        # Partial index for materialization fast path
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_note_deliveries_issue_targets"
+            " ON note_deliveries(recipient_issue_id)"
+            " WHERE recipient_agent_id IS NULL"
+        )
         self.conn.commit()
 
     def create_issue(
@@ -985,6 +1038,7 @@ class Database:
         content: str = "",
         category: str = "discovery",
         project: Optional[str] = None,
+        must_read: bool = False,
     ) -> int:
         """
         Insert a note and return its ID.
@@ -995,6 +1049,7 @@ class Database:
             content: The note text. Short — typically 1-3 sentences.
             category: One of 'discovery', 'gotcha', 'dependency', 'pattern', 'context'.
             project: Project identifier. If None and issue_id provided, backfilled via migration.
+            must_read: If True, recipients must acknowledge this note before completing work.
 
         Returns:
             The ID of the inserted note
@@ -1003,8 +1058,8 @@ class Database:
             raise RuntimeError("Database not connected")
 
         cursor = self.conn.execute(
-            "INSERT INTO notes (issue_id, agent_id, category, content, project) VALUES (?, ?, ?, ?, ?)",
-            (issue_id, agent_id, category, content, project),
+            "INSERT INTO notes (issue_id, agent_id, category, content, project, must_read) VALUES (?, ?, ?, ?, ?, ?)",
+            (issue_id, agent_id, category, content, project, 1 if must_read else 0),
         )
         self.conn.commit()
         return cursor.lastrowid
@@ -1105,13 +1160,361 @@ class Database:
         )
         return cursor.fetchone()[0] == 0
 
+    # --- Note Delivery Methods ---
+
+    def create_note_deliveries(
+        self,
+        note_id: int,
+        to_agents: Optional[List[str]] = None,
+        to_issues: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Create delivery rows for a note targeting specific agents and/or issues.
+
+        For each agent_id in to_agents: creates an agent-global delivery row
+        (recipient_agent_id=agent_id, recipient_issue_id=NULL).
+
+        For each issue_id in to_issues: creates an issue-following target row
+        (recipient_issue_id=issue_id, recipient_agent_id=NULL).
+
+        Uses INSERT OR IGNORE for deduplication via unique constraints.
+
+        Args:
+            note_id: The note ID to create deliveries for.
+            to_agents: List of agent IDs for agent-global delivery.
+            to_issues: List of issue IDs for issue-following target rows.
+
+        Returns:
+            Count of rows actually inserted (ignoring duplicates).
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        inserted = 0
+
+        with self.transaction() as conn:
+            if to_agents:
+                for agent_id in to_agents:
+                    cursor = conn.execute(
+                        "INSERT OR IGNORE INTO note_deliveries (note_id, recipient_agent_id, recipient_issue_id) VALUES (?, ?, NULL)",
+                        (note_id, agent_id),
+                    )
+                    inserted += cursor.rowcount
+
+            if to_issues:
+                for issue_id in to_issues:
+                    cursor = conn.execute(
+                        "INSERT OR IGNORE INTO note_deliveries (note_id, recipient_agent_id, recipient_issue_id) VALUES (?, NULL, ?)",
+                        (note_id, issue_id),
+                    )
+                    inserted += cursor.rowcount
+
+        return inserted
+
+    def materialize_issue_deliveries(self, issue_id: str, agent_id: str, project: str) -> int:
+        """
+        Materialize issue-following target rows into concrete agent deliveries.
+
+        Finds all issue-following target rows for issue_id (where recipient_agent_id IS NULL)
+        and creates materialized delivery rows with recipient_agent_id=agent_id and
+        recipient_issue_id=issue_id.
+
+        Uses INSERT OR IGNORE for deduplication.
+
+        Args:
+            issue_id: The issue ID to materialize deliveries for.
+            agent_id: The agent ID currently assigned to the issue.
+            project: The project identifier (reserved for future cross-project filtering).
+
+        Returns:
+            Count of rows actually inserted.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        # Find all issue-following target rows for this issue
+        targets = self.conn.execute(
+            "SELECT note_id FROM note_deliveries WHERE recipient_issue_id = ? AND recipient_agent_id IS NULL",
+            (issue_id,),
+        ).fetchall()
+
+        inserted = 0
+        with self.transaction() as conn:
+            for row in targets:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO note_deliveries (note_id, recipient_agent_id, recipient_issue_id) VALUES (?, ?, ?)",
+                    (row["note_id"], agent_id, issue_id),
+                )
+                inserted += cursor.rowcount
+
+        return inserted
+
+    def get_injectable_deliveries(
+        self,
+        agent_id: str,
+        issue_id: str,
+        project: str,
+        max_normal: int = 5,
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        Query deliveries eligible for injection into a worker turn.
+
+        Returns deliveries where recipient_agent_id = agent_id AND:
+        - agent-global: recipient_issue_id IS NULL
+        - issue-scoped: recipient_issue_id = issue_id
+
+        Filtering:
+        - must_read notes: include while status != 'acked'
+        - normal notes: include while status IN ('queued', 'delivered')
+
+        Ordering: must_read first, then queued before delivered, then by created_at ASC.
+        Capping: always include all must_read, then up to max_normal additional normal deliveries.
+
+        Args:
+            agent_id: The agent to query deliveries for.
+            issue_id: The current issue the agent is working on.
+            project: The project identifier (reserved for future cross-project filtering).
+            max_normal: Maximum number of normal (non-must_read) deliveries to include.
+
+        Returns:
+            Tuple of (list of delivery dicts, has_more: bool).
+            Each dict: delivery_id, note_id, content, must_read, status, from_agent_id, scope, recipient_issue_id.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        # Query all eligible deliveries in one shot with proper ordering
+        query = """
+            SELECT
+                nd.id as delivery_id,
+                nd.note_id,
+                n.content,
+                n.must_read,
+                nd.status,
+                n.agent_id as from_agent_id,
+                CASE WHEN nd.recipient_issue_id IS NULL THEN 'agent' ELSE 'issue' END as scope,
+                nd.recipient_issue_id,
+                nd.created_at
+            FROM note_deliveries nd
+            JOIN notes n ON nd.note_id = n.id
+            WHERE nd.recipient_agent_id = ?
+              AND (nd.recipient_issue_id IS NULL OR nd.recipient_issue_id = ?)
+              AND (
+                  (n.must_read = 1 AND nd.status != 'acked')
+                  OR
+                  (n.must_read = 0 AND nd.status IN ('queued', 'delivered'))
+              )
+            ORDER BY n.must_read DESC, CASE nd.status WHEN 'queued' THEN 0 ELSE 1 END ASC, nd.created_at ASC
+        """
+        rows = self.conn.execute(query, (agent_id, issue_id)).fetchall()
+
+        # Separate must_read and normal deliveries
+        must_read_deliveries = []
+        normal_deliveries = []
+        for row in rows:
+            d = dict(row)
+            if d["must_read"]:
+                must_read_deliveries.append(d)
+            else:
+                normal_deliveries.append(d)
+
+        has_more = len(normal_deliveries) > max_normal
+        capped_normal = normal_deliveries[:max_normal]
+
+        result = must_read_deliveries + capped_normal
+        return result, has_more
+
+    def mark_delivery_delivered(self, delivery_id: int) -> bool:
+        """
+        Mark a delivery as delivered (injected into worker turn).
+
+        Only transitions from 'queued' to 'delivered'.
+
+        Args:
+            delivery_id: The delivery row ID.
+
+        Returns:
+            True if updated, False if not in 'queued' state.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE note_deliveries SET status = 'delivered', delivered_at = datetime('now') WHERE id = ? AND status = 'queued'",
+                (delivery_id,),
+            )
+            return cursor.rowcount == 1
+
+    def mark_delivery_read(self, delivery_id: int, agent_id: str) -> bool:
+        """
+        Mark a delivery as read by the recipient agent.
+
+        Only transitions from 'queued' or 'delivered' to 'read'.
+
+        Args:
+            delivery_id: The delivery row ID.
+            agent_id: The agent marking the delivery as read.
+
+        Returns:
+            True if updated, False otherwise.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE note_deliveries SET status = 'read', read_at = datetime('now')"
+                " WHERE id = ? AND recipient_agent_id = ? AND status IN ('queued', 'delivered')",
+                (delivery_id, agent_id),
+            )
+            return cursor.rowcount == 1
+
+    def mark_delivery_acked(self, delivery_id: int, agent_id: str) -> bool:
+        """
+        Mark a delivery as acknowledged. Only valid for must_read notes.
+
+        Verifies the underlying note has must_read=true before updating.
+        Sets read_at if not already set (via COALESCE).
+
+        Args:
+            delivery_id: The delivery row ID.
+            agent_id: The agent acknowledging the delivery.
+
+        Returns:
+            True if updated, False if not found or note is not must_read.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        with self.transaction() as conn:
+            # Verify the underlying note has must_read=true
+            check = conn.execute(
+                """
+                SELECT n.must_read
+                FROM note_deliveries nd
+                JOIN notes n ON nd.note_id = n.id
+                WHERE nd.id = ? AND nd.recipient_agent_id = ?
+                """,
+                (delivery_id, agent_id),
+            ).fetchone()
+
+            if not check or not check["must_read"]:
+                return False
+
+            cursor = conn.execute(
+                "UPDATE note_deliveries SET status = 'acked', acked_at = datetime('now'),"
+                " read_at = COALESCE(read_at, datetime('now'))"
+                " WHERE id = ? AND recipient_agent_id = ?",
+                (delivery_id, agent_id),
+            )
+            return cursor.rowcount == 1
+
+    def get_required_unacked_deliveries(self, agent_id: str, issue_id: str) -> List[Dict[str, Any]]:
+        """
+        Get must_read deliveries that have not been acknowledged.
+
+        Returns deliveries where:
+        - recipient_agent_id = agent_id
+        - (recipient_issue_id IS NULL OR recipient_issue_id = issue_id)
+        - The underlying note has must_read=true
+        - status != 'acked'
+
+        Args:
+            agent_id: The agent to check.
+            issue_id: The current issue the agent is working on.
+
+        Returns:
+            List of delivery dicts with note content.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        rows = self.conn.execute(
+            """
+            SELECT
+                nd.id as delivery_id,
+                nd.note_id,
+                n.content,
+                n.must_read,
+                nd.status,
+                n.agent_id as from_agent_id,
+                CASE WHEN nd.recipient_issue_id IS NULL THEN 'agent' ELSE 'issue' END as scope,
+                nd.recipient_issue_id
+            FROM note_deliveries nd
+            JOIN notes n ON nd.note_id = n.id
+            WHERE nd.recipient_agent_id = ?
+              AND (nd.recipient_issue_id IS NULL OR nd.recipient_issue_id = ?)
+              AND n.must_read = 1
+              AND nd.status != 'acked'
+            ORDER BY nd.created_at ASC
+            """,
+            (agent_id, issue_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_inbox_deliveries(
+        self,
+        agent_id: str,
+        issue_id: str,
+        unread_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get inbox deliveries for an agent, scoped to agent-global and issue-scoped.
+
+        Args:
+            agent_id: The agent to query.
+            issue_id: The current issue the agent is working on.
+            unread_only: If True, filter normal notes to status IN ('queued', 'delivered'),
+                         must_read notes to status != 'acked'.
+
+        Returns:
+            List of delivery dicts ordered by created_at DESC (newest first).
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        query = """
+            SELECT
+                nd.id as delivery_id,
+                nd.note_id,
+                n.content,
+                n.must_read,
+                nd.status,
+                n.agent_id as from_agent_id,
+                CASE WHEN nd.recipient_issue_id IS NULL THEN 'agent' ELSE 'issue' END as scope,
+                nd.recipient_issue_id,
+                nd.created_at
+            FROM note_deliveries nd
+            JOIN notes n ON nd.note_id = n.id
+            WHERE nd.recipient_agent_id = ?
+              AND (nd.recipient_issue_id IS NULL OR nd.recipient_issue_id = ?)
+        """
+        params: list = [agent_id, issue_id]
+
+        if unread_only:
+            query += """
+              AND (
+                  (n.must_read = 1 AND nd.status != 'acked')
+                  OR
+                  (n.must_read = 0 AND nd.status IN ('queued', 'delivered'))
+              )
+            """
+
+        query += " ORDER BY nd.created_at DESC"
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    # --- End Note Delivery Methods ---
+
     def get_model_performance(self, model: Optional[str] = None, tag: Optional[str] = None, group_by: str = "tag") -> List[Dict[str, Any]]:
         """Get model performance stats, optionally filtered by model or tag.
 
         Args:
             model: Filter to a specific model name.
             tag: Filter to issues containing this tag.
-            group_by: "tag" (default) groups by model × tag, "type" groups by model × type.
+            group_by: "tag" (default) groups by model x tag, "type" groups by model x type.
 
         Returns aggregated stats: model, group label, success/failure counts, retries, tokens, duration.
         """
