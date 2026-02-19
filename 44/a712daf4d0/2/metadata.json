@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "44a712daf4d0",
+  "session_id": "8e6519c3-3f52-47df-b774-c0f2e3229f46",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-19T16:15:34.962239Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/blog_agent_teams_reverse_engineered.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "874657c33968",
+  "transcript_identifier_at_start": "08dd61b2-4f52-41e3-a21e-efd942040039",
+  "checkpoint_transcript_start": 515,
+  "transcript_lines_at_start": 515,
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 14208,
+    "cache_read_tokens": 743523,
+    "output_tokens": 1590,
+    "api_call_count": 12
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-19T16:15:34.028979Z",
+    "agent_lines": 26,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 26,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-tau-projects-hive/8e6519c3-3f52-47df-b774-c0f2e3229f46.jsonl"
+}
