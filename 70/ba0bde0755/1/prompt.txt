@@ -1,0 +1,364 @@
+can you spanw an agent team to examine this code base?
+- have one look for bugs
+- have one look for complexity
+- have one look for good things to call out and play devil's advocate against the other two agents
+
+---
+
+<teammate-message teammate_id="complexity-analyst" color="green" summary="Complexity analysis findings for all modules">
+## Complexity Analysis Report — Hive Codebase
+
+I read every Python file in `src/hive/`. Here are my findings organized by severity.
+
+---
+
+### HIGH SEVERITY
+
+**1. `orchestrator.py` — God object / monolithic orchestrator (1957 lines)**
+- `/Users/tau/projects/hive/src/hive/orchestrator.py`
+- The `Orchestrator` class has ~30 methods and manages: agent lifecycle, session monitoring, SSE event handling, permission policy, degraded mode, budget caps, stalled agent detection, completion assessment, failure escalation, epic cycling, and the merge processor loop.
+- **`_decide_completion_transition()` (lines 1201-1310)**: High cyclomatic complexity. 110-line method with 7 transition outcomes, nested conditionals for budget checks, unacked notes (checked TWICE — lines 1236-1254 and 1263-1283 are **duplicated code**), diff validation, and epic step detection.
+- **`handle_agent_complete()` (lines 1320-1471)**: 150-line method with a match/case over 6 transitions plus error handling. The decision+action pattern is good but the method is still very long.
+- **`_reconcile_stale_agents()` (lines 296-437)**: 140-line method with 4 phases, deeply nested conditionals (stale agent loop with session liveness check, retry budget check, worktree preservation check).
+- **`monitor_agent()` (lines 939-1064)**: 125-line method with nested try/except/finally, a while-True loop with timeout, polling fallback, cancellation check, result file stat debugging, and session ID snapshot management.
+- **Suggestion**: Extract `CompletionHandler`, `StallHandler`, `ReconciliationService`, and `AgentMonitor` as separate classes/modules. The transition enums are a great start but the action side-effects are still entangled.
+
+**2. `cli.py` — Large command dispatcher (2140 lines)**
+- `/Users/tau/projects/hive/src/hive/cli.py`
+- `HiveCLI` is a single class with ~25 methods and the `main()` function has a 160-line if/elif chain (lines 1973-2133) dispatching commands.
+- **`status()` (lines 677-854)**: 177-line method that queries 7+ different data sources (issue counts, agents, refinery, ready queue, merge stats, worktree dirty status, daemon status, merge blockers) and formats output. This is effectively a mini-dashboard renderer.
+- **`metrics()` (lines 1259-1397)**: 138-line method with 3 completely different code paths depending on `group_by`, `show_costs`, or default mode.
+- **`queen()` / `_queen_claude()` / `_queen_codex()` / `_queen_opencode()` (lines 1470-1691)**: 220+ lines of queen launcher code across 4 methods with file I/O, process spawning, and cleanup — this is a subsystem embedded in the CLI class.
+- **Suggestion**: The argparse dispatch chain should use a command pattern or subcommand registry. The queen launcher should be a separate module. `status()` and `metrics()` could be split into query+format pairs.
+
+**3. `db.py` — `get_token_usage()` query duplication (lines 881-1000)**
+- `/Users/tau/projects/hive/src/hive/db.py:881`
+- 120-line method that builds 4 nearly identical SQL queries (totals, by-issue, by-agent, by-model) with the same WHERE clause. The from_clause and conditions are duplicated across all 4 queries.
+- **`get_model_performance()` (lines 1133-1183)** and **`get_metrics()` (lines 1185-1292)**: Both build complex SQL with manual string interpolation for WHERE clauses and JOINs. `get_metrics()` also runs a secondary per-model query in a loop (N+1 pattern for merge health).
+- **Suggestion**: Extract a query builder helper for the common WHERE/JOIN pattern.
+
+---
+
+### MEDIUM SEVERITY
+
+**4. `daemon.py` — `run_daemon_foreground()` tripled backend dispatch (lines 300-397)**
+- `/Users/tau/projects/hive/src/hive/daemon.py:300`
+- The function has three nearly identical 15-line blocks for `claude`, `codex`, and `opencode` backends. Each creates a backend, creates an orchestrator, starts it, waits for stop, and cancels. The only difference is the backend class instantiation.
+- **Suggestion**: Extract the common orchestrator lifecycle into a helper, pass in the backend instance.
+
+**5. `_decide_completion_transition()` — Duplicated unacked-notes check**
+- `/Users/tau/projects/hive/src/hive/orchestrator.py:1236-1254` and `/Users/tau/projects/hive/src/hive/orchestrator.py:1263-1283`
+- The exact same `materialize_issue_deliveries` + `get_required_unacked_deliveries` + event logging + return pattern appears twice in the same method. The second block is after the `assess_completion()` call. This is either a copy-paste bug or an intentional but confusing "check before AND after assessment" pattern.
+- **Suggestion**: If both checks are intentional, extract into a helper. If not, remove the duplicate.
+
+**6. `doctor.py` — Duplicated worktree parsing logic**
+- `/Users/tau/projects/hive/src/hive/doctor.py:314-376` and `/Users/tau/projects/hive/src/hive/doctor.py:379-449`
+- `_fix_inv8_ghost_worktrees()` and `check_inv8_ghost_worktrees()` both contain identical `git worktree list --porcelain` parsing code (~30 lines each). The active-worktree query is also duplicated.
+- **Suggestion**: Extract a `_parse_worktree_list()` helper.
+
+**7. `backend_codex.py` — Constructor command parsing (lines 72-107)**
+- `/Users/tau/projects/hive/src/hive/backends/backend_codex.py:72`
+- The constructor has a 35-line block parsing `CODEX_CMD`, `HIVE_CODEX_CMD`, and `--listen` flags with multiple fallback strategies. The logic for detecting stdio vs websocket transport is convoluted with nested try/except and string parsing.
+- **Suggestion**: Extract command resolution into a `@staticmethod` or module-level function.
+
+---
+
+### LOW SEVERITY
+
+**8. `merge.py` — `_send_to_refinery()` retry-on-death pattern (lines 199-264)**
+- `/Users/tau/projects/hive/src/hive/merge.py:199`
+- Double-nested try/except for "retry once on session death" creates 3 levels of exception handling. The control flow is correct but hard to follow.
+- **Suggestion**: A retry decorator or loop would be clearer.
+
+**9. `prompts.py` — `build_retry_context()` repeated JSON parse pattern (lines 49-122)**
+- `/Users/tau/projects/hive/src/hive/prompts.py:49`
+- Three identical blocks for `incomplete_events`, `merge_rejected_events`, and `stalled_events` that each parse JSON detail and extract reason/summary. The only difference is the event type name and the prefix string.
+- **Suggestion**: Extract a small helper for the parse-and-format pattern.
+
+**10. Raw SQL string formatting in orchestrator**
+- `/Users/tau/projects/hive/src/hive/orchestrator.py:289` (`_renew_lease_for_session`), line 787 (`_spawn_worker_inner`), line 1605 (`cycle_agent_to_next_step`), line 1825 (`_handle_stalled_with_session_check`)
+- Several places use Python `.format()` to inject `Config.LEASE_DURATION` or `Config.LEASE_EXTENSION` directly into SQL strings. While these are integer config values (not user input), this pattern is fragile and inconsistent with the parameterized queries used elsewhere.
+- **Suggestion**: Use parameterized queries with `datetime('now', '+' || ? || ' seconds')` or precompute the datetime in Python.
+
+---
+
+### WHAT A NEW DEVELOPER WOULD STRUGGLE WITH
+
+1. **The dual SSE/polling completion detection** in `monitor_agent()` — understanding why both exist, what "my_session_id" vs "agent.session_id" means, and the session ID snapshot pattern.
+2. **The completion transition state machine** — the enums are great but the actual side-effects are spread across `_decide_completion_transition`, `handle_agent_complete`, `_handle_agent_failure`, and `_choose_escalation`.
+3. **The two-gate pattern in `backend_claude.py`** — `ws_connected` vs `connected` and the initialization handshake where the CLI sends the first message.
+4. **Which backend interface methods are stubs vs real** — `SSEClient` and `OpenCodeClient` each have ~10 `raise NotImplementedError` stubs for the half of `HiveBackend` they don't implement.
+
+---
+
+### THINGS DONE WELL (worth noting)
+
+- The transition enum pattern (`CompletionTransition`, `EscalationDecision`, `StalledTransition`) is a clean way to separate decision from action.
+- The `HiveBackend` ABC is well-designed — clean interface for swapping backends.
+- The `_agent_handling_scope` context manager prevents double-handling elegantly.
+- Config layering (defaults -> global TOML -> project TOML -> env) is well-implemented and easy to understand.
+- The doctor/invariant check system is a strong operational safety net.
+- Reverse lookup maps (`_session_to_agent`, `_issue_to_agent`) with explicit registration/unregistration avoid O(n) scans.
+
+</teammate-message>
+
+<teammate-message teammate_id="bug-hunter" color="blue" summary="Comprehensive bug report with 12 findings across the codebase">
+## Bug Hunt Report -- Hive Codebase
+
+I've read every Python source file in `src/hive/`. Here are the real bugs I found, ordered by severity.
+
+---
+
+### BUG 1: Duplicate unacked-notes check in completion handler (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, lines 1236-1283
+**Bug**: `_decide_completion_transition` checks for required unacked deliveries **twice** with identical code. Lines 1236-1254 run the check, and then lines 1264-1283 repeat the exact same `materialize_issue_deliveries` + `get_required_unacked_deliveries` + log + return block. This means:
+1. Wasted DB queries on every successful completion.
+2. The `completion_blocked_unacked_notes` event is logged twice if the first check passes but the second finds something (though this is unlikely since they query the same data).
+
+This is a copy-paste leftover that should be deduplicated.
+
+---
+
+### BUG 2: SQL injection via `.format()` for Config values in SQL (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, lines 283-293, 786-789, 1602-1605, 1825, 1835
+**Bug**: Throughout the orchestrator, Config values like `LEASE_DURATION` and `LEASE_EXTENSION` are interpolated into SQL strings using `.format()`:
+```python
+"""UPDATE agents SET lease_expires_at = datetime('now', '+{} seconds') WHERE id = ?""".format(Config.LEASE_EXTENSION)
+```
+While these values come from config (not user input), this is fragile. If a TOML config file or env var sets `LEASE_DURATION` to a malicious string, it becomes SQL injection. The correct approach is to use parameterized queries: `datetime('now', '+' || ? || ' seconds')` or compute the timestamp in Python. Currently not exploitable in practice since config values are coerced to `int`, but it's a code smell that could become a real vulnerability if the coercion is bypassed.
+
+---
+
+### BUG 3: `_reconcile_stale_agents` retry budget check uses OR instead of AND (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, line 361
+**Bug**: The condition is:
+```python
+if retry_count < Config.MAX_RETRIES or agent_switch_count < Config.MAX_AGENT_SWITCHES:
+```
+This means an issue is released back to `open` if **either** budget is not exhausted. But `_choose_escalation` (line 1472) uses a sequential check: first retries, then agent switches. The reconciliation should use the same logic. With `or`, an issue that has exhausted retries but not agent switches would be reset to `open`, but a newly spawned agent would still go through retries first (per `_choose_escalation`). This means the issue gets released, then immediately fails retry checks, gets released again, etc. -- a slow loop until agent_switch budget is also exhausted. Should likely be `and` to match the escalation logic, or should replicate `_choose_escalation` directly.
+
+---
+
+### BUG 4: `_release_issue` does redundant UPDATE (Low)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, lines 1089-1093
+**Bug**: `_release_issue` calls `update_issue_status(issue_id, "open")` which already clears `assignee` when status is `'open'` (see `db.py` line 554: `CASE WHEN ? = 'open' THEN NULL ELSE assignee END`). Then on line 1092, it does another `UPDATE issues SET assignee = NULL WHERE id = ?` and commits. This is a double-write -- the second UPDATE is redundant since `update_issue_status` already handles it inside a transaction.
+
+---
+
+### BUG 5: SSE `sock_read` timeout causes spurious disconnects (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/backends/backend_opencode.py`, line 332
+**Bug**: The SSE client uses `aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)`. `sock_read=30` means if no data is received for 30 seconds, the connection is closed with a timeout error. SSE connections are long-lived and the server may not send data for more than 30 seconds during idle periods. This causes the SSE connection to drop and reconnect frequently during quiet periods, potentially missing events during the reconnect window. Should be `sock_read=None` or a much larger value (e.g., 300).
+
+---
+
+### BUG 6: `total_changes` misuse in migration backfill (Low)
+**File**: `/Users/tau/projects/hive/src/hive/db.py`, lines 300-302
+**Bug**: After the `UPDATE notes SET project = ...` statement, the code checks `self.conn.total_changes > 0` to decide whether to commit and log. But `total_changes` is a **cumulative** counter across the lifetime of the connection -- it counts ALL changes since the connection was opened, not just the last statement. This means:
+1. The commit always happens (since schema creation already bumped `total_changes`).
+2. The log message reports a wrong count.
+The correct approach is to check `cursor.rowcount` from the execute call.
+
+---
+
+### BUG 7: `list_issues` passes LIMIT as string (Low)
+**File**: `/Users/tau/projects/hive/src/hive/cli.py`, line 154
+**Bug**: `params.append(str(limit))` -- the limit value is appended as a string. While SQLite will coerce it, this is inconsistent with the `int` type hint and could cause issues in type-strict contexts. Should be `params.append(limit)` without the `str()` conversion.
+
+---
+
+### BUG 8: `handle_stalled_with_session_check` silently falls through on non-idle/non-busy status (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, lines 1802-1853
+**Bug**: The method checks for `status["type"] == "idle"` and `status["type"] == "busy"` but does not handle other valid status types like `"not_found"` or `"error"` explicitly in the happy path. When status is `"not_found"` (session died), the code falls through to the default `await self.handle_stalled_agent(agent)` at line 1853, which is correct behavior. However, the `status["type"] == "busy"` branch (line 1818) has a `return` at line 1846 that only executes if we enter the `if cursor.fetchone()` or `else` branch. But look carefully: if status is `"busy"` and the lease was already extended, `handle_stalled_agent` is called. Then the function falls through to line 1853 where `handle_stalled_agent` is called **again**. Wait -- actually re-reading: the `return` at line 1846 is at the same indentation as the `elif status["type"] == "busy":` block, so it always returns from the busy branch. This is actually fine. The code flow is correct but hard to follow due to mixed early-return and fall-through patterns.
+
+After more careful re-reading: this is NOT a bug. The code is correct. Striking this one.
+
+---
+
+### BUG 9: Race condition in `cancel_agent_for_issue` (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/orchestrator.py`, lines 563-598
+**Bug**: When `cancel_agent_for_issue` is called while `monitor_agent` is running for the same agent, there's a race:
+1. `cancel_agent_for_issue` calls `event.set()` at line 587.
+2. `monitor_agent` wakes up, checks `_is_issue_canceled` at line 983, sees it's canceled, returns.
+3. But `cancel_agent_for_issue` also calls `_teardown_agent` at line 598.
+4. `monitor_agent`'s `finally` block at line 1054 cleans up session events.
+
+The issue: `cancel_agent_for_issue` calls `_mark_agent_failed` (line 589) and `_teardown_agent` (line 598). `_teardown_agent` calls `_cleanup_session` and `_unregister_agent`. Meanwhile `monitor_agent` returns from the cancellation check at line 989 **without** calling `handle_agent_complete`. But `monitor_agent`'s finally block still runs, cleaning up session events. This sequence is correct -- the double-handling guard (`_handling_agents`) protects against concurrent completion handling. But `_teardown_agent` in `cancel_agent_for_issue` could race with the finally block in `monitor_agent`. Specifically, `_teardown_agent` calls `_unregister_agent` which removes from `active_agents`, while `monitor_agent`'s finally block tries to clean up `session_status_events`. Since these touch different data structures, it's fine.
+
+After careful analysis: this is mostly safe due to single-threaded asyncio. The `await` in `_teardown_agent` could yield control, but `monitor_agent` would already have returned. **Not a real bug** since asyncio is cooperative.
+
+---
+
+### BUG 10: `_send_initialize` uses best-effort sleep instead of waiting for response (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/backends/backend_claude.py`, lines 522-538
+**Bug**: `_send_initialize` sends a control request with `initialize` subtype, then does `await asyncio.sleep(0.5)` and marks `initialized = True`. It never checks whether the CLI actually processed the initialize request. If the CLI is slow or the system prompt is large, 0.5 seconds may not be enough. The `request_id` is generated but never used to correlate a response. This could cause the system prompt to be silently dropped if the CLI hasn't processed it before the first user message arrives.
+
+---
+
+### BUG 11: `daemon.py` log_fd leak on process spawn failure (Low)
+**File**: `/Users/tau/projects/hive/src/hive/daemon.py`, lines 183-206
+**Bug**: `log_fd = open(self.log_file, "a")` is opened before `Popen`. If `Popen` raises an exception (e.g., the command doesn't exist), `log_fd.close()` at line 193 is never reached because it's after the `Popen` call. The `log_fd` will eventually be garbage-collected, but this is a resource leak on the error path. Should use try/finally or a context manager.
+
+Actually, looking more carefully: `Popen` is at line 184 and `log_fd.close()` is at line 193. If `Popen` raises, the `close()` is skipped. This IS a real (minor) file descriptor leak.
+
+---
+
+### BUG 12: `check_same_thread=False` with no thread safety (Medium)
+**File**: `/Users/tau/projects/hive/src/hive/db.py`, line 241
+**Bug**: The database connection is created with `check_same_thread=False`, which disables SQLite's thread-safety check. This is necessary because git operations run in executor threads via `run_in_executor`. However, the `Database` class has no locking mechanism. The orchestrator calls `self.db.conn.execute(...)` directly from the main asyncio thread, while `run_in_executor` could be running blocking git operations concurrently. Since the git operations don't touch the DB directly (they use subprocess), this is currently safe. But if any future code calls DB methods from an executor thread, it would corrupt the connection without any protection or warning.
+
+---
+
+## Summary by Severity
+
+| Severity | Count | Bug IDs |
+|----------|-------|---------|
+| Medium | 5 | #1 (duplicate check), #3 (OR vs AND), #5 (SSE timeout), #10 (init sleep), #12 (thread safety) |
+| Low | 4 | #2 (SQL format), #4 (redundant update), #6 (total_changes), #7 (str limit), #11 (fd leak) |
+
+**No critical bugs found.** The codebase is generally well-structured with good error handling patterns. The most impactful bugs are #5 (SSE timeout causing spurious reconnects) and #3 (reconciliation retry logic mismatch) as they affect runtime behavior.
+
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="devils-advocate" color="yellow" summary="Comprehensive strengths and devil's advocate analysis">
+## Devil's Advocate Analysis: Hive Codebase
+
+I've thoroughly read every Python source file in `src/hive/`. Here are the genuine strengths and pre-emptive defenses against likely criticisms.
+
+---
+
+## Part 1: Genuine Strengths
+
+### 1. Atomic CAS Claim Pattern (db.py:417-468)
+The `claim_issue` method uses a single UPDATE with WHERE guards (`assignee IS NULL` AND dependency check) to atomically claim work. This eliminates the classic TOCTOU race between checking readiness and claiming. The dependency check is re-evaluated at claim time, not just at queue time. This is textbook correct for a queue-based scheduler and many systems get this wrong.
+
+### 2. Layered Configuration with Source Attribution (config.py)
+The `_Config` class with `_FIELDS` mapping, `_apply_defaults()` -> `_apply_toml()` -> `_apply_env()` chain is clean and correct. The `get_resolved_config()` method (config.py:117-163) walks all 4 layers to determine per-field provenance -- this is excellent for debugging ("why is MAX_AGENTS 3?"). The `_coerce()` helper (config.py:166-174) handles bool edge cases properly.
+
+### 3. Dual Detection Strategy for Completion (orchestrator.py:939-1064)
+The `monitor_agent` method uses SSE events as primary signal + polling fallback with `_poll_session_idle()`. This is a deliberate reliability pattern: SSE connections can drop during reconnects, so the polling fallback catches missed events. The session_id snapshot at `my_session_id = agent.session_id` (line 959) prevents a subtle bug where epic cycling mutates the agent's session_id mid-monitor.
+
+### 4. Agent Handling Guard (orchestrator.py:1121-1138)
+`_agent_handling_scope()` is a context manager that prevents double-handling of agents across await points. In async Python, concurrent tasks can interleave at any await, so two code paths (completion handler + stall handler) could race on the same agent. The `_handling_agents` set provides a clean mutex pattern. The `_spawning_issues` set (line 166-169) serves the same purpose for spawn TOCTOU races.
+
+### 5. Comprehensive Reconciliation (orchestrator.py:296-437)
+`_reconcile_stale_agents()` has 4 phases: fetch live sessions, reconcile DB ghosts, clean orphan sessions, purge stale agent rows. This handles every crash recovery scenario: daemon died mid-spawn, daemon died mid-completion, backend restarted independently, etc. The worktree preservation logic (lines 395-408) correctly avoids destroying worktrees still needed by the merge queue.
+
+### 6. Escalation State Machine (orchestrator.py:1472-1560)
+`_choose_escalation()` implements a clean decision chain: anomaly detection -> retry tier -> agent switch tier -> escalate. The anomaly detection (burst failures within a time window) is a smart circuit breaker that prevents burning tokens on a fundamentally broken issue. Each tier logs structured events with full context for post-mortem analysis.
+
+### 7. Completion Transition Table Pattern (orchestrator.py:1201-1471)
+`_decide_completion_transition()` separates the decision phase from the action phase. The `CompletionDecision` dataclass carries all payload needed by each transition branch. The match/case dispatch in `handle_agent_complete()` with the explicit transition table comment (lines 1312-1319) makes the state machine readable and auditable.
+
+### 8. Backend Abstraction (backends/base.py + backend_claude.py)
+The `HiveBackend` ABC is well-designed: session management (CRUD + status) + event streaming (on/on_all/connect) as two orthogonal capabilities. The Claude backend unifies both in one class; OpenCode splits them into two. The orchestrator accepts both patterns via its constructor. The Claude backend's WS protocol implementation (backend_claude.py) correctly handles the reversed handshake order (CLI sends `user` first, then Hive sends `system/init`).
+
+### 9. Doctor Invariant Checks with Auto-Fix (doctor.py)
+Each check is a standalone function returning a `CheckResult` with an optional `fix` callback. The registry pattern (`ALL_CHECKS` list) makes it trivial to add new checks. Checks like INV-7 (stuck merges) and INV-8 (ghost worktrees) have auto-fix functions. The `CheckResult` dataclass with typed status literals (`ok|warn|fail`) is clean.
+
+### 10. Diagnostic Report (diag.py)
+The `_section()` wrapper (diag.py:28-33) catches exceptions per-section so one broken section doesn't prevent the rest of the report. The report includes system info, resolved config with sources, daemon status, doctor checks, DB stats, recent events, daemon log tail, and backend reachability. This is exactly what you need for remote debugging.
+
+### 11. Process Group Cleanup (backend_claude.py:288-301)
+`delete_session()` uses `os.killpg()` to kill the entire process group (child is session leader via `start_new_session=True`). This ensures grandchild processes spawned by Claude CLI are also cleaned up. The SIGTERM -> wait(5s) -> SIGKILL fallback is the correct graceful-then-force pattern.
+
+### 12. Merge Queue Dirty Main Guard (merge.py:142-171)
+`process_queue_once()` checks if the main worktree is dirty before attempting a merge. This prevents wasting a full refinery cycle only to fail at the final `git merge --ff-only`. The dirty snapshot comparison avoids log spam (only logs when the dirty state changes).
+
+### 13. CLAUDECODE Environment Stripping (daemon.py:182, backend_claude.py:144)
+Both the daemon spawner and the CLI spawner strip the `CLAUDECODE` env var. This prevents nested Claude sessions from refusing to launch (Claude CLI exits if it detects it's inside another Claude session). A subtle but important detail.
+
+---
+
+## Part 2: Pre-emptive Defense Against Likely Criticisms
+
+### "The codebase uses `check_same_thread=False` for SQLite -- that's dangerous!"
+**Defense**: This is intentional and correct. The orchestrator is single-process with a single asyncio event loop. All DB access happens on the main thread (or from thread-executor-wrapped git operations that don't touch the DB). SQLite with WAL mode + `busy_timeout = 5000` handles the concurrent read scenario correctly. The `transaction()` context manager provides rollback safety.
+
+### "There's SQL string interpolation via `.format()` in lease renewal and stall checks!"
+**Defense**: The interpolated values are `Config.LEASE_DURATION` and `Config.LEASE_EXTENSION` -- integers from the config system, never user input. SQLite's `datetime('now', '+N seconds')` syntax requires the interval to be part of the SQL string (it doesn't support parameterized intervals). This is safe given the source is config, not user input.
+
+### "Dropping FK constraints with `PRAGMA foreign_keys = OFF` is a hack!"
+**Defense**: This is documented in the schema comments (db.py:55-56) and the design doc. Agents are ephemeral by design -- they're deleted after merge, but events/notes/merge_queue keep the `agent_id` as a correlation key for analytics. The FK constraint would prevent agent deletion without cascading deletes that would destroy audit history. The PRAGMA toggle is scoped and immediately re-enabled.
+
+### "The orchestrator has too many responsibilities -- God class!"
+**Defense**: The Orchestrator is large (~1960 lines) but follows a clear structure: startup/shutdown, spawn, monitor, completion handling, failure/escalation, stall detection, and background loops. Each responsibility is implemented as a small set of methods with clear naming conventions (e.g., `_decide_completion_transition` + `handle_agent_complete`). Splitting into smaller classes would create a web of cross-references with shared mutable state (active_agents, session maps) that would be harder to reason about. The single class makes the state machine transitions readable top-to-bottom.
+
+### "The refinery retry logic is ad-hoc!"
+**Defense**: `_send_to_refinery()` in merge.py has a deliberate one-retry policy for `RefinerySessionDied`. The refinery session can die for transient reasons (CLI crash, WS disconnect). One retry with session reset is reasonable. A second death escalates to `needs_human`. The `_force_reset_refinery_session()` method properly clears counters, aborts+deletes the old session, and logs the event.
+
+### "There's duplication in the unacked delivery check in `_decide_completion_transition`!"
+**Defense**: Lines 1236-1254 and 1263-1283 in orchestrator.py DO check `get_required_unacked_deliveries` twice. The first check runs before completion assessment; the second runs after success but before merge. This is actually a deliberate belt-and-suspenders pattern: new deliveries could arrive between the assessment and the merge check. However, I'll note this IS genuinely redundant in the current flow since both checks run synchronously with no yielding between them. A critic could fairly call this out as unnecessary duplication.
+
+### "The daemon management uses PID files -- that's fragile!"
+**Defense**: It is, and the code knows it. `_find_all_daemon_pids()` (daemon.py:80-113) scans the process table as a safety net, and `_kill_orphaned_daemons()` cleans up processes that the PID file doesn't track. Both `start()` and `stop()` run orphan cleanup. This two-layer approach (PID file + process table scan) is more robust than PID files alone.
+
+### "Epic cycling reuses the same worktree -- won't that cause issues?"
+**Defense**: This is intentional for epic workflows. Sequential steps build on each other's changes. A new session is created but the worktree (with accumulated commits from previous steps) is preserved. The old session is cleaned up via `cleanup_session()` before creating the new one.
+
+### "The permission policy is too permissive -- allow everything?"
+**Defense**: Workers are scoped to their worktree via `X-OpenCode-Directory` header or `--cwd`. The `evaluate_permission_policy()` rejects `question`, `plan_enter`, `plan_exit`, and `external_directory`. Standard tools (`read`, `edit`, `write`, `bash`) get `"once"` (not `"always"`) so each invocation is still tracked. Unknown permissions are left unresolved for human review. For the Claude backend, `bypassPermissions` is used because the CLI runs in a controlled sandbox.
+
+### "The code uses `datetime.now()` without timezone -- timestamp bugs!"
+**Defense**: The system consistently uses SQLite's `datetime('now')` for DB timestamps and Python's `datetime.now()` only for in-memory comparisons (lease tracking, degraded mode timing). The `count_events_since_minutes()` method (db.py:695-710) explicitly uses SQLite's `datetime('now')` for comparison to avoid timezone mismatches. The comment at line 699 documents this design choice.
+
+### "There are no type hints on some methods!"
+**Defense**: The codebase uses type hints extensively where they add value (function signatures, dataclasses, config fields). Some internal methods that operate on well-understood dicts-from-sqlite omit full TypedDict annotations. This is a reasonable pragmatic choice given that sqlite3.Row already provides a dict interface and adding TypedDicts for every query result would be over-engineering.
+
+### "Git operations use subprocess.run with shell=True in one place!"
+**Defense**: Only `run_command_in_worktree()` (git.py:264-292) uses `shell=True` because it executes arbitrary test commands specified by the user (via `test_command`). All other git operations use argument lists (no shell=True). The test command is user-configured, not untrusted input -- it's the equivalent of running `make test` in a CI system.
+
+---
+
+## Summary
+
+This is a well-engineered system that makes deliberate tradeoffs for its problem domain (ephemeral agent orchestration with SQLite coordination). The main strengths are: atomic claim semantics, robust crash recovery, clean state machine patterns, multi-backend abstraction, and comprehensive diagnostics. The apparent "complexity" in areas like reconciliation and completion handling reflects genuine operational requirements for managing ephemeral processes and git worktrees reliably.
+
+</teammate-message>
+
+---
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"complexity-analyst has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="complexity-analyst" color="green">
+{"type":"idle_notification","from":"complexity-analyst","timestamp":"2026-02-19T16:24:27.835Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="complexity-analyst" color="green">
+{"type":"shutdown_approved","requestId":"shutdown-1771518240672@complexity-analyst","from":"complexity-analyst","timestamp":"2026-02-19T16:24:31.606Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="bug-hunter" color="blue" summary="Bug Hunter task complete, awaiting new work">
+Bug Hunter here -- my task (#1) is complete and the report was delivered earlier. All three team tasks appear completed. Let me know if you need any follow-up analysis or have additional tasks for me.
+</teammate-message>
+
+<teammate-message teammate_id="bug-hunter" color="blue">
+{"type":"idle_notification","from":"bug-hunter","timestamp":"2026-02-19T16:24:45.209Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"bug-hunter has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="bug-hunter" color="blue">
+{"type":"shutdown_approved","requestId":"shutdown-1771518240102@bug-hunter","from":"bug-hunter","timestamp":"2026-02-19T16:24:48.336Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
+
+<teammate-message teammate_id="devils-advocate" color="yellow" summary="Task #3 complete, awaiting further instructions">
+My task (#3 - Devil's Advocate) is complete. The full analysis with 13 strengths and 12 pre-emptive defenses was delivered in my previous message. All three review tasks (bug-hunter, complexity-analyst, devil's advocate) show as completed. Let me know if you need anything else from me.
+</teammate-message>
+
+<teammate-message teammate_id="system">
+{"type":"teammate_terminated","message":"devils-advocate has shut down."}
+</teammate-message>
+
+<teammate-message teammate_id="devils-advocate" color="yellow">
+{"type":"idle_notification","from":"devils-advocate","timestamp":"2026-02-19T16:25:08.050Z","idleReason":"available"}
+</teammate-message>
+
+<teammate-message teammate_id="devils-advocate" color="yellow">
+{"type":"shutdown_approved","requestId":"shutdown-1771518241191@devils-advocate","from":"devils-advocate","timestamp":"2026-02-19T16:25:11.783Z","paneId":"in-process","backendType":"in-process"}
+</teammate-message>
