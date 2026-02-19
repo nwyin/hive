@@ -1023,3 +1023,192 @@ def test_merges_empty_shows_no_entries_message(temp_db, tmp_path, capsys):
     # No status counts should appear when there are no entries
     assert "queued" not in captured.out
     assert "merged" not in captured.out
+
+
+# ── Note targeting + mail CLI tests ─────────────────────────────────
+
+
+def test_cli_note_with_to_agent(temp_db, tmp_path, capsys):
+    """hive note --to-agent creates note + agent-global delivery."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.note_with_targets("Important info", issue_id=None, to_agents=["agent-abc"], to_issues=None, must_read=False, json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "Sent note #" in captured.out
+    assert "delivery" in captured.out
+
+    notes = temp_db.get_notes(limit=1)
+    assert len(notes) == 1
+    assert notes[0]["content"] == "Important info"
+
+    deliveries = temp_db.get_inbox_deliveries("agent-abc")
+    assert len(deliveries) == 1
+    assert deliveries[0]["status"] == "queued"
+
+
+def test_cli_note_with_to_issue(temp_db, tmp_path, capsys):
+    """hive note --to-issue creates note + issue-following delivery row."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+    issue_id = temp_db.create_issue("Some issue", project=tmp_path.name)
+
+    cli.note_with_targets("Watch out", issue_id=None, to_agents=None, to_issues=[issue_id], must_read=False, json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "Sent note #" in captured.out
+
+    notes = temp_db.get_notes(limit=1)
+    assert notes[0]["content"] == "Watch out"
+
+    # Issue-following row has recipient_issue_id set and recipient_agent_id NULL
+    rows = temp_db.conn.execute(
+        "SELECT * FROM note_deliveries WHERE note_id = ? AND recipient_issue_id = ? AND recipient_agent_id IS NULL",
+        (notes[0]["id"], issue_id),
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_cli_note_with_must_read(temp_db, tmp_path, capsys):
+    """hive note --must-read sets must_read=1 on the note."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.note_with_targets("Critical note", issue_id=None, to_agents=["agent-xyz"], to_issues=None, must_read=True, json_mode=False)
+
+    notes = temp_db.get_notes(limit=1)
+    assert notes[0]["must_read"] == 1
+
+    deliveries = temp_db.get_inbox_deliveries("agent-xyz")
+    assert len(deliveries) == 1
+
+
+def test_cli_note_legacy_no_targets(temp_db, tmp_path, capsys):
+    """hive note without targets falls through to legacy add_note behavior."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.add_note("Legacy note")
+
+    captured = capsys.readouterr()
+    assert "Added note #" in captured.out
+    assert "[discovery]" in captured.out
+
+    notes = temp_db.get_notes(limit=1)
+    assert notes[0]["content"] == "Legacy note"
+    # No deliveries created
+    assert temp_db.conn.execute("SELECT COUNT(*) FROM note_deliveries").fetchone()[0] == 0
+
+
+def test_cli_mail_inbox(temp_db, tmp_path, capsys):
+    """hive mail inbox --agent shows deliveries for that agent."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="Hello agent", project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-1"])
+
+    cli.mail_inbox("agent-1", issue_id=None, unread_only=False, json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "Hello agent" in captured.out
+
+
+def test_cli_mail_inbox_unread(temp_db, tmp_path, capsys):
+    """hive mail inbox --unread hides already-read deliveries."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="Old note", project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-1"])
+    deliveries = temp_db.get_inbox_deliveries("agent-1")
+    temp_db.mark_delivery_read(deliveries[0]["id"], "agent-1")
+
+    note_id2 = temp_db.add_note(agent_id=None, content="New note", project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id2, to_agents=["agent-1"])
+
+    cli.mail_inbox("agent-1", issue_id=None, unread_only=True, json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "New note" in captured.out
+    assert "Old note" not in captured.out
+
+
+def test_cli_mail_read(temp_db, tmp_path, capsys):
+    """hive mail read <id> --agent marks delivery read."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="Read me", project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-r"])
+    deliveries = temp_db.get_inbox_deliveries("agent-r")
+    delivery_id = deliveries[0]["id"]
+
+    cli.mail_read(delivery_id, "agent-r", json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "read" in captured.out.lower() or "marked" in captured.out.lower()
+
+    updated = temp_db.get_inbox_deliveries("agent-r")
+    assert updated[0]["status"] == "read"
+
+
+def test_cli_mail_ack(temp_db, tmp_path, capsys):
+    """hive mail ack <id> --agent acknowledges a must_read delivery."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="Must ack", must_read=True, project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-a"])
+    deliveries = temp_db.get_inbox_deliveries("agent-a")
+    delivery_id = deliveries[0]["id"]
+
+    cli.mail_ack(delivery_id, "agent-a", json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "acked" in captured.out.lower() or "acknowledged" in captured.out.lower()
+
+    updated = temp_db.get_inbox_deliveries("agent-a")
+    assert updated[0]["status"] == "acked"
+
+
+def test_cli_mail_ack_non_must_read(temp_db, tmp_path, capsys):
+    """hive mail ack on a non-must-read note shows 'unchanged'."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="Normal note", must_read=False, project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-b"])
+    deliveries = temp_db.get_inbox_deliveries("agent-b")
+    delivery_id = deliveries[0]["id"]
+
+    cli.mail_ack(delivery_id, "agent-b", json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "unchanged" in captured.out.lower()
+
+    # Status should remain queued — ack only works on must_read notes
+    updated = temp_db.get_inbox_deliveries("agent-b")
+    assert updated[0]["status"] == "queued"
+
+
+def test_cli_note_json_mode(temp_db, tmp_path, capsys):
+    """hive note --to-agent with --json outputs structured JSON."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    cli.note_with_targets("JSON note", issue_id=None, to_agents=["agent-j"], to_issues=None, must_read=False, json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert "note_id" in data
+    assert data["delivery_count"] == 1
+    assert data["to_agents"] == ["agent-j"]
+    assert data["must_read"] is False
+
+
+def test_cli_mail_inbox_json_mode(temp_db, tmp_path, capsys):
+    """hive mail inbox with --json outputs structured JSON."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    note_id = temp_db.add_note(agent_id=None, content="JSON inbox note", project=tmp_path.name)
+    temp_db.create_note_deliveries(note_id, to_agents=["agent-k"])
+
+    cli.mail_inbox("agent-k", issue_id=None, unread_only=False, json_mode=True)
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert "count" in data
+    assert data["count"] == 1
+    assert len(data["deliveries"]) == 1

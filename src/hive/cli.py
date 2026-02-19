@@ -959,6 +959,119 @@ class HiveCLI:
         else:
             print(f"Added note #{result['note_id']} [{category}]")
 
+    def note_with_targets(
+        self,
+        content: str,
+        issue_id: Optional[str] = None,
+        to_agents: Optional[List[str]] = None,
+        to_issues: Optional[List[str]] = None,
+        must_read: bool = False,
+        *,
+        json_mode: bool = False,
+    ):
+        """Add a note with explicit delivery targets (agents/issues)."""
+        try:
+            note_id = self.db.add_note(
+                agent_id=None,
+                issue_id=issue_id,
+                content=content,
+                project=self.project_name,
+                must_read=must_read,
+            )
+            delivery_count = self.db.create_note_deliveries(note_id, to_agents=to_agents, to_issues=to_issues)
+            result = {
+                "note_id": note_id,
+                "delivery_count": delivery_count,
+                "to_agents": to_agents or [],
+                "to_issues": to_issues or [],
+                "must_read": must_read,
+            }
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+            return
+
+        if json_mode:
+            print(json.dumps(result, default=str))
+        else:
+            print(f"Sent note #{note_id} with {delivery_count} delivery(ies)")
+
+    # ── Mail (note delivery inbox) ───────────────────────────────────
+
+    def mail_inbox(
+        self,
+        agent_id: str,
+        issue_id: Optional[str] = None,
+        unread_only: bool = False,
+        *,
+        json_mode: bool = False,
+    ):
+        """Show note delivery inbox for an agent."""
+        try:
+            deliveries = self.db.get_inbox_deliveries(agent_id, issue_id=issue_id, unread_only=unread_only)
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+            return
+
+        if json_mode:
+            print(json.dumps({"count": len(deliveries), "deliveries": deliveries}, default=str))
+            return
+
+        if not deliveries:
+            print("No deliveries found.")
+            return
+
+        # Table: ID, Note, Status, Must Read, From, Content (truncated)
+        header = f"{'ID':<6} {'Note':<6} {'Status':<10} {'Must Read':<10} {'From':<16} Content"
+        print(header)
+        print("-" * len(header))
+        for d in deliveries:
+            content_preview = (d.get("content") or "")[:40]
+            must_read_label = "yes" if d.get("must_read") else "no"
+            from_agent = d.get("from_agent_id") or "-"
+            print(f"{d['id']:<6} {d['note_id']:<6} {d['status']:<10} {must_read_label:<10} {from_agent:<16} {content_preview}")
+
+    def mail_read(
+        self,
+        delivery_id: int,
+        agent_id: str,
+        *,
+        json_mode: bool = False,
+    ):
+        """Mark a delivery as read."""
+        try:
+            updated = self.db.mark_delivery_read(delivery_id, agent_id)
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+            return
+
+        if json_mode:
+            print(json.dumps({"delivery_id": delivery_id, "updated": updated}, default=str))
+        elif updated:
+            print(f"Delivery #{delivery_id} marked read.")
+        else:
+            print(f"Delivery #{delivery_id} unchanged (already read or not found).")
+
+    def mail_ack(
+        self,
+        delivery_id: int,
+        agent_id: str,
+        *,
+        json_mode: bool = False,
+    ):
+        """Acknowledge a must_read delivery."""
+        try:
+            updated = self.db.mark_delivery_acked(delivery_id, agent_id)
+        except Exception as e:
+            self._error(str(e), json_mode=json_mode)
+            return
+
+        if json_mode:
+            print(json.dumps({"delivery_id": delivery_id, "updated": updated}, default=str))
+        elif updated:
+            print(f"Delivery #{delivery_id} acked.")
+        else:
+            print(f"Delivery #{delivery_id} unchanged (not must_read, already acked, or not found).")
+
     # ── Event log (tail-style, not tool-backed) ─────────────────────
 
     def _format_event(self, event: dict) -> str:
@@ -1784,6 +1897,26 @@ def main():
         default="discovery",
         help="Note category (default: discovery)",
     )
+    note_parser.add_argument("--to-agent", dest="to_agents", action="append", help="Target agent ID (repeatable)")
+    note_parser.add_argument("--to-issue", dest="to_issues", action="append", help="Target issue ID (repeatable)")
+    note_parser.add_argument("--must-read", dest="must_read", action="store_true", help="Require acknowledgment")
+
+    # mail subcommand group
+    mail_parser = subparsers.add_parser("mail", help="Note delivery inbox and management")
+    mail_subparsers = mail_parser.add_subparsers(dest="mail_command")
+
+    mail_inbox_parser = mail_subparsers.add_parser("inbox", help="Show inbox deliveries")
+    mail_inbox_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
+    mail_inbox_parser.add_argument("--issue", dest="issue_id", default=None, help="Issue ID")
+    mail_inbox_parser.add_argument("--unread", action="store_true", help="Show only unread")
+
+    mail_read_parser = mail_subparsers.add_parser("read", help="Mark delivery as read")
+    mail_read_parser.add_argument("delivery_id", type=int, help="Delivery ID")
+    mail_read_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
+
+    mail_ack_parser = mail_subparsers.add_parser("ack", help="Acknowledge a must_read delivery")
+    mail_ack_parser.add_argument("delivery_id", type=int, help="Delivery ID")
+    mail_ack_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
 
     # doctor command
     doctor_parser = subparsers.add_parser("doctor", help="Run system health checks")
@@ -1940,12 +2073,40 @@ def main():
             cli.queen(backend=args.backend)
 
         elif args.command == "note":
-            cli.add_note(
-                args.content,
-                issue_id=args.issue_id,
-                category=args.category,
-                json_mode=json_mode,
-            )
+            to_agents = getattr(args, "to_agents", None)
+            to_issues = getattr(args, "to_issues", None)
+            must_read = getattr(args, "must_read", False)
+            if to_agents or to_issues:
+                cli.note_with_targets(
+                    args.content,
+                    issue_id=args.issue_id,
+                    to_agents=to_agents,
+                    to_issues=to_issues,
+                    must_read=must_read,
+                    json_mode=json_mode,
+                )
+            else:
+                cli.add_note(
+                    args.content,
+                    issue_id=args.issue_id,
+                    category=args.category,
+                    json_mode=json_mode,
+                )
+
+        elif args.command == "mail":
+            if args.mail_command == "inbox":
+                cli.mail_inbox(
+                    args.agent_id,
+                    issue_id=args.issue_id,
+                    unread_only=args.unread,
+                    json_mode=json_mode,
+                )
+            elif args.mail_command == "read":
+                cli.mail_read(args.delivery_id, args.agent_id, json_mode=json_mode)
+            elif args.mail_command == "ack":
+                cli.mail_ack(args.delivery_id, args.agent_id, json_mode=json_mode)
+            else:
+                mail_parser.print_help()
 
         elif args.command == "doctor":
             cli.doctor(fix=getattr(args, "fix", False), json_mode=json_mode)
