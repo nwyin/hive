@@ -1845,3 +1845,36 @@ def test_get_inbox_deliveries_unread_only(temp_db):
     results_unread = temp_db.get_inbox_deliveries("agent-1", unread_only=True)
     assert len(results_unread) == 1
     assert results_unread[0]["content"] == "queued"
+
+
+def test_get_inbox_deliveries_filter_by_issue_id(temp_db):
+    """get_inbox_deliveries with issue_id filters to that issue's materialized deliveries."""
+    issue1_id = temp_db.create_issue("Issue One", "desc")
+    issue2_id = temp_db.create_issue("Issue Two", "desc")
+
+    # Note targeted to issue1
+    note1 = temp_db.add_note(content="for issue 1")
+    temp_db.create_note_deliveries(note1, to_issues=[issue1_id])
+
+    # Note targeted to issue2
+    note2 = temp_db.add_note(content="for issue 2")
+    temp_db.create_note_deliveries(note2, to_issues=[issue2_id])
+
+    # Materialize both into concrete deliveries for agent-1
+    temp_db.materialize_issue_deliveries(issue1_id, "agent-1", "default")
+    temp_db.materialize_issue_deliveries(issue2_id, "agent-1", "default")
+
+    # Filter by issue1: should see only note1
+    results_issue1 = temp_db.get_inbox_deliveries("agent-1", issue_id=issue1_id)
+    assert len(results_issue1) == 1
+    assert results_issue1[0]["content"] == "for issue 1"
+    assert results_issue1[0]["recipient_issue_id"] == issue1_id
+
+    # Filter by issue2: should see only note2
+    results_issue2 = temp_db.get_inbox_deliveries("agent-1", issue_id=issue2_id)
+    assert len(results_issue2) == 1
+    assert results_issue2[0]["content"] == "for issue 2"
+
+    # No filter: should see both
+    results_all = temp_db.get_inbox_deliveries("agent-1")
+    assert len(results_all) == 2
