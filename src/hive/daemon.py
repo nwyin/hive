@@ -9,6 +9,7 @@ process (the CLI) survives and can report status back to the user.
 """
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -76,6 +77,65 @@ class HiveDaemon:
         except (OSError, ProcessLookupError):
             return False
 
+    def _find_all_daemon_pids(self) -> list[int]:
+        """Find all running hive daemon PIDs for this project by scanning the process table.
+
+        Returns PIDs of processes matching `hive ... --project <path> start --foreground`.
+        This catches orphaned daemons that the PID file doesn't track.
+        """
+        try:
+            result = subprocess.run(
+                ["ps", "ax", "-o", "pid,command"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+        except Exception:
+            return []
+
+        my_pid = os.getpid()
+        project_str = str(self.project_path)
+        pids = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if "hive" not in line or "start" not in line or "--foreground" not in line:
+                continue
+            if project_str not in line:
+                continue
+            # Extract PID from the first column
+            match = re.match(r"(\d+)\s", line)
+            if match:
+                pid = int(match.group(1))
+                if pid != my_pid:
+                    pids.append(pid)
+        return pids
+
+    def _kill_orphaned_daemons(self) -> int:
+        """Kill any orphaned daemon processes for this project.
+
+        Returns the number of processes killed.
+        """
+        pids = self._find_all_daemon_pids()
+        killed = 0
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed += 1
+            except OSError:
+                pass
+        if killed:
+            time.sleep(1.0)
+            # Force kill any survivors
+            for pid in pids:
+                try:
+                    os.kill(pid, 0)  # Check if still alive
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        return killed
+
     def start(self, db_path: str = "hive.db") -> bool:
         """
         Start the daemon if not already running.
@@ -92,10 +152,16 @@ class HiveDaemon:
         """
         self._ensure_dirs()
 
-        # Check if already running
+        # Check if already running via PID file
         existing_pid = self._read_pid()
         if existing_pid and self._is_running(existing_pid):
             return False
+
+        # Kill any orphaned daemon processes for this project.
+        # Multiple daemons can accumulate if the PID file gets overwritten
+        # or stale, leading to duplicate orchestrator loops that independently
+        # claim issues and spawn duplicate workers.
+        self._kill_orphaned_daemons()
 
         # Clean up stale PID file
         if existing_pid:
@@ -143,42 +209,42 @@ class HiveDaemon:
 
     def stop(self) -> bool:
         """
-        Stop the running daemon.
+        Stop the running daemon and any orphaned instances.
 
         Returns:
             True if stopped successfully, False if not running
         """
         pid = self._read_pid()
+        stopped_any = False
 
-        if not pid:
-            return False
+        if pid and self._is_running(pid):
+            # Send SIGTERM to the tracked PID
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
 
-        if not self._is_running(pid):
-            self._remove_pid()
-            return False
+            # Wait for process to exit
+            for _ in range(30):  # Wait up to 3 seconds
+                if not self._is_running(pid):
+                    break
+                time.sleep(0.1)
 
-        # Send SIGTERM
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            return False
+            # Force kill if still running
+            if self._is_running(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    time.sleep(0.5)
+                except OSError:
+                    pass
+            stopped_any = True
 
-        # Wait for process to exit
-        for _ in range(30):  # Wait up to 3 seconds
-            if not self._is_running(pid):
-                self._remove_pid()
-                return True
-            time.sleep(0.1)
-
-        # Force kill if still running
-        try:
-            os.kill(pid, signal.SIGKILL)
-            time.sleep(0.5)
-        except OSError:
-            pass
+        # Also kill any orphaned daemon processes not tracked by PID file
+        orphans_killed = self._kill_orphaned_daemons()
+        stopped_any = stopped_any or orphans_killed > 0
 
         self._remove_pid()
-        return True
+        return stopped_any
 
     def status(self) -> dict:
         """
