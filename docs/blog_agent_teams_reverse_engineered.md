@@ -1,12 +1,10 @@
 # Reverse-Engineering Claude Code Agent Teams: Architecture, Protocol, and Comparison with Hive
 
-*A rigorous technical analysis of Anthropic's experimental multi-agent coordination system.*
-
----
+*A technical analysis of Anthropic's experimental multi-agent coordination system.*
 
 ## Introduction
 
-Claude Code (v2.1.47) ships with an experimental feature called **Agent Teams** — a system that lets multiple Claude Code sessions coordinate on shared work through a lead-and-teammates topology. Since I've been building [Hive](https://github.com/your/hive), a multi-agent coding orchestrator with a similar goal but very different architecture, I wanted to understand exactly how Anthropic's approach works under the hood.
+Claude Code (v2.1.47) ships with an experimental feature called **Agent Teams**: multiple Claude Code sessions coordinate on shared work through a lead-and-teammates topology. I've been building [Hive](https://github.com/your/hive), a multi-agent coding orchestrator with similar goals but a very different architecture, so I wanted to understand how Anthropic's approach works under the hood.
 
 This post documents what I found through:
 
@@ -16,8 +14,6 @@ This post documents what I found through:
 4. Comparing the architecture to Hive's SQLite + orchestrator approach
 
 Every claim is cited to a specific source.
-
----
 
 ## Table of Contents
 
@@ -31,8 +27,6 @@ Every claim is cited to a specific source.
 - [8. Benchmarking Ideas](#8-benchmarking-ideas)
 - [9. Conclusions](#9-conclusions)
 - [Sources](#sources)
-
----
 
 ## 1. Architecture Overview
 
@@ -60,7 +54,7 @@ The entire coordination layer is **file-based**. No daemon process, no database,
     └── ...
 ```
 
-This is a fundamentally **decentralized** design. The lead is just another Claude session with extra tools (`TeamCreate`, `TeamDelete`, `SendMessage`). There is no background process — coordination emerges from shared file access.
+This is a fundamentally **decentralized** design. The lead is just another Claude session with extra tools (`TeamCreate`, `TeamDelete`, `SendMessage`). There is no background process. Coordination emerges from shared file access.
 
 ### Team Config
 
@@ -75,19 +69,17 @@ The team config at `~/.claude/teams/{team-name}/config.json` contains a `members
 }
 ```
 
-Names — not UUIDs — are the primary addressing mechanism. All messaging and task assignment uses the `name` field [^docs-arch].
+Names are the primary addressing mechanism (UUIDs exist but aren't used for routing). All messaging and task assignment uses the `name` field [^docs-arch].
 
 ### A Note on Team Naming
 
-On disk, team directories are identified by UUID, not human-readable names. For example, a real team directory on my machine:
+On disk, team directories use UUIDs as directory names rather than human-readable strings. For example, a real team directory on my machine:
 
 ```
 ~/.claude/teams/b18e107a-fc7a-414d-811c-9466dbdf1c3f/
 ```
 
 [^disk-teams]: Observed at `/Users/tau/.claude/teams/b18e107a-fc7a-414d-811c-9466dbdf1c3f/`
-
----
 
 ## 2. The Shared Task List
 
@@ -123,8 +115,8 @@ Each task is stored as an individual JSON file in `~/.claude/tasks/{team-name}/`
 
 Two special files provide coordination [^disk-lock-hwm]:
 
-- **`.lock`** — A 0-byte file used for filesystem-level mutual exclusion (`flock()`). Present in all 42 task directories observed on my machine.
-- **`.highwatermark`** — Contains a single integer (e.g., `"3"`, `"13"`). Represents the next available task ID for auto-incrementing.
+- **`.lock`**: A 0-byte file used for filesystem-level mutual exclusion (`flock()`). Present in all 42 task directories observed on my machine.
+- **`.highwatermark`**: Contains a single integer (e.g., `"3"`, `"13"`). The next available task ID for auto-incrementing.
 
 ### Task Claiming
 
@@ -133,8 +125,6 @@ Task claiming uses file locking to prevent race conditions [^docs-claiming]. Tea
 ### Observation: Most Task Directories Are Empty
 
 Of 42 task directories on my machine, only 5 contained actual task JSON files [^disk-task-dirs]. The remaining 37 had only `.lock` and `.highwatermark`. This likely means tasks are cleaned up after completion, or these were sessions where Claude used the internal task list (available since the task list feature launch [^docs-interactive]) without decomposing into subtask files.
-
----
 
 ## 3. Inter-Agent Communication
 
@@ -174,17 +164,15 @@ The `type` field inside the `text` payload supports [^docs-messaging] [^binary-a
 
 **Write path**: The sender appends a new entry to the recipient's inbox JSON array file.
 
-**Read path**: The recipient polls their own inbox file. New messages are injected as synthetic conversation turns — they appear as if a user sent them [^docs-auto-delivery].
+**Read path**: The recipient polls their own inbox file. New messages are injected as synthetic conversation turns (they appear as if a user sent them) [^docs-auto-delivery].
 
 **Broadcast**: Literally writes the same message to every teammate's inbox file. Token cost scales linearly with team size [^docs-broadcast-cost].
 
-There is no WebSocket, no pub/sub, no socket — just file append + file read. The latency between send and receive depends on the recipient's poll interval.
+There is no WebSocket, no pub/sub, no socket. Just file append + file read. Latency between send and receive depends on the recipient's poll interval.
 
 ### Peer DM Visibility
 
 When a teammate sends a DM to another teammate, a brief summary is included in the lead's idle notification. This gives the lead visibility into peer collaboration without the full message content [^docs-peer-dm].
-
----
 
 ## 4. Agent Spawning and Lifecycle
 
@@ -192,8 +180,8 @@ When a teammate sends a DM to another teammate, a brief summary is included in t
 
 Each teammate is a **separate `claude` CLI process** [^docs-arch]. The lead spawns them via the `Task` tool with `team_name` and `name` parameters. Environment variables are set on the spawned process [^docs-env-vars]:
 
-- `CLAUDE_CODE_TEAM_NAME` — auto-set on spawned teammates
-- `CLAUDE_CODE_PLAN_MODE_REQUIRED` — set to `true` if plan approval is required
+- `CLAUDE_CODE_TEAM_NAME`: auto-set on spawned teammates
+- `CLAUDE_CODE_PLAN_MODE_REQUIRED`: set to `true` if plan approval is required
 
 ### Context Initialization
 
@@ -215,26 +203,24 @@ From binary analysis of Claude Code v2.1.47, the teammate context is managed via
 - `planModeRequired`
 
 Key internal functions:
-- `isTeammate()` / `isTeamLead()` — role detection
-- `waitForTeammatesToBecomeIdle()` — synchronization primitive for the lead
-- `getTeammateContext()` / `setDynamicTeamContext()` — runtime context management
+- `isTeammate()` / `isTeamLead()`: role detection
+- `waitForTeammatesToBecomeIdle()`: synchronization primitive for the lead
+- `getTeammateContext()` / `setDynamicTeamContext()`: runtime context management
 
 ### Idle Detection
 
-After every LLM turn, a teammate automatically goes idle and sends an `idle_notification` to the lead [^docs-idle]. This is the normal resting state — not an error. Sending a message to an idle teammate wakes it (the next poll cycle picks up the inbox message).
+After every LLM turn, a teammate automatically goes idle and sends an `idle_notification` to the lead [^docs-idle]. This is the normal resting state, not an error condition. Sending a message to an idle teammate wakes it (the next poll cycle picks up the inbox message).
 
 ### Shutdown Protocol
 
 1. Lead sends `shutdown_request` to a teammate [^docs-shutdown]
 2. Teammate can approve (exits gracefully) or reject (continues working with an explanation)
 3. Team cleanup via `TeamDelete` removes `~/.claude/teams/{team-name}/` and `~/.claude/tasks/{team-name}/`
-4. Cleanup fails if any teammates are still active — they must be shut down first [^docs-cleanup]
+4. Cleanup fails if any teammates are still active; they must be shut down first [^docs-cleanup]
 
 ### Permission Inheritance
 
 Teammates inherit the lead's permission mode at spawn time. If the lead runs `--dangerously-skip-permissions`, all teammates do too [^docs-permissions]. Individual modes can be changed post-spawn but not configured per-teammate at spawn time.
-
----
 
 ## 5. Quality Gates and Hooks
 
@@ -242,7 +228,7 @@ Agent Teams integrates with Claude Code's hook system for quality enforcement [^
 
 ### TeammateIdle Hook
 
-Fires when a teammate is about to go idle. Exit code 2 sends stderr as feedback and prevents idle — the teammate continues working.
+Fires when a teammate is about to go idle. Exit code 2 sends stderr as feedback and prevents idle, keeping the teammate working.
 
 ```json
 {
@@ -277,8 +263,6 @@ This fires in two situations [^docs-task-hook]: (1) when any agent explicitly ma
 | `prompt`  | Single-turn LLM evaluation. Returns `{ok, reason}`.            |
 | `agent`   | Multi-turn subagent with read tools. Up to 50 turns.           |
 
----
-
 ## 6. Token Economics
 
 Agent teams use **approximately 7× more tokens** than standard sessions when teammates run in plan mode [^docs-costs]. Each teammate maintains its own full context window as a separate Claude instance.
@@ -291,8 +275,6 @@ Agent teams use **approximately 7× more tokens** than standard sessions when te
 ### No Built-In Token Budget
 
 Unlike Hive, Claude Code Agent Teams has **no per-task or per-run token budget enforcement**. The only guidance is "clean up teams when done" and "use Sonnet for teammates to balance cost and capability" [^docs-cost-optimization].
-
----
 
 ## 7. Architectural Comparison: Agent Teams vs Hive
 
@@ -309,10 +291,10 @@ Unlike Hive, Claude Code Agent Teams has **no per-task or per-run token budget e
 | **Retry/escalation**     | Manual (lead decides, or user intervenes)            | Automatic: retry → agent-switch → anomaly → escalation  |
 | **Topology**             | Lead + flat peers, peer-to-peer messaging            | Central orchestrator + workers + refinery (hub-and-spoke)|
 | **Scheduling**           | Self-claim (teammates grab next task)                | Orchestrator polls ready queue, claims atomically        |
-| **State durability**     | Files only — no in-process teammate resumption       | SQLite + git — full reconciliation on restart            |
+| **State durability**     | Files only; no in-process teammate resumption         | SQLite + git; full reconciliation on restart             |
 | **Quality gates**        | Shell hooks (`TeammateIdle`, `TaskCompleted`)        | Merge pipeline: rebase → test → refinery review         |
 | **Token tracking**       | Per-session only, no cross-agent aggregation         | `tokens_used` events, per-issue/per-run budgets         |
-| **Stall detection**      | Manual — user notices teammate stopped               | Lease-based: expiry → status check → extend or fail     |
+| **Stall detection**      | Manual (user notices teammate stopped)               | Lease-based: expiry → status check → extend or fail     |
 | **Concurrency control**  | Implicit (team size = teammate count)                | `MAX_AGENTS` cap + per-run token budget                 |
 | **Dependency model**     | `blocks`/`blockedBy` on task files                   | DAG in `dependencies` table with `blocks` edges         |
 
@@ -320,7 +302,7 @@ Unlike Hive, Claude Code Agent Teams has **no per-task or per-run token budget e
 
 #### 1. Decentralized vs Centralized
 
-Claude Code Teams is **decentralized**. The lead is just another Claude session that happens to have team management tools. There is no background process. If the lead crashes, there is no recovery mechanism — in-process teammates cannot be resumed [^docs-limitations].
+Claude Code Teams is **decentralized**. The lead is just another Claude session that happens to have team management tools. There is no background process. If the lead crashes, there is no recovery mechanism; in-process teammates cannot be resumed [^docs-limitations].
 
 Hive is **centralized**. A Python orchestrator process (`orchestrator.py`) manages the entire lifecycle. This adds complexity but enables lease-based stall detection, automatic retry chains (retry → agent-switch → escalation), and clean-state reconciliation on restart [^hive-design-doc].
 
@@ -337,12 +319,9 @@ This means Hive can safely schedule work that touches overlapping files. The mer
 
 #### 3. Filesystem vs Database
 
-Claude Code's file-based approach is elegantly simple — zero infrastructure required. But it has real tradeoffs:
+Claude Code's file-based approach requires zero infrastructure. But it has real tradeoffs.
 
-- **No transactional guarantees**: Task claiming relies on `flock()`, which provides mutual exclusion but not ACID semantics. A crash mid-write can leave an inbox file or task file in an inconsistent state.
-- **No aggregate queries**: You can't easily answer "what's the total token spend across all agents?" or "what's the mean time-to-completion by model?"
-- **No event log**: There's no audit trail of state transitions. When a task moves from `pending` to `in_progress`, there's no record of when, by whom, or why.
-- **No resumption**: The docs explicitly state that `/resume` and `/rewind` do not restore in-process teammates [^docs-limitations].
+Task claiming relies on `flock()`, which provides mutual exclusion but not ACID semantics. A crash mid-write can leave an inbox file or task file in an inconsistent state. There's no way to run aggregate queries ("what's the total token spend across all agents?"). There's no audit trail of state transitions: when a task moves from `pending` to `in_progress`, nothing records when, by whom, or why. And the docs explicitly state that `/resume` and `/rewind` do not restore in-process teammates [^docs-limitations].
 
 Hive's SQLite gives ACID transactions, an append-only event ledger, rich metric views (`agent_runs`), and the ability to reconstruct state after crashes [^hive-design-doc]. The cost is needing a running process.
 
@@ -358,8 +337,6 @@ Hive's SQLite gives ACID transactions, an append-only event ledger, rich metric 
 
 **Hive**: Tracks `tokens_used` events per agent, enforces per-issue budgets (`MAX_TOKENS_PER_ISSUE=200000`), and has a global per-run cap (`MAX_TOKENS_PER_RUN=2000000`). Worker spawning pauses when the budget is exhausted [^hive-design-doc].
 
----
-
 ## 8. Benchmarking Ideas
 
 ### Artificial Benchmarks
@@ -370,7 +347,7 @@ Hive's SQLite gives ACID transactions, an append-only event ledger, rich metric 
    - Agent Teams: relies on task partitioning (fails if overlap occurs)
    - Hive: merge pipeline absorbs conflicts mechanically or via refinery
 
-3. **Dependency Chain Throughput**: Create a DAG of tasks with varied dependency structures (wide-parallel, deep-serial, diamond). Measure scheduling efficiency — does the system correctly maximize parallelism while respecting ordering constraints?
+3. **Dependency Chain Throughput**: Create a DAG of tasks with varied dependency structures (wide-parallel, deep-serial, diamond). Measure scheduling efficiency: does the system correctly maximize parallelism while respecting ordering constraints?
 
 4. **Recovery/Resilience Test**: Kill the orchestrator/lead mid-run. Measure recovery:
    - Agent Teams: teammates become orphans, no automatic recovery
@@ -384,11 +361,9 @@ Hive's SQLite gives ACID transactions, an append-only event ledger, rich metric 
 
 7. **Agentic Coding Tournament**: Run both systems on the same set of 10-20 diverse tasks (bug fixes, features, refactors, documentation). Score on: success rate, token cost, wall-clock time, code quality (human-rated).
 
----
-
 ## 9. Conclusions
 
-Claude Code Agent Teams is a remarkably simple system. The entire coordination layer is just JSON files on disk — no daemon, no database, no network protocol. This makes it portable, easy to understand, and zero-infrastructure. The tradeoff is fragility: no crash recovery, no merge strategy, no token budgets, no event log.
+Claude Code Agent Teams is a simple system. The entire coordination layer is just JSON files on disk. No daemon, no database, no network protocol. This makes it portable, easy to understand, and zero-infrastructure. The tradeoff is fragility: no crash recovery, no merge strategy, no token budgets, no event log.
 
 Hive takes the opposite approach: a centralized orchestrator with SQLite-backed state, git worktree isolation, a two-tier merge pipeline, and automatic retry/escalation. This handles the hard problems (merge conflicts, stall detection, token budgets, state recovery) at the cost of operational complexity.
 
@@ -397,15 +372,13 @@ The fundamental question is: **do you need a merge strategy?**
 - If your tasks are cleanly partitioned across files and you trust the lead to manage conflicts manually, Agent Teams' simplicity is a real advantage.
 - If your tasks overlap, require automated testing gates, or need to survive crashes, you need something like Hive's approach.
 
-Both systems validate the same core insight: LLM agents are most effective when coordination logic is external to the model context. Whether that coordination lives in flat files or a SQL database is an engineering tradeoff, not a fundamental architectural difference. The real differentiator is what happens when things go wrong — and in multi-agent systems, things always go wrong.
-
----
+Both systems validate the same core insight: LLM agents are most effective when coordination logic is external to the model context. Whether that coordination lives in flat files or a SQL database is an engineering tradeoff. The real differentiator is what happens when things go wrong. In multi-agent systems, things always go wrong.
 
 ## Sources
 
 ### Primary: Official Documentation
 
-[^docs-arch]: Claude Code Docs, ["Orchestrate teams of Claude Code sessions — Architecture"](https://code.claude.com/docs/en/agent-teams#architecture). Accessed 2026-02-19.
+[^docs-arch]: Claude Code Docs, ["Teams of Claude Code sessions: Architecture"](https://code.claude.com/docs/en/agent-teams#architecture). Accessed 2026-02-19.
 
 [^docs-task-fields]: Claude Code Docs, ["Interactive mode — Task list"](https://code.claude.com/docs/en/interactive-mode#task-list). Accessed 2026-02-19. Task schema fields documented in tool definitions within Claude Code v2.1.47.
 
