@@ -3,7 +3,7 @@
   "checkpoint_id": "e6ce0b887c87",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 1,
+  "checkpoints_count": 2,
   "files_touched": [
     "docs/blog_agent_teams_reverse_engineered.md"
   ],
@@ -21,13 +21,20 @@
       "context": "/e6/ce0b887c87/1/context.md",
       "content_hash": "/e6/ce0b887c87/1/content_hash.txt",
       "prompt": "/e6/ce0b887c87/1/prompt.txt"
+    },
+    {
+      "metadata": "/e6/ce0b887c87/2/metadata.json",
+      "transcript": "/e6/ce0b887c87/2/full.jsonl",
+      "context": "/e6/ce0b887c87/2/context.md",
+      "content_hash": "/e6/ce0b887c87/2/content_hash.txt",
+      "prompt": "/e6/ce0b887c87/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 291,
-    "cache_creation_tokens": 355386,
-    "cache_read_tokens": 24285752,
-    "output_tokens": 33863,
-    "api_call_count": 248
+    "input_tokens": 312,
+    "cache_creation_tokens": 436778,
+    "cache_read_tokens": 24683756,
+    "output_tokens": 33941,
+    "api_call_count": 257
   }
 }
