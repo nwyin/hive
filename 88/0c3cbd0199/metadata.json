@@ -3,7 +3,7 @@
   "checkpoint_id": "880c3cbd0199",
   "strategy": "manual-commit",
   "branch": "fix/dep-race-and-merge-cleanup",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "src/hive/cli.py",
     "src/hive/db.py",
@@ -19,13 +19,20 @@
       "context": "/88/0c3cbd0199/0/context.md",
       "content_hash": "/88/0c3cbd0199/0/content_hash.txt",
       "prompt": "/88/0c3cbd0199/0/prompt.txt"
+    },
+    {
+      "metadata": "/88/0c3cbd0199/1/metadata.json",
+      "transcript": "/88/0c3cbd0199/1/full.jsonl",
+      "context": "/88/0c3cbd0199/1/context.md",
+      "content_hash": "/88/0c3cbd0199/1/content_hash.txt",
+      "prompt": "/88/0c3cbd0199/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 3213,
-    "cache_creation_tokens": 104538,
-    "cache_read_tokens": 3334617,
-    "output_tokens": 7342,
-    "api_call_count": 50
+    "input_tokens": 3496,
+    "cache_creation_tokens": 445963,
+    "cache_read_tokens": 27418333,
+    "output_tokens": 41132,
+    "api_call_count": 291
   }
 }
