@@ -81,20 +81,15 @@ class HiveCLI:
                 project=self.project_name,
                 model=model,
                 tags=tag_list,
+                depends_on=depends_on,
             )
-            # Wire dependencies immediately so the issue can't be claimed before they exist
-            deps_added = []
-            if depends_on:
-                for dep_id in depends_on:
-                    self.db.add_dependency(issue_id, dep_id, "blocks")
-                    deps_added.append(dep_id)
 
             result = {
                 "issue_id": issue_id,
                 "title": title,
                 "status": "open",
                 "tags": tag_list or [],
-                "depends_on": deps_added,
+                "depends_on": depends_on or [],
                 "message": f"Created issue {issue_id}: {title}",
             }
         except Exception as e:

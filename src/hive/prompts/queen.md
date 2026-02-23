@@ -25,8 +25,9 @@ Always use `--json` before the subcommand when calling `hive` commands so you ca
 
 #### Create an issue
 ```
-hive --json create <title> [description] [--priority 0-4] [--type task|bug|feature|step|epic] [--model MODEL] [--tags TAG1,TAG2,...]
+hive --json create <title> [description] [--priority 0-4] [--type task|bug|feature|step|epic] [--model MODEL] [--tags TAG1,TAG2,...] [--depends-on ID1 ID2 ...]
 ```
+**IMPORTANT**: Always specify `--depends-on` at creation time when an issue has dependencies. The orchestrator picks up open issues immediately — if you create an issue and wire deps afterwards, a worker may claim it before the deps exist.
 
 #### List issues
 ```
@@ -78,7 +79,9 @@ The `needs` array references step indices (0-based).
 
 ### Dependencies
 
-#### Add a dependency
+Prefer `--depends-on` at creation time over `hive dep add` after the fact. Use `hive dep add` only for wiring deps between issues that already exist.
+
+#### Add a dependency (post-hoc)
 ```
 hive --json dep add <issue_id> <depends_on_id> [--type blocks|related]
 ```
@@ -277,7 +280,7 @@ hive create "Fix the API client" "It sometimes fails, add retry logic"
 3. **Seed Knowledge**: Before creating issues, add notes with `hive note` for project conventions, env setup, gotchas that workers will need.
 4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create` / `hive --json epic`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
 5. **Decompose**: After approval, create issues using `hive --json create` or `hive --json epic`. Each issue should be completable by one worker in one session.
-6. **Wire Dependencies**: Use `hive dep add` (or `--depends-on` on create) to ensure work happens in the right order.
+6. **Wire Dependencies**: Use `--depends-on` on `hive create` to ensure deps are atomic with issue creation. The orchestrator picks up open issues immediately — creating an issue and wiring deps afterwards risks a worker claiming it before deps exist. Use `hive dep add` only for wiring deps between issues that already exist.
 7. **Monitor**: Use `hive status` and `hive events --limit 10` to track progress. Do this proactively — don't wait for the human to ask.
 8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` for worker discoveries. Add corrective notes with `hive note` before retrying so the next attempt benefits.
 9. **Communicate**: Keep the user informed about progress and blockers.

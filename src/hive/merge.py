@@ -195,6 +195,7 @@ class MergeProcessor:
                 "merge_error",
                 {"error": str(e), "queue_id": queue_id},
             )
+            await self._cleanup_merge_resources(entry)
 
     async def _send_to_refinery(self, entry: Dict[str, Any]):
         """
@@ -256,14 +257,17 @@ class MergeProcessor:
                 self.db.update_merge_queue_status(queue_id, "failed")
                 self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e2)})
                 await self._force_reset_refinery_session(f"Exception in retry: {e2}")
+                await self._cleanup_merge_resources(entry)
                 return
         except Exception as e:
             self.db.update_merge_queue_status(queue_id, "failed")
             self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e)})
             await self._force_reset_refinery_session(f"Exception in _send_to_refinery: {e}")
+            await self._cleanup_merge_resources(entry)
             return
 
         # Process result
+        needs_cleanup = False
         if result["status"] == "merged":
             branch_name = entry["branch_name"]
             try:
@@ -276,15 +280,16 @@ class MergeProcessor:
                     "merge_failed",
                     {"error": str(e), "branch": branch_name, "after_refinery": True},
                 )
-                return
+                needs_cleanup = True
 
-            await self._finalize_issue(entry)
-            self.db.log_event(
-                issue_id,
-                agent_id,
-                "refinery_review_passed",
-                {"conflicts_resolved": result.get("conflicts_resolved", 0)},
-            )
+            if not needs_cleanup:
+                await self._finalize_issue(entry)
+                self.db.log_event(
+                    issue_id,
+                    agent_id,
+                    "refinery_review_passed",
+                    {"conflicts_resolved": result.get("conflicts_resolved", 0)},
+                )
         elif result["status"] == "rejected":
             self.db.update_merge_queue_status(queue_id, "failed")
             self.db.update_issue_status(issue_id, "open")
@@ -299,11 +304,13 @@ class MergeProcessor:
                 content=note_content,
                 project=self.project_name,
             )
+            needs_cleanup = True
         else:
             # needs_human or unknown
             self.db.update_merge_queue_status(queue_id, "failed")
             self.db.update_issue_status(issue_id, "escalated")
             self.db.log_event(issue_id, agent_id, "refinery_review_escalated", {"summary": result.get("summary", "")})
+            needs_cleanup = True
 
         # Harvest notes from the worktree (refinery may have written .hive-notes.jsonl)
         try:
@@ -322,6 +329,10 @@ class MergeProcessor:
             pass  # Best-effort
         finally:
             remove_notes_file(worktree_path)
+
+        # Clean up orphaned resources on non-success paths
+        if needs_cleanup:
+            await self._cleanup_merge_resources(entry)
 
         # Check if refinery session should be cycled due to token usage
         await self._maybe_cycle_refinery_session()
@@ -506,9 +517,12 @@ class MergeProcessor:
         # Tear down worktree, session, and agent
         await self._teardown_after_finalize(entry)
 
-    async def _teardown_after_finalize(self, entry: Dict[str, Any]):
+    async def _cleanup_merge_resources(self, entry: Dict[str, Any]):
         """
-        Clean up worktree, session, and agent state after finalization.
+        Best-effort cleanup of worktree, branch, session, and agent row.
+
+        Called after both successful finalization and failed/rejected merges
+        to prevent resource leaks.
 
         Args:
             entry: Merge queue entry dict
@@ -519,13 +533,16 @@ class MergeProcessor:
             agent = self.db.get_agent(agent_id)
             session_id = agent.get("session_id") if agent else None
             if session_id:
-                await self.opencode.cleanup_session(session_id, directory=entry.get("worktree"))
+                try:
+                    await self.opencode.cleanup_session(session_id, directory=entry.get("worktree"))
+                except Exception:
+                    pass  # Best-effort
 
         # Remove worktree (in executor to avoid blocking event loop)
         if entry.get("worktree"):
             try:
                 await remove_worktree_async(entry["worktree"])
-            except GitWorktreeError:
+            except (GitWorktreeError, FileNotFoundError, OSError):
                 pass  # Best-effort cleanup
 
         # Delete branch (in executor to avoid blocking event loop)
@@ -538,9 +555,15 @@ class MergeProcessor:
         # Delete ephemeral agent (events/notes/merge_queue retain agent_id as correlation key)
         if agent_id:
             self.db.conn.execute("PRAGMA foreign_keys = OFF")
-            self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-            self.db.conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+            finally:
+                self.db.conn.execute("PRAGMA foreign_keys = ON")
             self.db.conn.commit()
+
+    async def _teardown_after_finalize(self, entry: Dict[str, Any]):
+        """Clean up worktree, session, and agent state after finalization."""
+        await self._cleanup_merge_resources(entry)
 
     async def _maybe_cycle_refinery_session(self):
         """

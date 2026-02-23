@@ -1051,6 +1051,8 @@ class Orchestrator:
                 "monitor_error",
                 {"error": str(e)},
             )
+            # Tear down the agent so it doesn't leak in active_agents
+            await self._teardown_agent(agent)
         finally:
             # Clean up using the snapshotted session_id, not agent.session_id
             # which may have been mutated by cycle_agent_to_next_step.

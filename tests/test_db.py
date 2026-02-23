@@ -262,6 +262,28 @@ def test_claim_issue_dep_race_condition(temp_db):
     assert issue["assignee"] is None
 
 
+def test_create_issue_with_depends_on(temp_db):
+    """Test that create_issue wires deps atomically in the same transaction."""
+    blocker_id = temp_db.create_issue("Blocker")
+    issue_id = temp_db.create_issue("Blocked issue", depends_on=[blocker_id])
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Issue should not appear in ready queue (blocker is open)
+    ready = temp_db.get_ready_queue()
+    ready_ids = [r["id"] for r in ready]
+    assert issue_id not in ready_ids
+
+    # Claim should fail
+    assert not temp_db.claim_issue(issue_id, agent_id)
+
+    # Resolve blocker → now it should be claimable
+    temp_db.update_issue_status(blocker_id, "finalized")
+    ready = temp_db.get_ready_queue()
+    ready_ids = [r["id"] for r in ready]
+    assert issue_id in ready_ids
+    assert temp_db.claim_issue(issue_id, agent_id)
+
+
 def test_log_event(temp_db):
     """Test event logging."""
     issue_id = temp_db.create_issue("Test issue")

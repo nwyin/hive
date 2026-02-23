@@ -320,9 +320,13 @@ class Database:
         model: Optional[str] = None,
         tags: Optional[list[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        depends_on: Optional[list[str]] = None,
     ) -> str:
         """
         Create a new issue.
+
+        Dependencies are wired in the same transaction as the INSERT so
+        the issue is never visible to get_ready_queue without its deps.
 
         Args:
             title: Issue title
@@ -334,6 +338,7 @@ class Database:
             model: Model to use for this issue (overrides global WORKER_MODEL)
             tags: List of tags for the issue (validated against ALLOWED_TAGS)
             metadata: Additional metadata dict
+            depends_on: List of issue IDs this issue depends on (blocks type)
 
         Returns:
             Generated issue ID
@@ -366,6 +371,16 @@ class Database:
                     metadata_json,
                 ),
             )
+
+            # Wire deps in the same transaction — the issue is never visible
+            # to get_ready_queue without its blocking dependencies.
+            if depends_on:
+                for dep_id in depends_on:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO dependencies (issue_id, depends_on, type) VALUES (?, ?, 'blocks')",
+                        (issue_id, dep_id),
+                    )
+
             self.log_event(issue_id, None, "created", {"title": title}, commit=False)
 
         return issue_id
