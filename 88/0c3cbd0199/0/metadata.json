@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "880c3cbd0199",
+  "session_id": "2244de2c-73e7-4e94-bd7a-79fbdbff31ce",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-23T09:27:28.609557Z",
+  "branch": "fix/dep-race-and-merge-cleanup",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/db.py",
+    "src/hive/cli.py",
+    "src/hive/prompts/queen.md",
+    "src/hive/merge.py",
+    "src/hive/orchestrator.py",
+    "tests/test_db.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "2dca113da6b2",
+  "token_usage": {
+    "input_tokens": 3213,
+    "cache_creation_tokens": 104538,
+    "cache_read_tokens": 3334617,
+    "output_tokens": 7342,
+    "api_call_count": 50
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-23T09:27:28.167243Z",
+    "agent_lines": 84,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 84,
+    "agent_percentage": 100
+  },
+  "transcript_path": ".claude/projects/-Users-tau-projects-hive/2244de2c-73e7-4e94-bd7a-79fbdbff31ce.jsonl"
+}
