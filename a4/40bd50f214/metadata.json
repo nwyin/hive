@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "a440bd50f214",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hive/db.py",
+    "src/hive/orchestrator.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a4/40bd50f214/0/metadata.json",
+      "transcript": "/a4/40bd50f214/0/full.jsonl",
+      "context": "/a4/40bd50f214/0/context.md",
+      "content_hash": "/a4/40bd50f214/0/content_hash.txt",
+      "prompt": "/a4/40bd50f214/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 283,
+    "cache_creation_tokens": 341425,
+    "cache_read_tokens": 24083716,
+    "output_tokens": 33790,
+    "api_call_count": 241
+  }
+}
