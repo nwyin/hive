@@ -160,7 +160,7 @@ hive debug          # human-readable
 hive debug --json   # machine-readable, easy to attach
 ```
 
-Please send me bug reports, feature requests, and other cool ideas!s
+Please send me bug reports, feature requests, and other cool ideas!
 
 ## Development
 
