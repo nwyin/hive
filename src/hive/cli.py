@@ -288,6 +288,10 @@ class HiveCLI:
             if status is not None:
                 updates.append("status = ?")
                 params.append(status)
+                # When re-opening an issue, clear the assignee so it
+                # re-enters the ready queue and can be claimed by a new agent.
+                if status == "open":
+                    updates.append("assignee = NULL")
             if model is not None:
                 updates.append("model = ?")
                 params.append(model)

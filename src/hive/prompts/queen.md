@@ -133,29 +133,22 @@ acknowledge the note via: hive mail ack <delivery_id>
 hive --json status
 ```
 
-#### Ready queue (unblocked, unassigned issues)
-```
-hive --json ready
-```
-
 #### List agents
 ```
 hive --json agents [--status idle|working|stalled|failed]
 ```
+Returns: `{"count": N, "agents": [{"id": "...", "name": "...", "status": "...", ...}, ...]}`.
 
-#### Show agent details
-```
-hive --json agent <agent_id>
-```
+To show a single agent's details, use: `hive --json agents <agent_id>`.
 
 #### Event log
 ```
-hive --json events [--issue ID] [--agent ID] [--type TYPE] [--limit N]
+hive --json logs [-n COUNT] [--issue ID] [--agent ID] [--type TYPE]
 ```
 
-#### Tail events (live stream)
+#### Tail events (live, streaming)
 ```
-hive --json logs [-f] [-n COUNT] [--issue ID] [--agent ID]
+hive logs -f [-n COUNT] [--issue ID] [--agent ID]
 ```
 
 #### Merge queue
