@@ -2041,7 +2041,7 @@ def main():
         project_path, project_name = detect_project()
 
     # Load layered config: defaults → ~/.hive/config.toml → .hive.toml → env
-    Config.load(project_root=project_path)
+    Config.load_global(project_root=project_path)
 
     # Ensure ~/.hive/ directory exists
     Config.HIVE_DIR.mkdir(parents=True, exist_ok=True)

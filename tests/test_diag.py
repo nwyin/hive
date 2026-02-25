@@ -11,6 +11,7 @@ from hive.diag import format_report_text, gather_report
 @pytest.fixture
 def report(temp_db, tmp_path):
     """Gather a diagnostic report using the temp DB and a scratch project dir."""
+    Config.load_global(project_root=tmp_path)
     return gather_report(temp_db, str(tmp_path), "test-project")
 
 
@@ -39,7 +40,7 @@ def test_system_info_has_versions(report):
 
 def test_config_sanitizes_password(temp_db, tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCODE_SERVER_PASSWORD", "supersecret")
-    Config.load(project_root=tmp_path)
+    Config.load_global(project_root=tmp_path)
     report = gather_report(temp_db, str(tmp_path), "test-project")
     cfg = report["config"]
     pw_entry = next(e for e in cfg if e["field"] == "OPENCODE_PASSWORD")

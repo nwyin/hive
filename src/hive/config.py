@@ -174,9 +174,54 @@ def _coerce(value: object, typ: type) -> object:
     return typ(value)
 
 
+# ── ConfigRegistry — per-project config cache ────────────────────────────
+
+
+class ConfigRegistry:
+    """Registry of per-project _Config instances.
+
+    Replaces the old module-level singleton while preserving backward
+    compatibility: ``Config.MAX_WORKERS`` continues to work via __getattr__
+    delegation to the global/CLI config loaded with load_global().
+    """
+
+    def __init__(self):
+        self._configs: dict[str, _Config] = {}  # project_name → _Config
+        self._global: _Config | None = None  # fallback for CLI (single-project context)
+
+    def get(self, project_name: str, project_root: Path | None = None) -> _Config:
+        """Get or lazy-load config for a named project."""
+        if project_name not in self._configs:
+            cfg = _Config()
+            cfg.load(project_root=project_root)
+            self._configs[project_name] = cfg
+        return self._configs[project_name]
+
+    def load_global(self, project_root: Path | None = None) -> _Config:
+        """Load config for the current CLI context (backward compat)."""
+        self._global = _Config()
+        self._global.load(project_root=project_root)
+        return self._global
+
+    @property
+    def current(self) -> _Config:
+        """Access the global/CLI config. Raises RuntimeError if load_global() not called."""
+        if self._global is None:
+            raise RuntimeError("ConfigRegistry.load_global() not called — no global config loaded")
+        return self._global
+
+    def __getattr__(self, name: str):
+        # Delegate attribute access to the global config for backward compat.
+        # __getattr__ is only called when normal attribute lookup fails.
+        try:
+            return getattr(self.current, name)
+        except RuntimeError:
+            raise RuntimeError(f"ConfigRegistry: cannot access '{name}' before load_global() is called")
+
+
 # ── Module-level singleton ───────────────────────────────────────────────
 
-Config = _Config()
+Config = ConfigRegistry()
 
 # Shared permission configurations (not TOML-configurable)
 WORKER_PERMISSIONS = [

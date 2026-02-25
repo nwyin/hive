@@ -27,6 +27,18 @@ def pytest_collection_modifyitems(config, items):
 INTEGRATION_TIMEOUT = 30  # seconds per integration test
 
 
+@pytest.fixture(autouse=True)
+def _auto_load_global_config():
+    """Ensure Config.load_global() is called before every test.
+
+    Mirrors production behaviour (cli.main() always calls load_global before
+    running any command).  Tests that create their own ConfigRegistry() are
+    unaffected because they use local instances rather than the module-level
+    Config singleton.
+    """
+    Config.load_global()
+
+
 @pytest.fixture
 def temp_db():
     """Provide a temporary test database."""
