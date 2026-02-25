@@ -187,6 +187,15 @@ CREATE INDEX IF NOT EXISTS idx_mq_status ON merge_queue(status);
 CREATE INDEX IF NOT EXISTS idx_mq_project ON merge_queue(project);
 
 ----------------------------------------------------------------------
+-- PROJECTS: registry of all known projects and their disk paths
+----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS projects (
+    name        TEXT PRIMARY KEY,
+    path        TEXT NOT NULL,
+    registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+);
+
+----------------------------------------------------------------------
 -- AGENT_RUNS: Materialized view over events for per-agent-run metrics
 ----------------------------------------------------------------------
 CREATE VIEW IF NOT EXISTS agent_runs AS
@@ -1544,3 +1553,27 @@ class Database:
 
         rows = self.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Projects ──────────────────────────────────────────────────────
+
+    def register_project(self, name: str, path: str) -> None:
+        """Register a project name→path mapping. Idempotent via INSERT OR REPLACE."""
+        if not name:
+            raise ValueError("Project name must not be empty")
+        if not path:
+            raise ValueError("Project path must not be empty")
+        with self.transaction():
+            self.conn.execute(
+                "INSERT OR REPLACE INTO projects (name, path) VALUES (?, ?)",
+                (name, path),
+            )
+
+    def list_projects(self) -> list[dict]:
+        """Return all registered projects as [{name, path, registered_at}]."""
+        rows = self.conn.execute("SELECT name, path, registered_at FROM projects ORDER BY name").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_project_path(self, name: str) -> Optional[str]:
+        """Return the disk path for a project by name, or None if not found."""
+        row = self.conn.execute("SELECT path FROM projects WHERE name = ?", (name,)).fetchone()
+        return row["path"] if row else None

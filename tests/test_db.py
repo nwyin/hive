@@ -1900,3 +1900,66 @@ def test_get_inbox_deliveries_filter_by_issue_id(temp_db):
     # No filter: should see both
     results_all = temp_db.get_inbox_deliveries("agent-1")
     assert len(results_all) == 2
+
+
+# ── Project registration tests ─────────────────────────────────────────────
+
+
+def test_project_register_and_lookup(temp_db):
+    """INV-3: get_project_path returns None for unknown projects; returns path after registration."""
+    assert temp_db.get_project_path("no-such-project") is None
+
+    temp_db.register_project("my-project", "/home/user/my-project")
+    assert temp_db.get_project_path("my-project") == "/home/user/my-project"
+
+
+def test_project_register_idempotent(temp_db):
+    """INV-1: register_project is idempotent — re-registering with a new path updates it, no error."""
+    temp_db.register_project("proj", "/original/path")
+    temp_db.register_project("proj", "/updated/path")  # should not raise
+
+    assert temp_db.get_project_path("proj") == "/updated/path"
+
+
+def test_project_list_all(temp_db):
+    """INV-2: list_projects returns all registered projects."""
+    assert temp_db.list_projects() == []
+
+    temp_db.register_project("alpha", "/src/alpha")
+    temp_db.register_project("beta", "/src/beta")
+
+    projects = temp_db.list_projects()
+    names = {p["name"] for p in projects}
+    assert names == {"alpha", "beta"}
+
+    # Each entry has required fields
+    for p in projects:
+        assert "name" in p
+        assert "path" in p
+        assert "registered_at" in p
+
+
+def test_project_re_register_path_update(temp_db):
+    """Critical path: register A→B→list returns both; re-register A with new path; lookup reflects update."""
+    temp_db.register_project("project-a", "/path/to/a")
+    temp_db.register_project("project-b", "/path/to/b")
+
+    projects = temp_db.list_projects()
+    assert len(projects) == 2
+
+    temp_db.register_project("project-a", "/new/path/to/a")
+    assert temp_db.get_project_path("project-a") == "/new/path/to/a"
+    # Still only 2 rows — no duplicates
+    assert len(temp_db.list_projects()) == 2
+
+
+def test_project_register_empty_name_raises(temp_db):
+    """Failure mode: registering with empty name raises ValueError."""
+    with pytest.raises(ValueError):
+        temp_db.register_project("", "/some/path")
+
+
+def test_project_register_empty_path_raises(temp_db):
+    """Failure mode: registering with empty path raises ValueError."""
+    with pytest.raises(ValueError):
+        temp_db.register_project("valid-name", "")

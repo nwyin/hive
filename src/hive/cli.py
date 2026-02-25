@@ -2057,6 +2057,10 @@ def main():
     db = Database(db_path)
     db.connect()
 
+    # Auto-register the current project so the daemon knows where it lives
+    if project_name:
+        db.register_project(project_name, str(project_path))
+
     # Create CLI
     cli = HiveCLI(db, str(project_path))
     json_mode = args.json_mode
