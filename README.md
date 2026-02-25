@@ -35,6 +35,34 @@ The typical flow:
 5. Workers implement, the merge pipeline validates
 6. You review completed work and finalize what lands on main
 
+## What It Looks Like
+
+![Hive demo: Queen session and live status](docs/demo.png)
+
+**Left pane**: The Queen session in Claude Code. Here it's exploring the codebase, reading project files, and responding to an escalated issue that a worker couldn't resolve on its own.
+
+**Right pane**: `watch -n 1 hive status` giving a live dashboard — issue counts, active workers, merge queue throughput, and any items that need your attention. In this snapshot, 74 issues have been finalized, 115 branches merged, and one escalation is flagged for the operator.
+
+This is the typical working setup: you interact with the Queen on the left while the right pane gives you a constant read on system state.
+
+## Monitoring with `hive status`
+
+`hive status` is the single most useful command for keeping tabs on a run. It shows:
+
+- **Issue breakdown**: how many are open, in progress, done, finalized, escalated, or cancelled
+- **Active workers**: how many are running vs your configured concurrency limit
+- **Merge queue**: pending merges, total merged, total failed
+- **Needs attention**: escalated issues or failures that require your intervention
+- **Daemon state**: whether the daemon is running and where its log lives
+
+Pair it with `watch` for a live dashboard:
+
+```bash
+watch -n 1 hive status
+```
+
+This lets you monitor progress without interrupting your Queen session. When something needs attention — an escalation, a stuck worker, a merge failure — you'll see it immediately.
+
 ## Quick Start
 
 ### Install
