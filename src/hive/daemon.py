@@ -336,8 +336,6 @@ def run_daemon_foreground(db, project_path: str, project_name: str):
                 orchestrator = Orchestrator(
                     db=db,
                     opencode_client=backend,
-                    project_path=project_path,
-                    project_name=project_name,
                     sse_client=backend,
                 )
                 # Run orchestrator until stop signal
@@ -357,8 +355,6 @@ def run_daemon_foreground(db, project_path: str, project_name: str):
                 orchestrator = Orchestrator(
                     db=db,
                     opencode_client=backend,
-                    project_path=project_path,
-                    project_name=project_name,
                     sse_client=backend,
                 )
                 # Run orchestrator until stop signal
@@ -377,8 +373,6 @@ def run_daemon_foreground(db, project_path: str, project_name: str):
                 orchestrator = Orchestrator(
                     db=db,
                     opencode_client=opencode,
-                    project_path=project_path,
-                    project_name=project_name,
                 )
                 main_task = asyncio.create_task(orchestrator.start())
                 await stop_event.wait()

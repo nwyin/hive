@@ -134,7 +134,7 @@ async def test_per_issue_budget_triggers_failure(temp_db):
     opencode.get_messages = AsyncMock(return_value=[])
     opencode.cleanup_session = AsyncMock()
 
-    orch = Orchestrator(db=temp_db, opencode_client=opencode, project_path="/tmp/test", project_name="test")
+    orch = Orchestrator(db=temp_db, opencode_client=opencode)
 
     # Create issue and agent
     issue_id = temp_db.create_issue("Budget test", project="test")
@@ -181,7 +181,7 @@ async def test_per_issue_budget_allows_under_limit(temp_db):
     )
     opencode.cleanup_session = AsyncMock()
 
-    orch = Orchestrator(db=temp_db, opencode_client=opencode, project_path="/tmp/test", project_name="test")
+    orch = Orchestrator(db=temp_db, opencode_client=opencode)
 
     issue_id = temp_db.create_issue("Under budget test", project="test")
     agent_id = temp_db.create_agent("worker-1")
@@ -220,7 +220,7 @@ async def test_anomaly_detection_escalates(temp_db):
     from hive.orchestrator import Orchestrator
 
     opencode = AsyncMock()
-    orch = Orchestrator(db=temp_db, opencode_client=opencode, project_path="/tmp/test", project_name="test")
+    orch = Orchestrator(db=temp_db, opencode_client=opencode)
 
     issue_id = temp_db.create_issue("Anomaly test", project="test")
     agent_id = temp_db.create_agent("worker-1")
@@ -259,7 +259,7 @@ async def test_anomaly_detection_allows_normal_retry(temp_db):
     from hive.orchestrator import Orchestrator
 
     opencode = AsyncMock()
-    orch = Orchestrator(db=temp_db, opencode_client=opencode, project_path="/tmp/test", project_name="test")
+    orch = Orchestrator(db=temp_db, opencode_client=opencode)
 
     issue_id = temp_db.create_issue("Normal retry test", project="test")
     agent_id = temp_db.create_agent("worker-1")

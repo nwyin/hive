@@ -22,11 +22,11 @@ def _make_orchestrator(temp_db, tmp_path, mock_opencode=None):
     """Helper to create an orchestrator with a mocked OpenCodeClient."""
     if mock_opencode is None:
         mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Register a "test" project so spawn_worker can resolve project paths
+    temp_db.register_project("test", str(tmp_path))
     return Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
 

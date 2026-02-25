@@ -135,10 +135,11 @@ async def integration_orchestrator(fake_server, temp_db, temp_git_repo):
         patch.object(Config, "PERMISSION_SAFETY_NET_INTERVAL", 60),
         patch.object(Config, "ANOMALY_FAILURE_THRESHOLD", 0),
     ):
+        # Register the project so orchestrator can resolve project paths
+        temp_db.register_project("test-project", str(temp_git_repo))
+
         async with OpenCodeClient(base_url=fake_server.url) as opencode_client:
             orchestrator = Orchestrator(
-                project_path=str(temp_git_repo),
-                project_name="test-project",
                 db=temp_db,
                 opencode_client=opencode_client,
             )
@@ -165,11 +166,12 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
     orchestrator.running = True
     orchestrator._setup_sse_handlers()
 
-    # Only initialize merge processor if merge queue is enabled —
+    # Only initialize merge processors if merge queue is enabled —
     # initialize() eagerly creates a refinery session which would
     # confuse session-counting helpers in tests.
     if Config.MERGE_QUEUE_ENABLED:
-        await orchestrator.merge_processor.initialize()
+        for proc in list(orchestrator.merge_pool._processors.values()):
+            await proc.initialize()
 
     # Snapshot existing tasks so we only cancel tasks spawned during the run
     # (i.e., fire-and-forget monitor_agent tasks from spawn_worker).

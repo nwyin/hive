@@ -20,6 +20,9 @@ async def test_spawn_worker(temp_db, git_repo):
     """Test spawning a worker for an issue (requires OpenCode server)."""
     from hive.backends import OpenCodeClient
 
+    # Register project so orchestrator can resolve project path
+    temp_db.register_project("test", str(git_repo))
+
     # Create an issue
     issue_id = temp_db.create_issue("Test task", "Do something", project="test")
 
@@ -27,8 +30,6 @@ async def test_spawn_worker(temp_db, git_repo):
         orch = Orchestrator(
             db=temp_db,
             opencode_client=opencode,
-            project_path=str(git_repo),
-            project_name="test",
         )
 
         # Get the issue
@@ -61,6 +62,9 @@ async def test_full_worker_lifecycle(temp_db, git_repo):
     import asyncio
     from hive.backends import OpenCodeClient
 
+    # Register project so orchestrator can resolve project path
+    temp_db.register_project("test", str(git_repo))
+
     # Create a simple issue
     issue_id = temp_db.create_issue(
         "Create README",
@@ -72,8 +76,6 @@ async def test_full_worker_lifecycle(temp_db, git_repo):
         orch = Orchestrator(
             db=temp_db,
             opencode_client=opencode,
-            project_path=str(git_repo),
-            project_name="test",
         )
 
         # Setup SSE handlers
@@ -109,8 +111,6 @@ async def test_handle_agent_failure_retry_tier(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -167,8 +167,6 @@ async def test_handle_agent_failure_agent_switch_tier(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -224,8 +222,6 @@ async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -278,8 +274,6 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Disable anomaly detection so we can test the full retry→switch→escalate chain
@@ -374,8 +368,6 @@ async def test_handle_agent_failure_anomaly_escalates_immediately(temp_db, tmp_p
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     issue_id = temp_db.create_issue("Anomaly task", "Repeated failures")
@@ -458,8 +450,6 @@ async def test_check_opencode_health_success(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_oc,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     result = await orch._check_opencode_health()
@@ -474,8 +464,6 @@ async def test_check_opencode_health_server_error(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_oc,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     result = await orch._check_opencode_health()
@@ -490,8 +478,6 @@ def test_is_opencode_error():
     orch = Orchestrator(
         db=MagicMock(),
         opencode_client=opencode,
-        project_path="/tmp",
-        project_name="test-project",
     )
 
     # Test connection errors
@@ -525,8 +511,6 @@ async def test_enter_degraded_mode(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=opencode,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     assert orch._opencode_healthy is True
@@ -558,13 +542,7 @@ async def test_merge_task_auto_restart(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=opencode,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
-
-    # Mock merge processor
-    orch.merge_processor = AsyncMock()
-    orch.merge_processor.initialize = AsyncMock()
 
     # Test callback with exception (should restart if running)
     orch.running = True
@@ -601,8 +579,6 @@ async def test_merge_task_no_restart_when_cancelled(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=opencode,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     # Test callback with cancelled task (should not restart)
@@ -626,8 +602,6 @@ async def test_merge_task_no_restart_when_not_running(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=opencode,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     # Test callback when not running (should not restart)
@@ -654,8 +628,6 @@ async def test_merge_processor_loop_health_check(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=opencode,
-        project_path=str(tmp_path),
-        project_name="test-project",
     )
 
     # Mock pool methods (the loop now delegates to the pool)
@@ -708,8 +680,6 @@ async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -769,8 +739,6 @@ async def test_harvest_notes_no_file(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     issue_id = temp_db.create_issue("Test task")
@@ -808,8 +776,6 @@ def test_gather_notes_for_worker_with_epic(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create a epic with steps
@@ -826,7 +792,7 @@ def test_gather_notes_for_worker_with_epic(temp_db, tmp_path):
     note2_id = temp_db.add_note(content="Project-wide gotcha", category="gotcha")
 
     # Gather notes for step2 (should see step1's note + project note)
-    notes = orch._gather_notes_for_worker(step2_id)
+    notes = orch._gather_notes_for_worker(step2_id, "default")
 
     assert notes is not None
     assert len(notes) == 2
@@ -843,8 +809,6 @@ def test_gather_notes_for_worker_deduplicates(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create a epic with a step
@@ -857,7 +821,7 @@ def test_gather_notes_for_worker_deduplicates(temp_db, tmp_path):
     # get_notes_for_epic AND get_recent_project_notes
     note_id = temp_db.add_note(issue_id=step_id, agent_id=agent_id, content="Shared note")
 
-    notes = orch._gather_notes_for_worker(step_id)
+    notes = orch._gather_notes_for_worker(step_id, "default")
 
     # Should only appear once despite being in both queries
     assert notes is not None
@@ -873,12 +837,10 @@ def test_gather_notes_for_worker_no_notes(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     issue_id = temp_db.create_issue("Standalone task")
-    notes = orch._gather_notes_for_worker(issue_id)
+    notes = orch._gather_notes_for_worker(issue_id, "default")
     assert notes is None
 
 
@@ -890,8 +852,6 @@ def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     issue_id = temp_db.create_issue("Standalone task")
@@ -899,7 +859,7 @@ def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
     # Add a project-wide note
     note_id = temp_db.add_note(content="Project note", category="pattern")
 
-    notes = orch._gather_notes_for_worker(issue_id)
+    notes = orch._gather_notes_for_worker(issue_id, "default")
     assert notes is not None
     assert len(notes) == 1
     assert notes[0]["id"] == note_id
@@ -915,8 +875,6 @@ def _make_orchestrator(temp_db, tmp_path, mock_opencode=None):
     return Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
 
@@ -1705,15 +1663,16 @@ async def test_worker_started_event_contains_model(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
+
+    # Register project so orchestrator can resolve project path for "test" project
+    temp_db.register_project("test", str(tmp_path))
 
     # Mock worktree creation
     test_model = "claude-sonnet-4"
     with patch("hive.orchestrator.create_worktree_async", return_value=str(tmp_path)):
         # Create issue with specific model (status defaults to "open")
-        issue_id = temp_db.create_issue("Test task", "Do something", model=test_model)
+        issue_id = temp_db.create_issue("Test task", "Do something", model=test_model, project="test")
         issue = temp_db.get_issue(issue_id)
 
         await orch.spawn_worker(issue)
@@ -1742,8 +1701,6 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -1806,8 +1763,6 @@ async def test_validation_no_commits_routes_to_failure(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -1934,11 +1889,10 @@ async def test_spawn_error_event_non_empty_on_timeout(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
-    issue_id = temp_db.create_issue("Timeout task", "Will timeout")
+    temp_db.register_project("test", str(tmp_path))
+    issue_id = temp_db.create_issue("Timeout task", "Will timeout", project="test")
     issue = temp_db.get_issue(issue_id)
 
     with patch("hive.orchestrator.create_worktree_async", return_value=str(tmp_path)):
@@ -1964,11 +1918,10 @@ async def test_worktree_error_event_non_empty_on_timeout(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
-    issue_id = temp_db.create_issue("Worktree timeout task", "Will fail at worktree")
+    temp_db.register_project("test", str(tmp_path))
+    issue_id = temp_db.create_issue("Worktree timeout task", "Will fail at worktree", project="test")
     issue = temp_db.get_issue(issue_id)
 
     # Raise TimeoutError during worktree creation
@@ -1996,8 +1949,6 @@ def _make_orch(temp_db, tmp_path):
     return Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     ), mock_opencode
 
 
@@ -2007,7 +1958,7 @@ def test_prepare_inbox_no_deliveries(temp_db, tmp_path):
     issue_id = temp_db.create_issue("Task", "Do something")
     agent_id = temp_db.create_agent("worker-1")
 
-    result = orch._prepare_inbox_for_worker(agent_id, issue_id)
+    result = orch._prepare_inbox_for_worker(agent_id, issue_id, "default")
 
     assert result is None
 
@@ -2027,7 +1978,7 @@ def test_prepare_inbox_materializes_issue_targets(temp_db, tmp_path):
     assert len(deliveries_before) == 0
 
     # _prepare_inbox_for_worker should materialize and then return the section
-    result = orch._prepare_inbox_for_worker(agent_id, issue_id)
+    result = orch._prepare_inbox_for_worker(agent_id, issue_id, "default")
 
     # After materialization: delivery exists and section rendered
     assert result is not None
@@ -2048,7 +1999,7 @@ def test_prepare_inbox_marks_delivered(temp_db, tmp_path):
     assert len(deliveries_before) == 1
     assert deliveries_before[0]["status"] == "queued"
 
-    orch._prepare_inbox_for_worker(agent_id, issue_id)
+    orch._prepare_inbox_for_worker(agent_id, issue_id, "default")
 
     # Verify status is now delivered (delivery_id from before)
     delivery_id = deliveries_before[0]["delivery_id"]
@@ -2065,7 +2016,7 @@ def test_prepare_inbox_renders_section(temp_db, tmp_path):
     note_id = temp_db.add_note(content="Check the migration path", project="test")
     temp_db.create_note_deliveries(note_id, to_agents=[agent_id])
 
-    result = orch._prepare_inbox_for_worker(agent_id, issue_id)
+    result = orch._prepare_inbox_for_worker(agent_id, issue_id, "default")
 
     assert result is not None
     assert "Notes Inbox Update" in result
@@ -2084,7 +2035,7 @@ def test_prepare_inbox_logs_event(temp_db, tmp_path):
     deliveries_before, _ = temp_db.get_injectable_deliveries(agent_id, issue_id, "test")
     delivery_id = deliveries_before[0]["delivery_id"]
 
-    orch._prepare_inbox_for_worker(agent_id, issue_id)
+    orch._prepare_inbox_for_worker(agent_id, issue_id, "default")
 
     events = temp_db.get_events(issue_id=issue_id, event_type="note_delivered")
     assert len(events) == 1
@@ -2106,9 +2057,10 @@ async def test_worker_dispatch_includes_inbox(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
+
+    # Register project so orchestrator can resolve project path
+    temp_db.register_project("test", str(tmp_path))
 
     # Create issue and a note delivered to any agent working on it
     issue_id = temp_db.create_issue("Test inbox task", "Do something", project="test")
@@ -2323,8 +2275,6 @@ async def test_completion_proceeds_when_required_notes_acked(temp_db, tmp_path, 
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(git_repo),
-        project_name="test",
     )
 
     issue_id = temp_db.create_issue("Unblocked task", "Do something", project="test")
@@ -2371,8 +2321,6 @@ async def test_completion_blocked_unacked_notes_event_logged(temp_db, tmp_path):
     orch = Orchestrator(
         db=temp_db,
         opencode_client=mock_opencode,
-        project_path=str(tmp_path),
-        project_name="test",
     )
 
     # Create issue and agent
@@ -2410,3 +2358,186 @@ async def test_completion_blocked_unacked_notes_event_logged(temp_db, tmp_path):
     detail = json.loads(events[0]["detail"])
     assert detail["count"] == 1
     assert len(detail["delivery_ids"]) == 1
+
+
+# ── Multi-project dispatch invariant tests ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_inv1_issue_from_project_a_creates_worktree_in_project_a(temp_db, tmp_path):
+    """INV-1: Issue from project A creates worktree in project A's repo path, not elsewhere."""
+    from unittest.mock import AsyncMock, patch
+    from hive.backends import OpenCodeClient
+
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo_b"
+    repo_b.mkdir()
+
+    temp_db.register_project("proj-a", str(repo_a))
+    temp_db.register_project("proj-b", str(repo_b))
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.create_session.return_value = {"id": "session-a"}
+    mock_opencode.send_message_async.return_value = None
+
+    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+
+    issue_id = temp_db.create_issue("Task A", "Do something in A", project="proj-a")
+    issue = temp_db.get_issue(issue_id)
+
+    captured_paths = []
+
+    async def capture_worktree(project_path, agent_name):
+        captured_paths.append(project_path)
+        return str(tmp_path / "worktree-a")
+
+    with patch("hive.orchestrator.create_worktree_async", side_effect=capture_worktree):
+        await orch.spawn_worker(issue)
+
+    # Worktree was created from repo_a's path, not repo_b's
+    assert len(captured_paths) == 1
+    assert str(repo_a) in captured_paths[0] or captured_paths[0] == str(repo_a)
+    assert str(repo_b) not in captured_paths[0]
+
+
+@pytest.mark.asyncio
+async def test_inv2_project_b_issue_never_touches_project_a_repo(temp_db, tmp_path):
+    """INV-2: Spawning issue from project B never uses project A's path."""
+    from unittest.mock import AsyncMock, patch
+
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo_b"
+    repo_b.mkdir()
+
+    temp_db.register_project("proj-a", str(repo_a))
+    temp_db.register_project("proj-b", str(repo_b))
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.create_session.return_value = {"id": "session-b"}
+    mock_opencode.send_message_async.return_value = None
+
+    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+
+    issue_id = temp_db.create_issue("Task B", "Do something in B", project="proj-b")
+    issue = temp_db.get_issue(issue_id)
+
+    captured_paths = []
+
+    async def capture_worktree(project_path, agent_name):
+        captured_paths.append(project_path)
+        return str(tmp_path / "worktree-b")
+
+    with patch("hive.orchestrator.create_worktree_async", side_effect=capture_worktree):
+        await orch.spawn_worker(issue)
+
+    assert len(captured_paths) == 1
+    # Must use repo_b path, NOT repo_a path
+    assert str(repo_b) in captured_paths[0] or captured_paths[0] == str(repo_b)
+    assert str(repo_a) not in captured_paths[0]
+
+
+def test_inv3_ready_queue_returns_issues_from_all_projects(temp_db):
+    """INV-3: get_ready_queue(project=None) returns issues from all registered projects."""
+    temp_db.register_project("proj-a", "/tmp/repo_a")
+    temp_db.register_project("proj-b", "/tmp/repo_b")
+
+    id_a = temp_db.create_issue("Task A", "In proj-a", project="proj-a")
+    id_b = temp_db.create_issue("Task B", "In proj-b", project="proj-b")
+
+    all_ready = temp_db.get_ready_queue(project=None)
+    ready_ids = {i["id"] for i in all_ready}
+
+    assert id_a in ready_ids
+    assert id_b in ready_ids
+
+    # Project-scoped queries should only return their own issues
+    a_only = temp_db.get_ready_queue(project="proj-a")
+    assert all(i["project"] == "proj-a" for i in a_only)
+
+    b_only = temp_db.get_ready_queue(project="proj-b")
+    assert all(i["project"] == "proj-b" for i in b_only)
+
+
+@pytest.mark.asyncio
+async def test_inv4_unknown_project_raises_value_error(temp_db, tmp_path):
+    """INV-4: Spawning an issue whose project is not registered raises ValueError."""
+    from unittest.mock import AsyncMock
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+
+    # Issue belongs to a project not registered in the DB
+    issue_id = temp_db.create_issue("Orphan task", "No project path", project="unregistered-project")
+    issue = temp_db.get_issue(issue_id)
+
+    with pytest.raises(ValueError, match="Unknown project: unregistered-project"):
+        await orch.spawn_worker(issue)
+
+
+@pytest.mark.asyncio
+async def test_two_projects_both_get_dispatched(temp_db, tmp_path):
+    """Two projects, each with one open issue — both get dispatched in main loop."""
+    from unittest.mock import AsyncMock, patch
+
+    repo_a = tmp_path / "repo_a"
+    repo_a.mkdir()
+    repo_b = tmp_path / "repo_b"
+    repo_b.mkdir()
+
+    temp_db.register_project("proj-a", str(repo_a))
+    temp_db.register_project("proj-b", str(repo_b))
+
+    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_opencode.create_session.side_effect = [
+        {"id": "session-a"},
+        {"id": "session-b"},
+    ]
+    mock_opencode.send_message_async.return_value = None
+    mock_opencode.list_sessions = AsyncMock(return_value=[])
+
+    id_a = temp_db.create_issue("Task A", "", project="proj-a")
+    id_b = temp_db.create_issue("Task B", "", project="proj-b")
+
+    dispatched_worktrees = []
+
+    async def fake_create_worktree(project_path, agent_name):
+        dispatched_worktrees.append(project_path)
+        return str(tmp_path / f"wt-{len(dispatched_worktrees)}")
+
+    with (
+        patch.object(Config, "MAX_AGENTS", 2),
+        patch.object(Config, "POLL_INTERVAL", 0.05),
+        patch.object(Config, "MERGE_QUEUE_ENABLED", False),
+        patch("hive.orchestrator.create_worktree_async", side_effect=fake_create_worktree),
+    ):
+        orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+
+        # Run main loop briefly to dispatch both issues
+        async def stop_when_both_claimed():
+            issue_a = temp_db.get_issue(id_a)
+            issue_b = temp_db.get_issue(id_b)
+            return issue_a["status"] == "in_progress" and issue_b["status"] == "in_progress"
+
+        # Poll until both issues are claimed or timeout
+        for _ in range(50):
+            ready = temp_db.get_ready_queue(project=None)
+            if ready:
+                issue = ready[0]
+                # Guard: skip if already being spawned
+                if issue["id"] not in orch._spawning_issues:
+                    await orch.spawn_worker(issue)
+            if await stop_when_both_claimed():
+                break
+            await asyncio.sleep(0.01)
+
+    # Both issues should be claimed (in_progress)
+    final_a = temp_db.get_issue(id_a)
+    final_b = temp_db.get_issue(id_b)
+    assert final_a["status"] == "in_progress", f"proj-a issue not dispatched: {final_a['status']}"
+    assert final_b["status"] == "in_progress", f"proj-b issue not dispatched: {final_b['status']}"
+
+    # Each worktree was created in the correct project repo
+    assert any(str(repo_a) in wt for wt in dispatched_worktrees)
+    assert any(str(repo_b) in wt for wt in dispatched_worktrees)

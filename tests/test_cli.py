@@ -521,7 +521,7 @@ def test_evaluate_permission_policy():
     # Create a minimal orchestrator for testing
     db = None
     opencode = OpenCodeClient()
-    orch = Orchestrator(db, opencode, "/tmp", "test")
+    orch = Orchestrator(db, opencode)
 
     # Test deny rules
     assert orch.evaluate_permission_policy({"permission": "question", "patterns": []}) == "reject"
@@ -549,8 +549,6 @@ async def test_permission_unblocker_auto_resolve(temp_db, tmp_path):
         Orchestrator(
             db=temp_db,
             opencode_client=opencode,
-            project_path=str(tmp_path),
-            project_name="test",
         )
 
         # Get pending permissions (should be empty initially)

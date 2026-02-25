@@ -100,8 +100,6 @@ class Orchestrator:
         self,
         db: Database,
         opencode_client: OpenCodeClient,
-        project_path: str,
-        project_name: str = "default",
         sse_client: Optional[SSEClient] = None,
     ):
         """
@@ -110,21 +108,13 @@ class Orchestrator:
         Args:
             db: Database instance
             opencode_client: OpenCode HTTP client (or ClaudeWSBackend)
-            project_path: Path to the project repository
-            project_name: Name of the project
             sse_client: Optional SSE client override (e.g. ClaudeWSBackend serves both roles)
         """
         self.db = db
         self.opencode = opencode_client
-        self.project_path = Path(project_path).resolve()
-        self.project_name = project_name
 
         # Merge processor pool (one processor per project, lazy-created)
         self.merge_pool = MergeProcessorPool(db=db, backend=opencode_client)
-
-        # Backwards-compat alias: ensure the pool has a processor for the
-        # default project so callers that used merge_processor directly still work.
-        self.merge_processor = self.merge_pool.get(project_name, project_path)
 
         # Track active agents
         self.active_agents: Dict[str, AgentIdentity] = {}
@@ -163,6 +153,23 @@ class Orchestrator:
         # being spawned. Prevents duplicate spawn_worker calls when
         # create_worktree_async yields control back to the event loop.
         self._spawning_issues: set[str] = set()
+
+    def _resolve_project_path(self, project_name: str) -> Path:
+        """Resolve the filesystem path for a registered project.
+
+        Args:
+            project_name: Registered project name
+
+        Returns:
+            Resolved Path object for the project
+
+        Raises:
+            ValueError: If the project is not registered in the DB
+        """
+        path = self.db.get_project_path(project_name)
+        if path is None:
+            raise ValueError(f"Unknown project: {project_name}")
+        return Path(path)
 
     def _setup_sse_handlers(self):
         """Set up SSE event handlers."""
@@ -616,8 +623,11 @@ class Orchestrator:
 
         await self._reconcile_stale_agents()
 
-        # Initialize merge processor (eager refinery session creation)
-        await self.merge_processor.initialize()
+        # Pre-populate merge pool from registered projects and initialize each processor.
+        # This ensures process_all() is not a no-op even before the first issue is dispatched.
+        for project in self.db.list_projects():
+            processor = self.merge_pool.get(project["name"], project["path"])
+            await processor.initialize()
 
         # Start permission unblocker in background
         permission_task = asyncio.create_task(self.permission_unblocker_loop())
@@ -668,8 +678,8 @@ class Orchestrator:
                 # Count both registered agents and in-flight spawns to avoid
                 # transient over-spawning during concurrent teardown/spawn.
                 if len(self.active_agents) + len(self._spawning_issues) < Config.MAX_AGENTS:
-                    # Get ready work
-                    ready = self.db.get_ready_queue(project=self.project_name, limit=1)
+                    # Get ready work across all registered projects
+                    ready = self.db.get_ready_queue(project=None, limit=1)
 
                     if ready:
                         issue = ready[0]
@@ -720,20 +730,27 @@ class Orchestrator:
     async def _spawn_worker_inner(self, issue: Dict[str, str]):
         """Inner spawn logic, wrapped by spawn_worker's TOCTOU guard."""
         issue_id = issue["id"]
+        issue_project = issue["project"]
         agent_name = generate_id("worker")
         model = issue.get("model") or Config.WORKER_MODEL or Config.DEFAULT_MODEL
+
+        # Resolve project path from the DB — raises ValueError for unknown projects
+        project_path = self._resolve_project_path(issue_project)
+
+        # Ensure the merge pool has a processor for this project (lazy registration)
+        self.merge_pool.get(issue_project, str(project_path))
 
         # Create agent identity in database
         agent_id = self.db.create_agent(
             name=agent_name,
             model=model,
             metadata={"issue_id": issue_id},
-            project=self.project_name,
+            project=issue_project,
         )
 
         # Create git worktree (in executor to avoid blocking event loop)
         try:
-            worktree_path = await create_worktree_async(str(self.project_path), agent_name)
+            worktree_path = await create_worktree_async(str(project_path), agent_name)
         except Exception as e:
             self.db.log_event(
                 issue_id,
@@ -783,6 +800,7 @@ class Orchestrator:
                 issue_id=issue_id,
                 worktree=worktree_path,
                 session_id=session_id,
+                project=issue_project,
             )
             self._register_active_agent(agent)
 
@@ -823,7 +841,7 @@ class Orchestrator:
             await remove_worktree_async(worktree_path)
             self.db.update_issue_status(issue_id, "failed")
 
-    def _gather_notes_for_worker(self, issue_id: str) -> Optional[List[Dict[str, Any]]]:
+    def _gather_notes_for_worker(self, issue_id: str, project: str) -> Optional[List[Dict[str, Any]]]:
         """Gather relevant notes to inject into a worker's prompt.
 
         Combines epic-specific notes (if the issue is a step) with
@@ -843,14 +861,14 @@ class Orchestrator:
                     notes.append(note)
 
         # Get recent project-wide notes
-        for note in self.db.get_notes(project=self.project_name, limit=10):
+        for note in self.db.get_notes(project=project, limit=10):
             if note["id"] not in seen_ids:
                 seen_ids.add(note["id"])
                 notes.append(note)
 
         return notes if notes else None
 
-    def _prepare_inbox_for_worker(self, agent_id: str, issue_id: str) -> Optional[str]:
+    def _prepare_inbox_for_worker(self, agent_id: str, issue_id: str, project: str) -> Optional[str]:
         """
         Materialize issue-following deliveries and build the inbox section for injection.
 
@@ -863,8 +881,8 @@ class Orchestrator:
 
         Returns the rendered inbox section string, or None if no deliveries.
         """
-        self.db.materialize_issue_deliveries(issue_id, agent_id, self.project_name)
-        deliveries, has_more = self.db.get_injectable_deliveries(agent_id, issue_id, self.project_name)
+        self.db.materialize_issue_deliveries(issue_id, agent_id, project)
+        deliveries, has_more = self.db.get_injectable_deliveries(agent_id, issue_id, project)
         if not deliveries:
             return None
         for d in deliveries:
@@ -1146,13 +1164,14 @@ class Orchestrator:
     ):
         """Shared prompt + dispatch flow for spawn and epic cycling."""
         issue_id = issue["id"]
+        issue_project = issue["project"]
 
-        worker_notes = self._gather_notes_for_worker(issue_id)
+        worker_notes = self._gather_notes_for_worker(issue_id, issue_project)
         if worker_notes:
             self.db.log_event(issue_id, agent.agent_id, "notes_injected", {"count": len(worker_notes)})
 
         # NEW: delivery-based inbox injection
-        inbox_section = self._prepare_inbox_for_worker(agent.agent_id, issue_id)
+        inbox_section = self._prepare_inbox_for_worker(agent.agent_id, issue_id, issue_project)
 
         retry_context = build_retry_context(self.db, issue_id)
         branch_name = f"agent/{agent.name}"
@@ -1161,7 +1180,7 @@ class Orchestrator:
             issue=issue,
             worktree_path=agent.worktree,
             branch_name=branch_name,
-            project=self.project_name,
+            project=issue_project,
             notes=worker_notes,
             completed_steps=completed_steps,
             retry_context=retry_context,
@@ -1169,7 +1188,7 @@ class Orchestrator:
         )
 
         system_prompt = build_system_prompt(
-            project=self.project_name,
+            project=issue_project,
             agent_name=agent.name,
             worktree_path=agent.worktree,
         )
@@ -1230,7 +1249,7 @@ class Orchestrator:
                 )
 
         # Materialize issue-following targets so we catch all pending required notes
-        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, self.project_name)
+        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, agent.project)
 
         # Check for required unacked notes
         unacked = self.db.get_required_unacked_deliveries(agent.agent_id, agent.issue_id)
@@ -1259,7 +1278,7 @@ class Orchestrator:
 
         # Completion gate: block if required deliveries are not acked (spec section 9)
         # Materialize issue-following targets so we catch all pending required notes
-        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, self.project_name)
+        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, agent.project)
 
         # Check for required unacked notes
         unacked = self.db.get_required_unacked_deliveries(agent.agent_id, agent.issue_id)
@@ -1351,7 +1370,7 @@ class Orchestrator:
                                 agent_id=agent.agent_id,
                                 content=note.get("content", ""),
                                 category=note.get("category", "discovery"),
-                                project=self.project_name,
+                                project=agent.project,
                             )
                         self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
                         logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
@@ -1425,7 +1444,7 @@ class Orchestrator:
                             (
                                 agent.issue_id,
                                 agent.agent_id,
-                                self.project_name,
+                                agent.project,
                                 agent.worktree,
                                 f"agent/{agent.name}",
                                 test_command,
