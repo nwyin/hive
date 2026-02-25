@@ -1,44 +1,8 @@
-# Hive: Multi-Agent Coding Orchestrator (STILL IN ALPHA. BE WARNED)
+# Hive: Multi-Agent Coding Orchestrator
+
+**Alpha software. Expect rough edges.**
 
 Hive coordinates parallel coding workers against a shared issue queue, then helps you review and finalize work.
-
-## Quick Start (5 minutes)
-
-### Install (global, no venv activation)
-
-If you want `hive` available across all repos (like `pipx`), use `uv tool install`:
-
-```bash
-cd hive
-uv tool install -e .
-uv tool update-shell   # ensures uv's tool bin dir is on PATH
-```
-
-Notes:
-
-- Use `uv tool install -e ".[dev]"` if you want the dev extras too.
-- If you previously ran `uv tool install .`, you may need `--force` to refresh the installed snapshot: `uv tool install --force .`
-
-### Install (project venv)
-
-```bash
-# Install
-cd hive
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-
-# In your project repo
-hive setup
-hive create "Add user auth" "Implement JWT login flow"
-hive start            # live dashboard by default
-```
-
-If you prefer background mode:
-
-```bash
-hive start -d
-```
 
 ## When To Use Hive vs Claude Code
 
@@ -50,117 +14,175 @@ hive start -d
 | Refactor across multiple modules         | -                    | Yes      |
 | Spec that naturally splits into subtasks | -                    | Yes      |
 
-Rule of thumb: if you would split the work anyway, Hive is usually the better fit.
+Rule of thumb: if you'd split the work into separate tasks anyway, Hive is the better fit.
 
-## Three Core Concepts
+## How It Works
 
-| Concept | What it means                                       |
-| ------- | --------------------------------------------------- |
-| Queen   | Your project manager session (`hive queen`)         |
-| Workers | Parallel implementers running in isolated worktrees |
-| Issues  | The task board stored in SQLite                     |
+Hive has three moving parts:
 
-## Setup Defaults (Safety First)
+**Issues** are your task board, stored in SQLite. Each issue is a unit of work: a bug fix, a feature, a refactor step. You create them, and the system tracks their lifecycle from `open` through `in_progress`, `done`, and `finalized`.
 
-`hive setup` now guides you through:
+**Workers** are Claude Code sessions that pick up issues and implement them. Each worker gets its own git worktree, a full isolated copy of the repo. Workers run in parallel, up to your configured concurrency limit. When a worker finishes, its branch goes through merge validation (rebase, tests, optional refinery review) before anything touches main.
 
-- test command for merge/review validation
-- auto-merge setting (`merge_queue_enabled`), defaulting to manual review mode
-- optional project context note seeding (test command, lint command, repo conventions)
+**The Queen** is how you drive Hive. It's a Claude Code session that acts as your project manager: it reads your spec, explores the codebase, decomposes work into issues, monitors progress, and handles failures. The Queen doesn't write code. It plans and coordinates, and you approve the plan before any issues are created.
 
-Manual review mode keeps completed issues in `done` until you explicitly finalize.
+The typical flow:
 
-## Core Workflow
+1. You describe what you want to the Queen
+2. The Queen explores the codebase, proposes a plan, and waits for your approval
+3. On approval, the Queen creates issues (with dependencies if needed)
+4. The daemon picks up issues and spawns workers in parallel
+5. Workers implement, the merge pipeline validates
+6. You review completed work and finalize what lands on main
 
-```bash
-# create work
-hive create "Title" "Description"
+## Quick Start
 
-# run orchestrator
-hive start          # foreground live dashboard
-hive start -d       # detached background daemon
+### Install
 
-# inspect progress
-hive status
-hive review         # done but not finalized, with diff/merge/finalize hints
-hive finalize <issue-id> --resolution "manual review complete"
-
-# optional Queen workflow
-hive queen          # auto-starts daemon if needed
-```
-
-## Notes Are First-Class Context
-
-Use notes to encode project conventions for all future workers:
+If you want `hive` available across all repos:
 
 ```bash
-hive note "Run ruff check and pytest before committing" --category context
-hive notes
+cd hive
+uv tool install -e .
+uv tool update-shell   # ensures uv's tool bin dir is on PATH
 ```
 
-Workers automatically receive relevant project notes in their prompt context.
+Or install into a project venv:
 
-## Cost Visibility
+```bash
+cd hive
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
 
-Before startup, Hive shows a short cost preview based on your configured worker concurrency.
+Notes:
 
-Guideline for first runs:
+- Use `uv tool install -e ".[dev]"` if you want the dev extras too.
+- If you previously ran `uv tool install .`, you may need `--force` to refresh: `uv tool install --force .`
 
-- start with lower concurrency (for example, 3 workers)
-- validate your workflow and review loop
-- then scale up
+### First Run
+
+```bash
+cd your-project
+
+# 1. One-time setup, creates .hive.toml with your project config
+hive setup
+
+# 2. Seed project conventions so workers know your norms
+hive note "Always run pytest before committing" --category context
+hive note "Use ruff for linting, line-length 144" --category context
+
+# 3. Launch the Queen, your main interface
+hive queen
+```
+
+The Queen auto-starts the daemon if it isn't running. From here, describe what you want built. The Queen will explore the code, propose a decomposition, and wait for your go-ahead before creating issues and dispatching workers.
+
+If you prefer to manage issues manually instead of using the Queen:
+
+```bash
+hive create "Add user auth" "Implement JWT login flow"
+hive create "Add auth tests" "Unit tests for the JWT flow" --depends-on <auth-issue-id>
+hive start       # foreground with live status
+hive start -d    # or detached as a background daemon
+```
+
+## Reviewing and Finalizing Work
+
+By default, Hive runs in manual review mode. Completed work sits in `done` status until you explicitly finalize it. Nothing merges to main without your approval.
+
+```bash
+# See what's ready for review
+hive review
+
+# Inspect a branch (review command prints these hints per issue)
+git diff main...agent/<agent-id>
+
+# Finalize: merges to main and cleans up the worktree
+hive finalize <issue-id> --resolution "reviewed, looks good"
+```
+
+If you enable `merge_queue_enabled` in your config, Hive will auto-merge branches that pass rebase + tests. A refinery LLM session handles conflict resolution and integration checks. Issues that the refinery can't resolve cleanly get escalated for your attention.
+
+## Teaching Workers Your Conventions
+
+Notes are persistent context that every worker receives in its prompt. Use them to encode project norms:
+
+```bash
+hive note "Run ruff check and pytest before committing"
+hive note "All API endpoints need OpenAPI docstrings"
+hive note "Use factory pattern for test fixtures" --category pattern
+```
+
+Categories are optional. The default is `context`; use `--category pattern`, `--category gotcha`, or `--category dependency` for more specific classification.
+
+Workers also write notes during execution (discoveries, gotchas, dependency observations) which get relayed to sibling workers on the same epic. This is how parallel workers stay loosely coordinated without sharing a context window.
+
+## Cost and Performance
+
+Hive spawns multiple Claude Code sessions. Costs scale linearly with concurrency and task complexity.
+
+For your first run, set `max_agents = 3` to keep concurrency low. Validate that the review loop works for your project, then scale up once you're comfortable.
+
+Hive tracks token usage per issue and per run. Use `hive metrics --costs` for rough USD estimates, and configure `max_tokens_per_issue` / `max_tokens_per_run` as guardrails.
 
 ## Essential Commands
 
-- `hive setup` - interactive setup wizard
-- `hive create` - create an issue
-- `hive list` - list issues
-- `hive show` - show issue details
-- `hive status` - system overview
-- `hive review` - review done issues before finalize
-- `hive start` - start daemon + live dashboard
-- `hive stop` - stop daemon
-- `hive queen` - launch Queen session
-- `hive doctor` - health checks
-- `hive debug` - full diagnostic report
+| Command                    | What it does                                  |
+| -------------------------- | --------------------------------------------- |
+| `hive queen`               | Launch the Queen (main interface)             |
+| `hive setup`               | One-time project config                       |
+| `hive create`              | Create an issue manually                      |
+| `hive start` / `hive stop` | Start/stop the daemon                         |
+| `hive status`              | System overview: issues, workers, merge queue |
+| `hive list`                | List issues (filter with `--status`)          |
+| `hive show <id>`           | Issue details, deps, recent events            |
+| `hive review`              | Review completed work before finalizing       |
+| `hive finalize <id>`       | Finalize and merge to main                    |
+| `hive retry <id>`          | Retry a failed issue                          |
+| `hive note`                | Add persistent context for workers            |
+| `hive doctor`              | Health checks (use `--fix` to auto-repair)    |
+| `hive debug`               | Full diagnostic dump for bug reports          |
 
-Monitoring commands are also visible in `hive -h`: `logs`, `events`, `agents`, `merges`.
+See `hive -h` for the full list, including `logs`, `agents`, `merges`, `metrics`, `epic`, and `dep`.
 
 ## Configuration
 
-Configuration resolution order:
+Config is layered (later overrides earlier):
 
-1. built-in defaults
-2. `~/.hive/config.toml`
-3. `.hive.toml`
-4. environment variables
+1. Built-in defaults
+2. `~/.hive/config.toml` (global)
+3. `.hive.toml` (per-project)
+4. Environment variables
 
 Key settings:
 
-- `HIVE_BACKEND` (`claude` or `opencode`)
-- `HIVE_MAX_AGENTS`
-- `HIVE_TEST_COMMAND`
-- `HIVE_MERGE_QUEUE_ENABLED`
-- model settings (`HIVE_DEFAULT_MODEL`, `HIVE_WORKER_MODEL`, `HIVE_REFINERY_MODEL`)
+| Setting                     | Default                      | What it controls                         |
+| --------------------------- | ---------------------------- | ---------------------------------------- |
+| `HIVE_BACKEND`              | `claude`                     | Backend: `claude` or `opencode`          |
+| `HIVE_MAX_AGENTS`           | `10`                         | Max concurrent workers                   |
+| `HIVE_TEST_COMMAND`         | —                            | Test command run during merge validation |
+| `HIVE_MERGE_QUEUE_ENABLED`  | `true`                       | Auto-merge vs manual review mode         |
+| `HIVE_WORKER_MODEL`         | `claude-sonnet-4-5-20250929` | Model for workers                        |
+| `HIVE_REFINERY_MODEL`       | `claude-opus-4-6`            | Model for merge refinery                 |
+| `HIVE_MAX_TOKENS_PER_ISSUE` | `200000`                     | Per-issue token budget                   |
+| `HIVE_MAX_TOKENS_PER_RUN`   | `2000000`                    | Per-run token budget                     |
 
-Global DB default remains `~/.hive/hive.db` unless overridden.
+## Architecture and Internals
 
-## Architecture And Internals
+For orchestration design, schema details, merge pipeline internals, and backend abstraction, see `docs/TECHNICAL_DESIGN_DOC.md`.
 
-For deep internals, orchestration design, schema, and implementation details, see:
+## Bug Reports and Feedback
 
-- `docs/TECHNICAL_DESIGN_DOC.md`
+Please send me bug reports, feature requests, and other cool ideas!
 
-## Bug Reports and Feedback.
-
-If something isn't working, run `hive debug` and include the output in your report. It collects system info, config, daemon state, doctor checks, and recent logs into a single pasteable bundle:
+Run `hive debug` and include the output in your report. It collects system info, config, daemon state, doctor checks, and recent logs into a single pasteable bundle:
 
 ```bash
 hive debug          # human-readable
-hive debug --json   # machine-readable, easy to attach
+hive debug --json   # machine-readable
 ```
-
-Please send me bug reports, feature requests, and other cool ideas!
 
 ## Development
 
