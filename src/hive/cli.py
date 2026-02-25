@@ -393,35 +393,66 @@ class HiveCLI:
         else:
             print(result.get("message", f"Finalized issue {issue_id}"))
 
-    def review(self, limit: int = 20, *, json_mode: bool = False):
-        """List done issues that are pending finalization with review hints."""
+    def review(self, issue_id: str | None = None, limit: int = 20, *, json_mode: bool = False):
+        """List done issues that are pending finalization with review hints.
+
+        If issue_id is given, show review info for that specific issue regardless of status.
+        """
         try:
-            cursor = self.db.conn.execute(
-                """
-                SELECT
-                    i.id,
-                    i.title,
-                    i.updated_at,
-                    i.assignee,
-                    mq.status AS merge_status,
-                    mq.branch_name,
-                    mq.worktree,
-                    mq.enqueued_at
-                FROM issues i
-                LEFT JOIN merge_queue mq
-                    ON mq.id = (
-                        SELECT mq2.id
-                        FROM merge_queue mq2
-                        WHERE mq2.issue_id = i.id
-                        ORDER BY mq2.id DESC
-                        LIMIT 1
-                    )
-                WHERE i.project = ? AND i.status = 'done'
-                ORDER BY i.updated_at DESC
-                LIMIT ?
-                """,
-                (self.project_name, limit),
-            )
+            if issue_id:
+                cursor = self.db.conn.execute(
+                    """
+                    SELECT
+                        i.id,
+                        i.title,
+                        i.status,
+                        i.description,
+                        i.updated_at,
+                        i.assignee,
+                        mq.status AS merge_status,
+                        mq.branch_name,
+                        mq.worktree,
+                        mq.enqueued_at
+                    FROM issues i
+                    LEFT JOIN merge_queue mq
+                        ON mq.id = (
+                            SELECT mq2.id
+                            FROM merge_queue mq2
+                            WHERE mq2.issue_id = i.id
+                            ORDER BY mq2.id DESC
+                            LIMIT 1
+                        )
+                    WHERE i.project = ? AND i.id = ?
+                    """,
+                    (self.project_name, issue_id),
+                )
+            else:
+                cursor = self.db.conn.execute(
+                    """
+                    SELECT
+                        i.id,
+                        i.title,
+                        i.updated_at,
+                        i.assignee,
+                        mq.status AS merge_status,
+                        mq.branch_name,
+                        mq.worktree,
+                        mq.enqueued_at
+                    FROM issues i
+                    LEFT JOIN merge_queue mq
+                        ON mq.id = (
+                            SELECT mq2.id
+                            FROM merge_queue mq2
+                            WHERE mq2.issue_id = i.id
+                            ORDER BY mq2.id DESC
+                            LIMIT 1
+                        )
+                    WHERE i.project = ? AND i.status = 'done'
+                    ORDER BY i.updated_at DESC
+                    LIMIT ?
+                    """,
+                    (self.project_name, limit),
+                )
 
             rows = []
             project_q = shlex.quote(str(self.project_path))
@@ -429,11 +460,11 @@ class HiveCLI:
                 item = dict(row)
                 branch = item.get("branch_name")
                 worktree = item.get("worktree")
-                issue_id = item["id"]
+                iid = item["id"]
 
                 item["diff_hint"] = None
                 item["merge_hint"] = None
-                item["finalize_hint"] = f'hive finalize {issue_id} --resolution "manual review complete"'
+                item["finalize_hint"] = f'hive finalize {iid} --resolution "manual review complete"'
 
                 if branch:
                     branch_q = shlex.quote(branch)
@@ -445,6 +476,10 @@ class HiveCLI:
                     item["worktree_hint"] = None
 
                 rows.append(item)
+
+            if issue_id and not rows:
+                self._error(f"Issue {issue_id} not found in project {self.project_name}", json_mode=json_mode)
+                return
 
             result = {"count": len(rows), "review": rows}
         except Exception as e:
@@ -459,6 +494,30 @@ class HiveCLI:
             print("No done issues pending review.")
             return
 
+        # Single-issue review: detailed view
+        if issue_id:
+            item = rows[0]
+            merge_state = item.get("merge_status") or "-"
+            assignee = item.get("assignee") or "-"
+            print(f"\nReview: {item['id']}")
+            print(f"  Title:    {item['title']}")
+            print(f"  Status:   {item.get('status', '-')}")
+            print(f"  Assignee: {assignee}")
+            print(f"  Merge:    {merge_state}")
+            print(f"  Updated:  {item.get('updated_at', '-')}")
+            if item.get("description"):
+                print(f"\n  Description:\n    {item['description']}")
+            print("\n  Commands:")
+            if item.get("diff_hint"):
+                print(f"    Diff:     {item['diff_hint']}")
+            if item.get("worktree_hint"):
+                print(f"    Worktree: {item['worktree_hint']}")
+            if item.get("merge_hint"):
+                print(f"    Merge:    {item['merge_hint']}")
+            print(f"    Finalize: {item['finalize_hint']}")
+            return
+
+        # Multi-issue listing
         print(f"\n{'Issue':<14} {'Merge':<10} {'Assignee':<16} {'Title':<40}")
         print("-" * 88)
         for item in rows:
@@ -1816,6 +1875,7 @@ def main():
 
     # review command
     review_parser = subparsers.add_parser("review", help="Review done issues before finalizing")
+    review_parser.add_argument("issue_id", nargs="?", default=None, help="Optional issue ID to review a specific issue")
     review_parser.add_argument("--limit", type=int, default=20, help="Max issues to show (default: 20)")
 
     # update command (hidden — advanced)
@@ -2031,7 +2091,7 @@ def main():
             cli.show(args.issue_id, json_mode=show_json)
 
         elif args.command == "review":
-            cli.review(limit=args.limit, json_mode=json_mode)
+            cli.review(issue_id=args.issue_id, limit=args.limit, json_mode=json_mode)
 
         elif args.command == "update":
             cli.update(
