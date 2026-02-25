@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "ca7d94edc8ff",
+  "session_id": "96a4db26-66cd-40c7-9b73-c6d745ced79f",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-25T04:00:38.437754Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/cli.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "e1aaf1db23af",
+  "checkpoint_transcript_start": 798,
+  "transcript_lines_at_start": 798,
+  "token_usage": {
+    "input_tokens": 1,
+    "cache_creation_tokens": 1396,
+    "cache_read_tokens": 154363,
+    "output_tokens": 1,
+    "api_call_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-25T04:00:37.397975Z",
+    "agent_lines": 91,
+    "human_added": 147,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 238,
+    "agent_percentage": 38.23529411764706
+  },
+  "transcript_path": ".claude/projects/-Users-tau-projects-hive/96a4db26-66cd-40c7-9b73-c6d745ced79f.jsonl"
+}
