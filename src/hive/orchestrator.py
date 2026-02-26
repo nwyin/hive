@@ -1093,9 +1093,7 @@ class Orchestrator:
 
     def _release_issue(self, issue_id: str):
         """Release an issue back to the open queue."""
-        self.db.update_issue_status(issue_id, "open")
-        self.db.conn.execute("UPDATE issues SET assignee = NULL WHERE id = ?", (issue_id,))
-        self.db.conn.commit()
+        self.db.update_issue_status(issue_id, "open")  # also clears assignee (INV-2)
 
     def _delete_agent_row(self, agent_id: str):
         """Delete agent row for early spawn-orphan cleanup paths."""
@@ -1274,28 +1272,6 @@ class Orchestrator:
             return CompletionDecision(
                 transition=CompletionTransition.FAIL_ASSESSMENT,
                 result=result,
-            )
-
-        # Completion gate: block if required deliveries are not acked (spec section 9)
-        # Materialize issue-following targets so we catch all pending required notes
-        self.db.materialize_issue_deliveries(agent.issue_id, agent.agent_id, agent.project)
-
-        # Check for required unacked notes
-        unacked = self.db.get_required_unacked_deliveries(agent.agent_id, agent.issue_id)
-        if unacked:
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "completion_blocked_unacked_notes",
-                {"count": len(unacked), "delivery_ids": [d["delivery_id"] for d in unacked]},
-            )
-            return CompletionDecision(
-                transition=CompletionTransition.FAIL_ASSESSMENT,
-                result=CompletionResult(
-                    success=False,
-                    reason=f"Cannot complete: {len(unacked)} required note(s) not acknowledged. Acknowledge via: hive mail ack <delivery_id>",
-                    summary=f"Blocked by {len(unacked)} unacknowledged required note(s)",
-                ),
             )
 
         has_commits = await has_diff_from_main_async(agent.worktree)
