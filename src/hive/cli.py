@@ -1540,11 +1540,24 @@ class HiveCLI:
 
     # ── Queen Bee TUI ─────────────────────────────────────────────────
 
-    def queen(self, *, backend: str | None = None, skip_permissions: bool = False):
+    def _resolve_mcp_configs(self, configs: list[str] | None) -> list[str]:
+        """Resolve bare MCP config names against ~/.claude."""
+        resolved: list[str] = []
+        for config in configs or []:
+            path = Path(config).expanduser()
+            if not path.is_absolute() and path.parent == Path("."):
+                path = Path.home() / ".claude" / config
+            resolved.append(str(path))
+        return resolved
+
+    def queen(self, *, backend: str | None = None, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
         """Launch Queen Bee TUI using the configured backend."""
         # Propagate to daemon and workers via env var (before daemon.start())
         if skip_permissions:
             os.environ["HIVE_CLAUDE_SKIP_PERMISSIONS"] = "1"
+        resolved_mcp_configs = self._resolve_mcp_configs(mcp_configs)
+        if resolved_mcp_configs:
+            os.environ["HIVE_CLAUDE_MCP_CONFIGS"] = os.pathsep.join(resolved_mcp_configs)
 
         daemon = self._make_daemon()
         daemon_status = daemon.status()
@@ -1560,7 +1573,7 @@ class HiveCLI:
 
         effective = backend or Config.BACKEND
         if effective == "claude":
-            self._queen_claude(skip_permissions=skip_permissions)
+            self._queen_claude(skip_permissions=skip_permissions, mcp_configs=resolved_mcp_configs)
         elif effective == "codex":
             self._queen_codex()
         else:
@@ -1677,7 +1690,7 @@ permission:
         state_file = self.project_path / ".hive" / "queen-state.md"
         state_file.unlink(missing_ok=True)
 
-    def _queen_claude(self, *, skip_permissions: bool = False):
+    def _queen_claude(self, *, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
         """Launch Queen Bee as an interactive Claude CLI session."""
         # Claude CLI refuses to launch inside another Claude Code session.
         # Since the queen is a top-level interactive session (not nested), clear the guard.
@@ -1697,6 +1710,8 @@ permission:
             "--append-system-prompt",
             short_prompt,
         ]
+        for config in mcp_configs or []:
+            cmd.extend(["--mcp-config", config])
         if skip_permissions:
             cmd.append("--dangerously-skip-permissions")
         else:
@@ -1988,6 +2003,12 @@ def main():
         default=False,
         help="Pass --dangerously-skip-permissions to Claude CLI (queen and workers)",
     )
+    queen_parser.add_argument(
+        "--mcp-config",
+        nargs="+",
+        default=None,
+        help="Claude MCP config(s); bare names resolve from ~/.claude/",
+    )
 
     # setup/init command
     subparsers.add_parser("setup", help="Create default .hive.toml config")
@@ -2180,7 +2201,11 @@ def main():
             cli.stop(json_mode=json_mode)
 
         elif args.command == "queen":
-            cli.queen(backend=args.backend, skip_permissions=args.dangerously_skip_permissions)
+            cli.queen(
+                backend=args.backend,
+                skip_permissions=args.dangerously_skip_permissions,
+                mcp_configs=args.mcp_config,
+            )
 
         elif args.command == "note":
             to_agents = getattr(args, "to_agents", None)

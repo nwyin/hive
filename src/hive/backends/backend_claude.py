@@ -156,6 +156,9 @@ class ClaudeWSBackend(HiveBackend):
                 "--model",
                 resolved_model,
             ]
+            mcp_configs = [c for c in os.environ.get("HIVE_CLAUDE_MCP_CONFIGS", "").split(os.pathsep) if c]
+            for config in mcp_configs:
+                cli_args.extend(["--mcp-config", config])
             if Config.CLAUDE_SKIP_PERMISSIONS:
                 cli_args.append("--dangerously-skip-permissions")
             cli_args.extend(["-p", ""])
