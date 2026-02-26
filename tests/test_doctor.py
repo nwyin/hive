@@ -4,6 +4,8 @@ import tempfile
 
 from hive.config import Config
 from hive.doctor import (
+    WorktreeInfo,
+    _parse_worktrees,
     check_inv1_exhausted_retry_budget,
     check_inv2_assignee_status_consistency,
     check_inv3_unbounded_loops,
@@ -13,6 +15,105 @@ from hive.doctor import (
     check_inv8_ghost_worktrees,
     run_all_checks,
 )
+
+# ── _parse_worktrees tests ─────────────────────────────────────────────
+
+_MAIN_ONLY = """\
+worktree /repo
+HEAD abc1234567890abcdef1234567890abcdef123456
+branch refs/heads/main
+"""
+
+_MAIN_PLUS_AGENTS = """\
+worktree /repo
+HEAD abc1234567890abcdef1234567890abcdef123456
+branch refs/heads/main
+
+worktree /repo/.worktrees/worker-aaa
+HEAD def1234567890abcdef1234567890abcdef123456
+branch refs/heads/agent/worker-aaa
+
+worktree /repo/.worktrees/worker-bbb
+HEAD fed1234567890abcdef1234567890abcdef123456
+branch refs/heads/agent/worker-bbb
+"""
+
+_WITH_DETACHED = """\
+worktree /repo
+HEAD abc1234567890abcdef1234567890abcdef123456
+branch refs/heads/main
+
+worktree /repo/.worktrees/detached
+HEAD bbb1234567890abcdef1234567890abcdef123456
+detached
+"""
+
+_WITH_BARE = """\
+worktree /repo
+HEAD abc1234567890abcdef1234567890abcdef123456
+bare
+"""
+
+
+def test_parse_worktrees_main_only():
+    """INV-1: Parse output with just the main worktree."""
+    result = _parse_worktrees(_MAIN_ONLY)
+    assert len(result) == 1
+    wt = result[0]
+    assert wt.path == "/repo"
+    assert wt.commit == "abc1234567890abcdef1234567890abcdef123456"
+    assert wt.branch == "refs/heads/main"
+    assert wt.is_bare is False
+
+
+def test_parse_worktrees_multiple_agent_branches():
+    """INV-1: Parse output with main + multiple agent worktrees."""
+    result = _parse_worktrees(_MAIN_PLUS_AGENTS)
+    assert len(result) == 3
+
+    main = result[0]
+    assert main.branch == "refs/heads/main"
+    assert main.is_bare is False
+
+    agent_paths = [wt.path for wt in result[1:]]
+    assert "/repo/.worktrees/worker-aaa" in agent_paths
+    assert "/repo/.worktrees/worker-bbb" in agent_paths
+
+    for wt in result[1:]:
+        assert wt.branch is not None
+        assert wt.branch.startswith("refs/heads/agent/")
+
+
+def test_parse_worktrees_detached_head():
+    """INV-2: Detached HEAD worktree has branch=None and is_bare=False."""
+    result = _parse_worktrees(_WITH_DETACHED)
+    assert len(result) == 2
+    detached = next(wt for wt in result if "detached" in wt.path)
+    assert detached.branch is None
+    assert detached.is_bare is False
+    assert detached.commit == "bbb1234567890abcdef1234567890abcdef123456"
+
+
+def test_parse_worktrees_bare():
+    """INV-2: Bare worktree has branch=None and is_bare=True."""
+    result = _parse_worktrees(_WITH_BARE)
+    assert len(result) == 1
+    wt = result[0]
+    assert wt.branch is None
+    assert wt.is_bare is True
+
+
+def test_parse_worktrees_empty_output():
+    """Parse empty output returns empty list without error."""
+    result = _parse_worktrees("")
+    assert result == []
+
+
+def test_parse_worktrees_returns_worktreeinfo_objects():
+    """Parsed items are WorktreeInfo dataclass instances."""
+    result = _parse_worktrees(_MAIN_PLUS_AGENTS)
+    for wt in result:
+        assert isinstance(wt, WorktreeInfo)
 
 
 def test_inv1_exhausted_retry_budget_ok(temp_db):

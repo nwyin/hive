@@ -14,6 +14,45 @@ from .db import Database
 
 
 @dataclass
+class WorktreeInfo:
+    """Parsed representation of a single git worktree."""
+
+    path: str
+    commit: str
+    branch: str | None  # None for detached HEAD or bare worktrees
+    is_bare: bool
+
+
+def _parse_worktrees(raw_output: str) -> list[WorktreeInfo]:
+    """Parse `git worktree list --porcelain` output into structured data."""
+    worktrees: list[WorktreeInfo] = []
+    current_path: str | None = None
+    current_commit = ""
+    current_branch: str | None = None
+    current_is_bare = False
+
+    for line in raw_output.strip().split("\n"):
+        if line.startswith("worktree "):
+            if current_path is not None:
+                worktrees.append(WorktreeInfo(path=current_path, commit=current_commit, branch=current_branch, is_bare=current_is_bare))
+            current_path = line[9:]
+            current_commit = ""
+            current_branch = None
+            current_is_bare = False
+        elif line.startswith("HEAD "):
+            current_commit = line[5:]
+        elif line.startswith("branch "):
+            current_branch = line[7:]
+        elif line == "bare":
+            current_is_bare = True
+
+    if current_path is not None:
+        worktrees.append(WorktreeInfo(path=current_path, commit=current_commit, branch=current_branch, is_bare=current_is_bare))
+
+    return worktrees
+
+
+@dataclass
 class CheckResult:
     """Result of a single invariant check."""
 
@@ -324,19 +363,7 @@ def _fix_inv8_ghost_worktrees(db: Database) -> None:
     except subprocess.CalledProcessError:
         return  # Can't get worktree list, skip fix
 
-    # Parse worktree list
-    worktrees = []
-    current = {}
-    for line in result.stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            if current:
-                worktrees.append(current)
-            current = {"path": line[9:]}
-        elif line.startswith("branch "):
-            current["branch"] = line[7:]
-
-    if current:
-        worktrees.append(current)
+    worktrees = _parse_worktrees(result.stdout)
 
     # Get active agents from DB
     cursor = db.conn.execute("SELECT worktree FROM agents WHERE status IN ('active', 'working', 'idle')")
@@ -344,22 +371,18 @@ def _fix_inv8_ghost_worktrees(db: Database) -> None:
 
     # Find ghost worktrees (on disk but not in DB)
     for wt in worktrees:
-        path = wt.get("path")
-        if not path:
-            continue
-
-        # Skip main worktree (no branch field)
-        if "branch" not in wt:
+        # Skip bare/detached worktrees (no branch)
+        if wt.branch is None:
             continue
 
         # Skip if worktree has an active agent
-        if path in active_worktrees:
+        if wt.path in active_worktrees:
             continue
 
         # This is a ghost - remove it
         try:
             subprocess.run(
-                ["git", "worktree", "remove", "--force", path],
+                ["git", "worktree", "remove", "--force", wt.path],
                 capture_output=True,
                 check=True,
             )
@@ -368,7 +391,7 @@ def _fix_inv8_ghost_worktrees(db: Database) -> None:
                 None,
                 None,
                 "doctor_fix",
-                {"check": "INV-8", "action": "remove_ghost_worktree", "path": path},
+                {"check": "INV-8", "action": "remove_ghost_worktree", "path": wt.path},
             )
         except subprocess.CalledProcessError:
             pass  # Skip if removal fails
@@ -398,19 +421,7 @@ def check_inv8_ghost_worktrees(db: Database) -> CheckResult:
             details=[],
         )
 
-    # Parse worktree list
-    worktrees = []
-    current = {}
-    for line in result.stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            if current:
-                worktrees.append(current)
-            current = {"path": line[9:]}
-        elif line.startswith("branch "):
-            current["branch"] = line[7:]
-
-    if current:
-        worktrees.append(current)
+    worktrees = _parse_worktrees(result.stdout)
 
     # Get active agents from DB
     cursor = db.conn.execute("SELECT worktree FROM agents WHERE status IN ('active', 'working', 'idle')")
@@ -419,19 +430,15 @@ def check_inv8_ghost_worktrees(db: Database) -> CheckResult:
     # Find ghost worktrees (on disk but not in DB)
     ghosts = []
     for wt in worktrees:
-        path = wt.get("path")
-        if not path:
-            continue
-
-        # Skip main worktree (no branch field)
-        if "branch" not in wt:
+        # Skip bare/detached worktrees (no branch)
+        if wt.branch is None:
             continue
 
         # Skip if worktree has an active agent
-        if path in active_worktrees:
+        if wt.path in active_worktrees:
             continue
 
-        ghosts.append(wt)
+        ghosts.append({"path": wt.path, "branch": wt.branch})
 
     if ghosts:
         return CheckResult(
