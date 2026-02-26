@@ -1471,7 +1471,7 @@ class HiveCLI:
     # ── Daemon management ────────────────────────────────────────────
 
     def _make_daemon(self) -> HiveDaemon:
-        return HiveDaemon(self.project_name, str(self.project_path))
+        return HiveDaemon(db_path=self.db.db_path)
 
     def start(self, foreground: bool = False, *, json_mode: bool = False):
         """Start the hive daemon."""
@@ -1490,7 +1490,7 @@ class HiveCLI:
                 print(f"Hive daemon already running (PID {status['pid']})")
             return
 
-        started = daemon.start(db_path=self.db.db_path)
+        started = daemon.start()
         if started:
             ds = daemon.status()
             if json_mode:

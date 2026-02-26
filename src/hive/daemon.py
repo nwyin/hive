@@ -22,26 +22,28 @@ from .config import Config
 
 
 class HiveDaemon:
-    """Manages the Hive orchestrator as a background daemon."""
+    """Manages the global Hive orchestrator daemon.
 
-    def __init__(self, project_name: str, project_path: str):
+    A single daemon serves all registered projects. The daemon discovers
+    projects from the DB and dispatches workers across all of them.
+    """
+
+    def __init__(self, db_path: str = ""):
         """
         Initialize daemon manager.
 
         Args:
-            project_name: Name of the project
-            project_path: Path to the project directory
+            db_path: Path to the SQLite database file (for spawn command)
         """
-        self.project_name = project_name
-        self.project_path = Path(project_path).resolve()
+        self.db_path = db_path
 
-        # PID file location: ~/.hive/pids/<project>.pid
+        # Global PID file: ~/.hive/pids/daemon.pid (not per-project)
         self.pid_dir = Path.home() / ".hive" / "pids"
-        self.pid_file = self.pid_dir / f"{project_name}.pid"
+        self.pid_file = self.pid_dir / "daemon.pid"
 
-        # Log directory: ~/.hive/logs/
+        # Global log file: ~/.hive/logs/orchestrator.log
         self.log_dir = Path.home() / ".hive" / "logs"
-        self.log_file = self.log_dir / f"orchestrator-{project_name}.log"
+        self.log_file = self.log_dir / "orchestrator.log"
 
     def _ensure_dirs(self):
         """Ensure PID and log directories exist."""
@@ -78,9 +80,9 @@ class HiveDaemon:
             return False
 
     def _find_all_daemon_pids(self) -> list[int]:
-        """Find all running hive daemon PIDs for this project by scanning the process table.
+        """Find all running hive daemon PIDs by scanning the process table.
 
-        Returns PIDs of processes matching `hive ... --project <path> start --foreground`.
+        Returns PIDs of processes matching `hive ... start --foreground`.
         This catches orphaned daemons that the PID file doesn't track.
         """
         try:
@@ -96,13 +98,10 @@ class HiveDaemon:
             return []
 
         my_pid = os.getpid()
-        project_str = str(self.project_path)
         pids = []
         for line in result.stdout.splitlines():
             line = line.strip()
             if "hive" not in line or "start" not in line or "--foreground" not in line:
-                continue
-            if project_str not in line:
                 continue
             # Extract PID from the first column
             match = re.match(r"(\d+)\s", line)
@@ -113,7 +112,7 @@ class HiveDaemon:
         return pids
 
     def _kill_orphaned_daemons(self) -> int:
-        """Kill any orphaned daemon processes for this project.
+        """Kill any orphaned daemon processes.
 
         Returns the number of processes killed.
         """
@@ -136,16 +135,13 @@ class HiveDaemon:
                     pass
         return killed
 
-    def start(self, db_path: str = "hive.db") -> bool:
+    def start(self) -> bool:
         """
-        Start the daemon if not already running.
+        Start the global daemon if not already running.
 
         Spawns a detached subprocess that runs the orchestrator in
         "foreground" mode with stdout/stderr redirected to the log file.
         The parent process returns immediately so the CLI can report status.
-
-        Args:
-            db_path: Path to the SQLite database file.
 
         Returns:
             True if started successfully, False if already running.
@@ -157,7 +153,7 @@ class HiveDaemon:
         if existing_pid and self._is_running(existing_pid):
             return False
 
-        # Kill any orphaned daemon processes for this project.
+        # Kill any orphaned daemon processes.
         # Multiple daemons can accumulate if the PID file gets overwritten
         # or stale, leading to duplicate orchestrator loops that independently
         # claim issues and spawn duplicate workers.
@@ -176,7 +172,7 @@ class HiveDaemon:
             cmd = [hive_bin]
         else:
             cmd = [sys.executable, "-m", "hive.cli"]
-        cmd += ["--db", str(db_path), "--project", str(self.project_path), "start", "--foreground"]
+        cmd += ["--db", str(self.db_path), "start", "--foreground"]
 
         # Strip CLAUDECODE so the daemon (and its workers) don't think they're nested
         spawn_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -186,7 +182,6 @@ class HiveDaemon:
             stdout=log_fd,
             stderr=log_fd,
             stdin=subprocess.DEVNULL,
-            cwd=str(self.project_path),
             start_new_session=True,  # detach from parent's session
             env=spawn_env,
         )
@@ -297,14 +292,14 @@ class HiveDaemon:
                 print(f"Failed to read logs: {e2}")
 
 
-def run_daemon_foreground(db, project_path: str, project_name: str):
+def run_daemon_foreground(db, project_path: str = "", project_name: str = ""):
     """
     Run the orchestrator in the foreground (for debugging or as daemon child).
 
     Args:
         db: Database instance (must be connected)
-        project_path: Path to project
-        project_name: Project name
+        project_path: (unused, kept for backward compat)
+        project_name: (unused, kept for backward compat)
     """
     import asyncio
 
