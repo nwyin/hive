@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .utils import generate_id
+from .utils import generate_id, _normalize_project_name
 
 logger = logging.getLogger(__name__)
 
@@ -1557,11 +1557,16 @@ class Database:
     # ── Projects ──────────────────────────────────────────────────────
 
     def register_project(self, name: str, path: str) -> None:
-        """Register a project name→path mapping. Idempotent via INSERT OR REPLACE."""
+        """Register a project name→path mapping. Idempotent via INSERT OR REPLACE.
+
+        INV-2: Normalizes *name* to the bare repo form — if a caller passes
+        "org/repo", it is stored as "repo" to match what detect_project() returns.
+        """
         if not name:
             raise ValueError("Project name must not be empty")
         if not path:
             raise ValueError("Project path must not be empty")
+        name = _normalize_project_name(name)
         with self.transaction():
             self.conn.execute(
                 "INSERT OR REPLACE INTO projects (name, path) VALUES (?, ?)",

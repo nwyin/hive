@@ -13,6 +13,7 @@ from hive.doctor import (
     check_inv6_orphaned_agents,
     check_inv7_stuck_merges,
     check_inv8_ghost_worktrees,
+    check_inv9_project_name_mismatch,
     run_all_checks,
 )
 
@@ -449,8 +450,8 @@ def test_run_all_checks(temp_db):
     """Test run_all_checks returns list of CheckResults."""
     results = run_all_checks(temp_db)
 
-    # Should return results for all checks (now 7 checks)
-    assert len(results) == 7
+    # Should return results for all checks (now 8 checks)
+    assert len(results) == 8
 
     # All should be CheckResult objects with required fields
     for result in results:
@@ -489,3 +490,83 @@ def test_run_all_checks_with_failures(temp_db):
     # INV-2 should warn
     inv2_result = next(r for r in results if r.id == "INV-2")
     assert inv2_result.status == "warn"
+
+
+# ── INV-9 project name mismatch tests ─────────────────────────────────────────
+
+
+def test_inv9_ok_when_names_consistent(temp_db):
+    """INV-9 passes when all project names are bare (no slashes) and issues match."""
+    temp_db.register_project("kairos", "/src/kairos")
+    temp_db.create_issue("Task A", project="kairos")
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "ok"
+    assert result.details == []
+
+
+def test_inv9_fails_on_slash_in_projects_table(temp_db):
+    """INV-9 detects stale 'org/repo' entries directly inserted into projects table."""
+    # Bypass register_project (which normalizes) by writing directly to the DB
+    temp_db.conn.execute(
+        "INSERT OR REPLACE INTO projects (name, path) VALUES (?, ?)",
+        ("tnguyen21/kairos", "/src/kairos"),
+    )
+    temp_db.conn.commit()
+
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "fail"
+    slash_entries = [d for d in result.details if d["type"] == "slash_in_project_name"]
+    assert len(slash_entries) == 1
+    assert slash_entries[0]["name"] == "tnguyen21/kairos"
+
+
+def test_inv9_fails_on_issue_project_not_registered(temp_db):
+    """INV-9 detects issues referencing a project that has no projects table entry."""
+    temp_db.register_project("kairos", "/src/kairos")
+    # Create issue with a different project name not in projects table
+    temp_db.create_issue("Orphaned task", project="org/kairos")
+
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "fail"
+    orphan_entries = [d for d in result.details if d["type"] == "issue_project_not_registered"]
+    assert len(orphan_entries) == 1
+    assert orphan_entries[0]["project"] == "org/kairos"
+
+
+def test_inv9_ok_when_projects_table_empty(temp_db):
+    """INV-9 does not flag issue project mismatches when projects table is empty."""
+    # No projects registered; issue project check is skipped to avoid false positives
+    temp_db.create_issue("A task", project="some-project")
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "ok"
+
+
+def test_inv9_fix_normalizes_slash_names(temp_db):
+    """INV-9 fix: rename 'org/repo' entries in projects table to bare form."""
+    # Insert stale "org/repo" entry directly
+    temp_db.conn.execute(
+        "INSERT OR REPLACE INTO projects (name, path) VALUES (?, ?)",
+        ("tnguyen21/kairos", "/src/kairos"),
+    )
+    temp_db.conn.commit()
+
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "fail"
+    assert result.fix is not None
+
+    result.fix(temp_db)
+
+    # After fix: "tnguyen21/kairos" should be gone; "kairos" should exist
+    assert temp_db.get_project_path("kairos") == "/src/kairos"
+    assert temp_db.get_project_path("tnguyen21/kairos") is None
+
+
+def test_inv9_register_project_normalizes_name(temp_db):
+    """register_project with 'org/repo' stores only the bare 'repo' part."""
+    temp_db.register_project("org/myrepo", "/src/myrepo")
+    assert temp_db.get_project_path("myrepo") == "/src/myrepo"
+    assert temp_db.get_project_path("org/myrepo") is None
+
+    # INV-9 check should pass — no stale slashes
+    result = check_inv9_project_name_mismatch(temp_db)
+    assert result.status == "ok"

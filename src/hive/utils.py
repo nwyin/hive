@@ -56,16 +56,34 @@ class AgentIdentity:
 
 
 def _parse_repo_name(remote_url: str) -> str | None:
-    """Extract repository name from a git remote URL."""
+    """Extract repository name (bare, no slashes) from a git remote URL.
+
+    Works for:
+    - SSH:   git@github.com:org/repo.git  → "repo"
+    - HTTPS: https://github.com/org/repo.git → "repo"
+
+    INV-1: Always returns a bare name with no slashes.
+    """
     url = remote_url.strip().rstrip("/")
     if url.endswith(".git"):
         url = url[:-4]
-    for sep in (":", "/"):
-        if sep in url:
-            name = url.rsplit(sep, 1)[-1]
-            if name:
-                return name
-    return None
+    # Strip colon-delimited host prefix (SSH URLs: "git@host:path")
+    if ":" in url:
+        url = url.split(":", 1)[1]
+    # Take the last non-empty path component
+    parts = [p for p in url.split("/") if p]
+    return parts[-1] if parts else None
+
+
+def _normalize_project_name(name: str) -> str:
+    """Normalize a project name to the bare repo form (no slashes).
+
+    If *name* contains a slash (e.g. "org/repo"), the portion after the last
+    slash is returned.  Plain names (e.g. "repo") are returned unchanged.
+    """
+    if "/" in name:
+        return name.rsplit("/", 1)[-1]
+    return name
 
 
 def _git_remote_name(project_root: Path) -> str | None:

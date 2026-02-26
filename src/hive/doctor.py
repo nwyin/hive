@@ -456,6 +456,77 @@ def check_inv8_ghost_worktrees(db: Database) -> CheckResult:
     )
 
 
+def _fix_inv9_project_name_mismatches(db: Database) -> None:
+    """Fix INV-9: Normalize 'org/repo' project names in the projects table to bare 'repo' form."""
+    cursor = db.conn.execute("SELECT name, path FROM projects WHERE name LIKE '%/%'")
+    rows = cursor.fetchall()
+    for row in rows:
+        old_name, path = row[0], row[1]
+        new_name = old_name.rsplit("/", 1)[-1]
+        # Only rename if the bare name isn't already registered to a different path
+        existing = db.conn.execute("SELECT path FROM projects WHERE name = ?", (new_name,)).fetchone()
+        if existing is None:
+            db.conn.execute("UPDATE projects SET name = ? WHERE name = ?", (new_name, old_name))
+        elif existing[0] == path:
+            # Same path — safe to remove the old "org/repo" duplicate
+            db.conn.execute("DELETE FROM projects WHERE name = ?", (old_name,))
+        # else: collision — leave as-is for human review
+    db.conn.commit()
+
+
+def check_inv9_project_name_mismatch(db: Database) -> CheckResult:
+    """INV-9: Detect project name inconsistencies between projects and issues tables.
+
+    Checks for:
+    - Projects table entries with names containing "/" (stale "org/repo" form).
+    - Issues whose project field does not match any name in the projects table
+      (when the projects table is non-empty, indicating the DB is project-aware).
+    """
+    details: list[dict] = []
+
+    # Check 1: Stale "org/repo" names in the projects table
+    cursor = db.conn.execute("SELECT name, path FROM projects WHERE name LIKE '%/%'")
+    for row in cursor.fetchall():
+        details.append({"type": "slash_in_project_name", "name": row[0], "path": row[1]})
+
+    # Check 2: Issues whose project doesn't match any projects table entry
+    # Only meaningful when the projects table is populated
+    project_count = db.conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    if project_count > 0:
+        cursor = db.conn.execute(
+            """
+            SELECT DISTINCT i.project
+            FROM issues i
+            WHERE i.project != ''
+              AND i.project NOT IN (SELECT name FROM projects)
+            """
+        )
+        for row in cursor.fetchall():
+            details.append({"type": "issue_project_not_registered", "project": row[0]})
+
+    if details:
+        slash_count = sum(1 for d in details if d["type"] == "slash_in_project_name")
+        orphan_count = sum(1 for d in details if d["type"] == "issue_project_not_registered")
+        parts = []
+        if slash_count:
+            parts.append(f"{slash_count} project(s) with 'org/repo' names")
+        if orphan_count:
+            parts.append(f"{orphan_count} issue project(s) not in projects table")
+        return CheckResult(
+            id="INV-9",
+            status="fail",
+            description="Project name mismatch: " + "; ".join(parts),
+            details=details,
+            fix=_fix_inv9_project_name_mismatches,
+        )
+    return CheckResult(
+        id="INV-9",
+        status="ok",
+        description="Project names are consistent between issues and projects tables",
+        details=[],
+    )
+
+
 # Registry of all checks
 ALL_CHECKS = [
     check_inv1_exhausted_retry_budget,
@@ -465,6 +536,7 @@ ALL_CHECKS = [
     check_inv6_orphaned_agents,
     check_inv7_stuck_merges,
     check_inv8_ghost_worktrees,
+    check_inv9_project_name_mismatch,
 ]
 
 
