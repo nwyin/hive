@@ -66,7 +66,7 @@ class CheckResult:
 def check_inv1_exhausted_retry_budget(db: Database) -> CheckResult:
     """INV-1: Detect open issues with exhausted retry budget.
 
-    Open issues where retry event count >= MAX_RETRIES should be escalated or failed.
+    Open issues where retry event count >= MAX_RETRIES should be escalated.
     """
     query = """
         SELECT
@@ -184,9 +184,9 @@ def check_inv5_retry_count_disagreement(db: Database) -> CheckResult:
     """INV-5: Detect retry count vs expected state disagreement.
 
     Issues with retry events but still in 'open' status when they should be
-    escalated, or issues in 'failed' without sufficient retry events.
+    escalated.
     """
-    # Check 1: Issues with >= MAX_RETRIES but not failed/escalated
+    # Check 1: Issues with >= MAX_RETRIES but not escalated
     query = """
         SELECT
             i.id,
@@ -196,7 +196,7 @@ def check_inv5_retry_count_disagreement(db: Database) -> CheckResult:
         FROM issues i
         LEFT JOIN events e ON i.id = e.issue_id AND e.event_type = 'retry'
         GROUP BY i.id
-        HAVING retry_count >= ? AND i.status NOT IN ('failed', 'escalated', 'done', 'finalized', 'canceled')
+        HAVING retry_count >= ? AND i.status NOT IN ('escalated', 'done', 'finalized', 'canceled')
     """
     cursor = db.conn.execute(query, (Config.MAX_RETRIES,))
     rows = [dict(row) for row in cursor.fetchall()]
@@ -205,7 +205,7 @@ def check_inv5_retry_count_disagreement(db: Database) -> CheckResult:
         return CheckResult(
             id="INV-5",
             status="fail",
-            description=f"Found {len(rows)} issue(s) with retry count >= {Config.MAX_RETRIES} but not failed/escalated",
+            description=f"Found {len(rows)} issue(s) with retry count >= {Config.MAX_RETRIES} but not escalated",
             details=rows,
         )
     return CheckResult(

@@ -13,7 +13,7 @@
       },
       "queries": {
         "model-performance": {
-          "sql": "SELECT json_extract(e.detail, '$.model') as model, i.status, i.type, i.tags, COUNT(DISTINCT i.id) as issue_count, SUM(CASE WHEN i.status IN ('done', 'finalized') THEN 1 ELSE 0 END) as successes, SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END) as failures, SUM(CAST(json_extract(e.detail, '$.input_tokens') AS INTEGER)) as total_input_tokens, SUM(CAST(json_extract(e.detail, '$.output_tokens') AS INTEGER)) as total_output_tokens FROM events e JOIN issues i ON e.issue_id = i.id WHERE e.event_type = 'tokens_used' AND json_extract(e.detail, '$.model') IS NOT NULL GROUP BY model, i.type ORDER BY model, i.type",
+          "sql": "SELECT json_extract(e.detail, '$.model') as model, i.status, i.type, i.tags, COUNT(DISTINCT i.id) as issue_count, SUM(CASE WHEN i.status IN ('done', 'finalized') THEN 1 ELSE 0 END) as successes, SUM(CASE WHEN i.status = 'escalated' THEN 1 ELSE 0 END) as escalations, SUM(CAST(json_extract(e.detail, '$.input_tokens') AS INTEGER)) as total_input_tokens, SUM(CAST(json_extract(e.detail, '$.output_tokens') AS INTEGER)) as total_output_tokens FROM events e JOIN issues i ON e.issue_id = i.id WHERE e.event_type = 'tokens_used' AND json_extract(e.detail, '$.model') IS NOT NULL GROUP BY model, i.type ORDER BY model, i.type",
           "title": "Model Performance by Issue Type",
           "description": "Token usage, success rate, and failure rate broken down by model and issue type"
         },

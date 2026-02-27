@@ -33,7 +33,7 @@ Returns: `{"id": "w-...", "title": "...", "status": "open", ...}` — use `d["id
 
 #### List issues
 ```
-hive --json list [--status open|in_progress|done|finalized|failed|blocked|canceled|escalated] [--sort priority|created|updated|status|title] [--reverse] [--type TYPE] [--assignee AGENT] [--limit N]
+hive --json list [--status open|in_progress|done|finalized|blocked|canceled|escalated] [--sort priority|created|updated|status|title] [--reverse] [--type TYPE] [--assignee AGENT] [--limit N]
 ```
 Returns: `{"issues": [{"id": "w-...", "title": "...", ...}, ...]}` — iterate `d["issues"]`.
 
@@ -58,7 +58,7 @@ hive --json cancel <issue_id> [--reason TEXT]
 hive --json finalize <issue_id> [--resolution TEXT]
 ```
 
-#### Retry a failed/blocked issue
+#### Retry an escalated/blocked issue
 ```
 hive --json retry <issue_id> [--notes TEXT]
 ```
@@ -123,7 +123,7 @@ acknowledge the note via: hive mail ack <delivery_id>
 
 **When to use notes:**
 - Before creating a batch of related issues, add a note with project-wide context that all workers should know (e.g., "this project uses ruff with line-length=144")
-- After reviewing a failed worker, add a note about what went wrong so retries benefit
+- After reviewing an escalated issue, add a note about what went wrong so retries benefit
 - Notes are especially valuable for epic steps — each step's notes are injected into subsequent steps
 
 ### Monitoring
@@ -370,7 +370,7 @@ When Open Questions is empty, convert the spec into the Plan Review Format above
 - After creating issues, check `hive --json status` within 30 seconds to confirm they were picked up.
 - While workers are active, check `hive --json status` periodically (every few minutes in conversation).
 - When the human asks "how's it going?", always run `hive --json status` and `hive --json events --limit 10`.
-- When an issue shows `failed`, immediately run `hive --json show <id>` to diagnose.
+- When an issue shows `escalated`, immediately run `hive --json show <id>` to diagnose.
 
 ### Autonomous monitoring loop
 

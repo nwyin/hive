@@ -240,11 +240,11 @@ def test_inv5_retry_count_disagreement_ok(temp_db):
     # Issue with no retries in open state (ok)
     temp_db.create_issue("Clean issue", project="test")
 
-    # Issue with retries but in failed state (ok)
-    issue_id = temp_db.create_issue("Failed issue", project="test")
+    # Issue with retries but in escalated state (ok)
+    issue_id = temp_db.create_issue("Escalated issue", project="test")
     for _ in range(Config.MAX_RETRIES):
         temp_db.log_event(issue_id, None, "retry", {})
-    temp_db.update_issue_status(issue_id, "failed")
+    temp_db.update_issue_status(issue_id, "escalated")
 
     result = check_inv5_retry_count_disagreement(temp_db)
     assert result.status == "ok"

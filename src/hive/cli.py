@@ -190,7 +190,7 @@ def _fmt_status(result):
     lines = ["\n=== Hive Status ==="]
     lines.append(f"\nProject: {result.get('project', '')}")
     lines.append("\nIssues:")
-    for s in ["open", "in_progress", "done", "finalized", "failed", "escalated", "blocked", "canceled"]:
+    for s in ["open", "in_progress", "done", "finalized", "escalated", "blocked", "canceled"]:
         count = result.get("issues", {}).get(s, 0)
         if count > 0:
             lines.append(f"  {s}: {count}")
@@ -673,7 +673,7 @@ class HiveCLI:
 
     @cli_command(formatter=_fmt_message)
     def retry(self, issue_id: str, notes: str = ""):
-        """Retry a failed/blocked issue."""
+        """Retry an escalated/blocked issue."""
         issue = self.db.get_issue(issue_id)
         if not issue:
             raise ValueError(f"Issue not found: {issue_id}")
@@ -924,7 +924,7 @@ class HiveCLI:
 
         # Surface issues needing human attention (escalated/failed)
         attention_cursor = self.db.conn.execute(
-            "SELECT id, title, status FROM issues WHERE project = ? AND status IN ('escalated', 'failed') ORDER BY updated_at DESC",
+            "SELECT id, title, status FROM issues WHERE project = ? AND status = 'escalated' ORDER BY updated_at DESC",
             (self.project_name,),
         )
         attention_issues = [{"id": r["id"], "title": r["title"], "status": r["status"]} for r in attention_cursor.fetchall()]
@@ -1844,7 +1844,7 @@ def main():
     finalize_parser.add_argument("--resolution", default="", help="Resolution description")
 
     # retry command (hidden — advanced)
-    retry_parser = subparsers.add_parser("retry", help="Retry a failed issue")
+    retry_parser = subparsers.add_parser("retry", help="Retry an escalated issue")
     retry_parser.add_argument("issue_id", help="Issue ID")
     retry_parser.add_argument("--notes", default="", help="Notes about what to try differently")
 

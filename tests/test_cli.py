@@ -387,8 +387,8 @@ def test_cli_retry(temp_db, tmp_path, capsys):
     """Test retrying a failed issue."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    issue_id = temp_db.create_issue("Failed task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "failed")
+    issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
+    temp_db.update_issue_status(issue_id, "escalated")
 
     cli.retry(issue_id, notes="try different approach")
 
@@ -401,9 +401,9 @@ def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
     """Test that manual retry logs 'manual_retry' event type, not 'retry'."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    # Create and fail an issue
-    issue_id = temp_db.create_issue("Failed task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "failed")
+    # Create and escalate an issue
+    issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
+    temp_db.update_issue_status(issue_id, "escalated")
 
     # Retry the issue manually
     cli.retry(issue_id, notes="manual retry test")
