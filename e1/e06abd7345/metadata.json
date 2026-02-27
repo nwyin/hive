@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "e1e06abd7345",
+  "strategy": "manual-commit",
+  "branch": "remove-opencode-backend",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hive/backends/backend_codex.py",
+    "src/hive/db.py",
+    "src/hive/orchestrator.py",
+    "src/hive/prompts.py",
+    "src/hive/prompts/queen.md",
+    "tests/fake_backend.py",
+    "tests/test_claude_ws.py",
+    "tests/test_orchestrator.py",
+    "tests/test_race_conditions.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e1/e06abd7345/0/metadata.json",
+      "transcript": "/e1/e06abd7345/0/full.jsonl",
+      "context": "/e1/e06abd7345/0/context.md",
+      "content_hash": "/e1/e06abd7345/0/content_hash.txt",
+      "prompt": "/e1/e06abd7345/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 283,
+    "cache_creation_tokens": 341425,
+    "cache_read_tokens": 24083716,
+    "output_tokens": 33790,
+    "api_call_count": 241
+  }
+}
