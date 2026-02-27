@@ -116,6 +116,7 @@ async def test_handle_agent_failure_retry_tier(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent", model="claude-sonnet-4-5")
+    temp_db.claim_issue(issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -172,6 +173,7 @@ async def test_handle_agent_failure_agent_switch_tier(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent", model="claude-sonnet-4-5")
+    temp_db.claim_issue(issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -227,6 +229,7 @@ async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -286,6 +289,7 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
     # Simulate full escalation chain
     for retry_attempt in range(Config.MAX_RETRIES):
         agent_id = temp_db.create_agent(f"agent-retry-{retry_attempt}")
+        temp_db.claim_issue(issue_id, agent_id)
         agent = AgentIdentity(
             agent_id=agent_id,
             name=f"agent-retry-{retry_attempt}",
@@ -309,6 +313,7 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
     # Now simulate agent switches
     for switch_attempt in range(Config.MAX_AGENT_SWITCHES):
         agent_id = temp_db.create_agent(f"agent-switch-{switch_attempt}")
+        temp_db.claim_issue(issue_id, agent_id)
         agent = AgentIdentity(
             agent_id=agent_id,
             name=f"agent-switch-{switch_attempt}",
@@ -332,6 +337,7 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
 
     # Final failure should escalate
     final_agent_id = temp_db.create_agent("final-agent")
+    temp_db.claim_issue(issue_id, final_agent_id)
     final_agent = AgentIdentity(
         agent_id=final_agent_id,
         name="final-agent",
@@ -372,6 +378,7 @@ async def test_handle_agent_failure_anomaly_escalates_immediately(temp_db, tmp_p
 
     issue_id = temp_db.create_issue("Anomaly task", "Repeated failures")
     agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -1708,6 +1715,7 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
     test_model = "claude-sonnet-4"
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent", model=test_model)
+    temp_db.claim_issue(issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,

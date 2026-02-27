@@ -302,6 +302,9 @@ async def test_finalize_issue(merge_entry_with_worktree, temp_db, mock_opencode)
     entry["issue_title"] = "Test Feature"
     entry["agent_name"] = "worker-test"
 
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (entry["id"],))
+    temp_db.conn.commit()
+
     await mp._finalize_issue(entry)
 
     # Issue should be finalized
@@ -688,6 +691,8 @@ async def test_send_to_refinery_status_verification(temp_db, mock_opencode):
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,
@@ -749,6 +754,8 @@ async def test_send_to_refinery_harvests_notes(tmp_path, temp_db, mock_opencode)
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,
@@ -863,6 +870,12 @@ async def test_finalize_issue_epic_completion(temp_db, mock_opencode, git_repo):
     entry2["issue_title"] = "Step 2"
     entry2["agent_name"] = "worker-test-2"
 
+    temp_db.conn.execute(
+        "UPDATE merge_queue SET status = 'running' WHERE id IN (?, ?)",
+        (entry1["id"], entry2["id"]),
+    )
+    temp_db.conn.commit()
+
     # Create merge processor
     mp = MergeProcessor(temp_db, mock_opencode, str(git_repo), "test")
 
@@ -913,6 +926,8 @@ async def test_refinery_rejection_creates_structured_note(tmp_path, temp_db, moc
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,
@@ -981,6 +996,8 @@ async def test_refinery_rejection_note_without_test_output(tmp_path, temp_db, mo
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,
@@ -1075,6 +1092,9 @@ async def test_multiple_rejection_notes_accumulate(merge_entry_with_worktree, te
         "branch_name": info["branch_name"],
         "issue_title": "Test Feature",
     }
+
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = 1")
+    temp_db.conn.commit()
 
     with patch("hive.merge.Config") as mock_config:
         mock_config.TEST_COMMAND = "pytest"
@@ -1295,6 +1315,7 @@ async def test_send_to_refinery_retries_on_dead_session(tmp_path, temp_db, mock_
     Path(worktree_path).mkdir()
 
     issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    temp_db.update_issue_status(issue_id, "done")
     agent_id = temp_db.create_agent(name="test-agent")
     temp_db.conn.execute(
         "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
@@ -1302,6 +1323,8 @@ async def test_send_to_refinery_retries_on_dead_session(tmp_path, temp_db, mock_
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,
@@ -1358,6 +1381,7 @@ async def test_send_to_refinery_gives_up_after_two_deaths(tmp_path, temp_db, moc
     Path(worktree_path).mkdir()
 
     issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    temp_db.update_issue_status(issue_id, "done")
     agent_id = temp_db.create_agent(name="test-agent")
     temp_db.conn.execute(
         "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
@@ -1365,6 +1389,8 @@ async def test_send_to_refinery_gives_up_after_two_deaths(tmp_path, temp_db, moc
     )
     temp_db.conn.commit()
     queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
 
     entry = {
         "id": queue_id,

@@ -177,8 +177,10 @@ class MergeProcessor:
         entry = entries[0]
         queue_id = entry["id"]
 
-        # Mark as running
-        self.db.update_merge_queue_status(queue_id, "running")
+        # Mark as running (CAS) — only one processor should claim a queued entry.
+        claimed = self.db.try_transition_merge_queue_status(queue_id, from_status="queued", to_status="running")
+        if not claimed:
+            return
         self.db.log_event(
             entry["issue_id"],
             entry.get("agent_id"),
@@ -192,7 +194,7 @@ class MergeProcessor:
 
         except Exception as e:
             # Unexpected error — mark queue entry failed, leave issue as-is
-            self.db.update_merge_queue_status(queue_id, "failed")
+            self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
             self.db.log_event(
                 entry["issue_id"],
                 entry.get("agent_id"),
@@ -258,13 +260,13 @@ class MergeProcessor:
                     "conflicts_resolved": 0,
                 }
             except Exception as e2:
-                self.db.update_merge_queue_status(queue_id, "failed")
+                self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
                 self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e2)})
                 await self._force_reset_refinery_session(f"Exception in retry: {e2}")
                 await self._cleanup_merge_resources(entry)
                 return
         except Exception as e:
-            self.db.update_merge_queue_status(queue_id, "failed")
+            self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
             self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e)})
             await self._force_reset_refinery_session(f"Exception in _send_to_refinery: {e}")
             await self._cleanup_merge_resources(entry)
@@ -277,7 +279,7 @@ class MergeProcessor:
             try:
                 await merge_to_main_async(self.project_path, branch_name)
             except GitWorktreeError as e:
-                self.db.update_merge_queue_status(queue_id, "failed")
+                self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
                 self.db.log_event(
                     issue_id,
                     agent_id,
@@ -295,8 +297,8 @@ class MergeProcessor:
                     {"conflicts_resolved": result.get("conflicts_resolved", 0)},
                 )
         elif result["status"] == "rejected":
-            self.db.update_merge_queue_status(queue_id, "failed")
-            self.db.update_issue_status(issue_id, "open")
+            self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
+            self.db.try_transition_issue_status(issue_id, from_status="done", to_status="open")
             self.db.log_event(issue_id, agent_id, "refinery_review_rejected", {"summary": result.get("summary", "")})
 
             rejection_reason = result.get("summary", "Unknown reason")
@@ -311,8 +313,8 @@ class MergeProcessor:
             needs_cleanup = True
         else:
             # needs_human or unknown
-            self.db.update_merge_queue_status(queue_id, "failed")
-            self.db.update_issue_status(issue_id, "escalated")
+            self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
+            self.db.try_transition_issue_status(issue_id, from_status="done", to_status="escalated")
             self.db.log_event(issue_id, agent_id, "refinery_review_escalated", {"summary": result.get("summary", "")})
             needs_cleanup = True
 
@@ -492,10 +494,15 @@ class MergeProcessor:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Update merge queue
-        self.db.update_merge_queue_status(entry["id"], "merged", completed_at=now)
+        self.db.try_transition_merge_queue_status(
+            entry["id"],
+            from_status="running",
+            to_status="merged",
+            completed_at=now,
+        )
 
         # Finalize the issue
-        self.db.update_issue_status(entry["issue_id"], "finalized")
+        self.db.try_transition_issue_status(entry["issue_id"], from_status="done", to_status="finalized")
         self.db.log_event(
             entry["issue_id"],
             entry.get("agent_id"),
@@ -510,7 +517,11 @@ class MergeProcessor:
             # Check if all children of the parent are now complete
             if self.db.check_epic_complete(parent_id):
                 # Mark parent epic as finalized (all steps merged, nothing left to do)
-                self.db.update_issue_status(parent_id, "finalized")
+                finalized_parent = self.db.try_transition_issue_status(parent_id, from_status="open", to_status="finalized")
+                if not finalized_parent:
+                    # Parent epics are normally never claimed, but allow finalization if
+                    # a human (or bug) moved it to in_progress.
+                    self.db.try_transition_issue_status(parent_id, from_status="in_progress", to_status="finalized")
                 self.db.log_event(
                     parent_id,
                     None,

@@ -353,13 +353,11 @@ class Orchestrator:
                 agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
 
                 if retry_count < Config.MAX_RETRIES or agent_switch_count < Config.MAX_AGENT_SWITCHES:
-                    self.db.conn.execute(
-                        """
-                        UPDATE issues
-                        SET assignee = NULL, status = 'open'
-                        WHERE id = ? AND status = 'in_progress'
-                        """,
-                        (issue_id,),
+                    self.db.try_transition_issue_status(
+                        issue_id,
+                        from_status="in_progress",
+                        to_status="open",
+                        expected_assignee=agent_id,
                     )
                     self.db.log_event(
                         issue_id,
@@ -368,13 +366,11 @@ class Orchestrator:
                         {"reason": "stale agent from previous daemon run"},
                     )
                 else:
-                    self.db.conn.execute(
-                        """
-                        UPDATE issues
-                        SET assignee = NULL, status = 'failed'
-                        WHERE id = ? AND status = 'in_progress'
-                        """,
-                        (issue_id,),
+                    self.db.try_transition_issue_status(
+                        issue_id,
+                        from_status="in_progress",
+                        to_status="failed",
+                        expected_assignee=agent_id,
                     )
                     self.db.log_event(
                         issue_id,
@@ -821,7 +817,12 @@ class Orchestrator:
             self._mark_agent_failed(agent_id)
             # Clean up worktree and mark issue failed
             await remove_worktree_async(worktree_path)
-            self.db.update_issue_status(issue_id, "failed")
+            self.db.try_transition_issue_status(
+                issue_id,
+                from_status="in_progress",
+                to_status="failed",
+                expected_assignee=agent_id,
+            )
 
     def _gather_notes_for_worker(self, issue_id: str, project: str) -> Optional[List[Dict[str, Any]]]:
         """Gather relevant notes to inject into a worker's prompt.
@@ -1071,9 +1072,14 @@ class Orchestrator:
         )
         self.db.conn.commit()
 
-    def _release_issue(self, issue_id: str):
-        """Release an issue back to the open queue."""
-        self.db.update_issue_status(issue_id, "open")  # also clears assignee (INV-2)
+    def _release_issue(self, issue_id: str, *, expected_assignee: str) -> bool:
+        """Release an issue back to the open queue (CAS)."""
+        return self.db.try_transition_issue_status(
+            issue_id,
+            from_status="in_progress",
+            to_status="open",
+            expected_assignee=expected_assignee,
+        )
 
     def _delete_agent_row(self, agent_id: str):
         """Delete agent row for early spawn-orphan cleanup paths."""
@@ -1370,8 +1376,24 @@ class Orchestrator:
                         if decision.result is None:
                             raise RuntimeError("Missing completion result for success transition")
 
-                        # Mark issue as done.
-                        self.db.update_issue_status(agent.issue_id, "done")
+                        transitioned = self.db.try_transition_issue_status(
+                            agent.issue_id,
+                            from_status="in_progress",
+                            to_status="done",
+                            expected_assignee=agent.agent_id,
+                        )
+                        if not transitioned:
+                            current_issue = self.db.get_issue(agent.issue_id)
+                            current_status = current_issue.get("status") if current_issue else None
+                            if current_status != "done":
+                                remove_worktree_on_teardown = True
+                                self.db.log_event(
+                                    agent.issue_id,
+                                    agent.agent_id,
+                                    "agent_complete_skipped",
+                                    {"reason": f"success result but issue is {current_status or 'missing'}, skipping merge enqueue"},
+                                )
+                                return
 
                         # Get commit hash if available.
                         commit_hash = decision.result.git_commit or get_commit_hash(agent.worktree)
@@ -1379,22 +1401,14 @@ class Orchestrator:
                         # Extract test_command from worker's file_result.
                         test_command = file_result.get("test_command") if file_result else None
 
-                        # Enqueue to merge queue.
-                        self.db.conn.execute(
-                            """
-                            INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                agent.issue_id,
-                                agent.agent_id,
-                                agent.project,
-                                agent.worktree,
-                                f"agent/{agent.name}",
-                                test_command,
-                            ),
+                        self.db.enqueue_merge(
+                            issue_id=agent.issue_id,
+                            agent_id=agent.agent_id,
+                            project=agent.project,
+                            worktree=agent.worktree,
+                            branch_name=f"agent/{agent.name}",
+                            test_command=test_command,
                         )
-                        self.db.conn.commit()
 
                         # Get agent model from database.
                         agent_row = self.db.get_agent(agent.agent_id)
@@ -1462,7 +1476,20 @@ class Orchestrator:
         if decision == EscalationDecision.ANOMALY_ESCALATE:
             recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
             logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
-            self.db.update_issue_status(issue_id, "escalated")
+            escalated = self.db.try_transition_issue_status(
+                issue_id,
+                from_status="in_progress",
+                to_status="escalated",
+                expected_assignee=agent.agent_id,
+            )
+            if not escalated:
+                self.db.log_event(
+                    issue_id,
+                    agent.agent_id,
+                    "anomaly_escalate_skipped",
+                    {"reason": "issue not escalatable"},
+                )
+                return
             self.db.log_event(
                 issue_id,
                 agent.agent_id,
@@ -1478,7 +1505,10 @@ class Orchestrator:
 
         if decision == EscalationDecision.RETRY:
             retry_count = self.db.count_events_by_type(issue_id, "retry")
-            self._release_issue(issue_id)
+            released = self._release_issue(issue_id, expected_assignee=agent.agent_id)
+            if not released:
+                self.db.log_event(issue_id, agent.agent_id, "retry_skipped", {"reason": "issue not releasable"})
+                return
             self.db.log_event(
                 issue_id,
                 agent.agent_id,
@@ -1490,7 +1520,10 @@ class Orchestrator:
 
         if decision == EscalationDecision.AGENT_SWITCH:
             agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
-            self._release_issue(issue_id)
+            released = self._release_issue(issue_id, expected_assignee=agent.agent_id)
+            if not released:
+                self.db.log_event(issue_id, agent.agent_id, "agent_switch_skipped", {"reason": "issue not releasable"})
+                return
             self.db.log_event(
                 issue_id,
                 agent.agent_id,
@@ -1502,7 +1535,15 @@ class Orchestrator:
 
         retry_count = self.db.count_events_by_type(issue_id, "retry")
         agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
-        self.db.update_issue_status(issue_id, "escalated")
+        escalated = self.db.try_transition_issue_status(
+            issue_id,
+            from_status="in_progress",
+            to_status="escalated",
+            expected_assignee=agent.agent_id,
+        )
+        if not escalated:
+            self.db.log_event(issue_id, agent.agent_id, "escalate_skipped", {"reason": "issue not escalatable"})
+            return
         self.db.log_event(
             issue_id,
             agent.agent_id,

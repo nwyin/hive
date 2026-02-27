@@ -260,3 +260,29 @@ If you want the codebase to get simpler, these invariants have to be treated as 
 ## 9) Suggested next step (smallest refactor with biggest simplification)
 
 With epic session cycling removed, the next simplification lever is to push more idempotency/fencing into SQLite (unique merge entries, CAS-style transitions) and reduce liveness branching by consolidating lease/progress signals.
+
+Concretely (recommended order):
+
+1) **DB fence: make merge enqueue idempotent** *(implemented 2026-02-27)*
+   - Add a partial unique index to enforce “at most one active merge” per issue:
+     `UNIQUE(issue_id) WHERE status IN ('queued', 'running')`
+   - Make enqueue idempotent via `INSERT OR IGNORE` (or equivalent) so replaying
+     completion handling cannot double-enqueue.
+   - Migration safety: if the index fails due to legacy duplicates, dedupe
+     existing `queued|running` rows per issue before re-attempting.
+   - Code refs: `src/hive/db.py` (`_ensure_merge_queue_idempotency`, `enqueue_merge`)
+
+2) **CAS transitions for critical state changes** *(implemented 2026-02-27)*
+   - Replace “fire-and-forget” status updates with CAS updates:
+     - issues: `in_progress -> done|open|escalated`, `done -> open|escalated|finalized`
+     - merge_queue: `queued -> running` claim, `running -> merged|failed`
+   - Fence transitions that must respect ownership with `expected_assignee`
+     (e.g. only the claiming agent can release/escalate its issue).
+   - Code refs: `src/hive/db.py` (`try_transition_issue_status`, `try_transition_merge_queue_status`),
+     `src/hive/orchestrator.py`, `src/hive/merge.py`
+
+3) **Consolidate liveness/progress signals** *(next)*
+   - Pick a single authoritative completion artifact (recommend: the file protocol),
+     and treat session idle as a performance optimization only.
+   - Reduce lease branching by collapsing “progress” into one DB-updated timestamp
+     and using one stall handler path.

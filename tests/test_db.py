@@ -1101,6 +1101,52 @@ def test_project_column_migration_fresh_db():
         os.unlink(db_path)
 
 
+def test_merge_queue_idempotency_migration_dedupes_existing_dupes(tmp_path):
+    """Migration should dedupe active merge_queue entries before adding unique fence."""
+    import sqlite3
+
+    from hive.db import Database, SCHEMA
+
+    db_path = str(tmp_path / "legacy-dupes.db")
+
+    # Create a "legacy" DB by applying schema (no unique active-merge fence),
+    # then inserting duplicate queued entries for the same issue.
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+
+    issue_id = "w-dup-merge"
+    conn.execute(
+        "INSERT INTO issues (id, title, status, project) VALUES (?, ?, ?, ?)",
+        (issue_id, "Duplicate merge issue", "done", "test"),
+    )
+    conn.execute(
+        "INSERT INTO merge_queue (issue_id, project, worktree, branch_name, status) VALUES (?, ?, ?, ?, 'queued')",
+        (issue_id, "test", "/tmp/wt1", "agent/worker-1"),
+    )
+    conn.execute(
+        "INSERT INTO merge_queue (issue_id, project, worktree, branch_name, status) VALUES (?, ?, ?, ?, 'queued')",
+        (issue_id, "test", "/tmp/wt2", "agent/worker-2"),
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(db_path)
+    db.connect()
+    try:
+        # Unique active-merge index should exist after migration.
+        cursor = db.conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='uidx_merge_queue_active_issue'")
+        assert cursor.fetchone() is not None
+
+        # Only one active (queued|running) entry should remain for the issue.
+        rows = db.conn.execute("SELECT status FROM merge_queue WHERE issue_id = ? ORDER BY id", (issue_id,)).fetchall()
+        statuses = [row["status"] for row in rows]
+        assert sum(1 for s in statuses if s in ("queued", "running")) == 1
+        assert "failed" in statuses
+    finally:
+        db.close()
+
+
 def test_project_column_migration_idempotent():
     """Test that migration is idempotent (can be run multiple times)."""
     import tempfile

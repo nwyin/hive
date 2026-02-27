@@ -314,9 +314,189 @@ class Database:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)")
         self.conn.commit()
 
+        self._ensure_merge_queue_idempotency()
+
         # Create index on agents.project if it doesn't exist
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)")
         self.conn.commit()
+
+    def _ensure_merge_queue_idempotency(self) -> None:
+        """Ensure merge queue constraints that make enqueueing idempotent.
+
+        Invariant: there can be at most one active merge entry (queued|running)
+        per issue. This prevents duplicate merge enqueues when completion
+        handling is replayed.
+        """
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        index_sql = """
+            CREATE UNIQUE INDEX IF NOT EXISTS uidx_merge_queue_active_issue
+            ON merge_queue(issue_id)
+            WHERE status IN ('queued', 'running')
+        """
+
+        try:
+            self.conn.execute(index_sql)
+            self.conn.commit()
+            return
+        except sqlite3.Error as e:
+            if "unique constraint failed" not in str(e).lower():
+                raise
+
+        logger.warning("Deduping merge_queue active entries before adding unique index")
+        self._dedupe_active_merge_queue_entries()
+        self.conn.execute(index_sql)
+        self.conn.commit()
+
+    def _dedupe_active_merge_queue_entries(self) -> None:
+        """Best-effort: collapse duplicate active merge entries per issue."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        dup_rows = self.conn.execute(
+            """
+            SELECT issue_id
+            FROM merge_queue
+            WHERE status IN ('queued', 'running')
+            GROUP BY issue_id
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+
+        if not dup_rows:
+            return
+
+        for row in dup_rows:
+            issue_id = row["issue_id"]
+            entries = self.conn.execute(
+                """
+                SELECT id, status, enqueued_at
+                FROM merge_queue
+                WHERE issue_id = ?
+                  AND status IN ('queued', 'running')
+                ORDER BY
+                  CASE status WHEN 'running' THEN 0 ELSE 1 END,
+                  enqueued_at ASC,
+                  id ASC
+                """,
+                (issue_id,),
+            ).fetchall()
+
+            if len(entries) <= 1:
+                continue
+
+            keep_id = entries[0]["id"]
+            drop_ids = [e["id"] for e in entries[1:]]
+            logger.warning(f"merge_queue dedupe: keeping {keep_id} and failing {drop_ids} for issue {issue_id}")
+            self.conn.executemany(
+                "UPDATE merge_queue SET status = 'failed', completed_at = datetime('now') WHERE id = ?",
+                [(merge_id,) for merge_id in drop_ids],
+            )
+
+        self.conn.commit()
+
+    def enqueue_merge(
+        self,
+        *,
+        issue_id: str,
+        agent_id: Optional[str],
+        project: str,
+        worktree: str,
+        branch_name: str,
+        test_command: Optional[str] = None,
+    ) -> bool:
+        """Enqueue an issue for merge processing.
+
+        Returns:
+            True if a new merge_queue row was inserted, False if it already existed.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, test_command)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (issue_id, agent_id, project, worktree, branch_name, test_command),
+            )
+            return cursor.rowcount == 1
+
+    def try_transition_merge_queue_status(
+        self,
+        queue_id: int,
+        *,
+        from_status: str,
+        to_status: str,
+        completed_at: Optional[str] = None,
+    ) -> bool:
+        """CAS-style merge_queue status transition.
+
+        Returns:
+            True if updated, False if the entry was not in from_status.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE merge_queue
+                SET status = ?, completed_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (to_status, completed_at, queue_id, from_status),
+            )
+            return cursor.rowcount == 1
+
+    def try_transition_issue_status(
+        self,
+        issue_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+        expected_assignee: Optional[str] = None,
+    ) -> bool:
+        """CAS-style issue status transition.
+
+        For transitions to 'open', clears assignee (INV-2).
+
+        Returns:
+            True if updated, False otherwise.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE issues
+                SET status = ?,
+                    assignee = CASE WHEN ? = 'open' THEN NULL ELSE assignee END,
+                    updated_at = datetime('now'),
+                    closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'failed')
+                                     THEN datetime('now')
+                                     ELSE closed_at END
+                WHERE id = ?
+                  AND status = ?
+                  AND (? IS NULL OR assignee = ?)
+                """,
+                (
+                    to_status,
+                    to_status,
+                    to_status,
+                    issue_id,
+                    from_status,
+                    expected_assignee,
+                    expected_assignee,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+
+            # commit=False so the status transition + audit event commit atomically via
+            # the surrounding `transaction()` context manager.
+            self.log_event(
+                issue_id,
+                None,
+                f"status_{to_status}",
+                {"status": to_status, "from": from_status, "to": to_status},
+                commit=False,
+            )
+            return True
 
     def create_issue(
         self,
