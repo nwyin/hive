@@ -539,24 +539,6 @@ def test_evaluate_permission_policy():
     assert orch.evaluate_permission_policy({"permission": "unknown", "patterns": []}) is None
 
 
-@pytest.mark.asyncio
-async def test_permission_unblocker_auto_resolve(temp_db, tmp_path):
-    """Test that permission unblocker auto-resolves permissions."""
-    from hive.backends import HiveBackend
-    from hive.orchestrator import Orchestrator
-
-    mock_backend = AsyncMock(spec=HiveBackend)
-    mock_backend.get_pending_permissions = AsyncMock(return_value=[])
-    Orchestrator(
-        db=temp_db,
-        backend=mock_backend,
-    )
-
-    # Get pending permissions (should be empty initially)
-    pending = await mock_backend.get_pending_permissions()
-    assert isinstance(pending, list)
-
-
 def test_cli_costs_no_data(temp_db, tmp_path, capsys):
     """Test metrics --costs with no token usage data."""
     cli = HiveCLI(temp_db, str(tmp_path))

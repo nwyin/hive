@@ -582,9 +582,6 @@ class Orchestrator:
             processor = self.merge_pool.get(project["name"], project["path"])
             await processor.initialize()
 
-        # Start permission unblocker in background
-        permission_task = asyncio.create_task(self.permission_unblocker_loop())
-
         # Start merge queue processor in background
         merge_task = asyncio.create_task(self.merge_processor_loop())
         merge_task.add_done_callback(self._on_merge_task_done)
@@ -598,9 +595,9 @@ class Orchestrator:
             await self._shutdown_all_sessions()
             self.backend.stop()
             # Cancel background tasks so we don't block on their long sleeps
-            for task in (sse_task, permission_task, merge_task):
+            for task in (sse_task, merge_task):
                 task.cancel()
-            await asyncio.gather(sse_task, permission_task, merge_task, return_exceptions=True)
+            await asyncio.gather(sse_task, merge_task, return_exceptions=True)
 
     async def main_loop(self):
         """Main orchestration loop."""
@@ -1684,38 +1681,6 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in merge processor: {e}")
             await asyncio.sleep(Config.MERGE_POLL_INTERVAL)
-
-    async def permission_unblocker_loop(self):
-        """
-        Safety-net loop to auto-resolve pending permission requests based on policy.
-
-        Now runs at longer intervals since SSE events handle real-time permissions.
-        This serves as a safety net for SSE reconnection gaps or edge cases.
-        """
-        while self.running:
-            try:
-                # Very slow if no active agents
-                if len(self.active_agents) == 0:
-                    await asyncio.sleep(30)
-                    continue
-
-                # Get pending permissions
-                pending = await self.backend.get_pending_permissions()
-
-                for perm in pending:
-                    decision = self.evaluate_permission_policy(perm)
-                    if decision:
-                        # Auto-resolve based on policy
-                        await self.backend.reply_permission(perm["id"], reply=decision)
-
-                        self._log_permission_resolved(perm, decision)
-
-                # Safety net only - SSE handles real-time permissions
-                await asyncio.sleep(Config.PERMISSION_SAFETY_NET_INTERVAL)
-
-            except Exception as e:
-                logger.error(f"Error in permission unblocker: {e}")
-                await asyncio.sleep(Config.PERMISSION_SAFETY_NET_INTERVAL)
 
     def evaluate_permission_policy(self, perm: Dict[str, Any]) -> Optional[str]:
         """

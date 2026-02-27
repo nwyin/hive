@@ -1066,7 +1066,7 @@ class Database:
         Log a system-level event to the audit trail.
 
         Args:
-            event_type: Type of system event (e.g., 'backend_degraded', 'backend_recovered')
+            event_type: Type of system event (e.g., 'daemon_started')
             detail: Additional event details dict
         """
         detail_json = json.dumps(detail) if detail else None

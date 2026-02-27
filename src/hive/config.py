@@ -21,8 +21,6 @@ _FIELDS: dict[str, tuple[str, type, object]] = {
     "poll_interval": ("HIVE_POLL_INTERVAL", int, 5),
     "lease_duration": ("HIVE_LEASE_DURATION", int, 900),
     "lease_extension": ("HIVE_LEASE_EXTENSION", int, 600),
-    "permission_poll_interval": ("HIVE_PERMISSION_POLL_INTERVAL", float, 0.5),
-    "permission_safety_net_interval": ("HIVE_PERMISSION_SAFETY_NET_INTERVAL", float, 2.0),
     "db_path": ("HIVE_DB_PATH", str, None),  # default set below
     "refinery_token_threshold": ("HIVE_REFINERY_TOKEN_THRESHOLD", int, 100_000),
     "max_retries": ("HIVE_MAX_RETRIES", int, 2),

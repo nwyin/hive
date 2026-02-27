@@ -116,7 +116,6 @@ async def integration_orchestrator(fake_backend, temp_db, temp_git_repo):
         patch.object(Config, "LEASE_DURATION", 4),
         patch.object(Config, "LEASE_EXTENSION", 2),
         patch.object(Config, "MERGE_QUEUE_ENABLED", False),
-        patch.object(Config, "PERMISSION_SAFETY_NET_INTERVAL", 60),
         patch.object(Config, "ANOMALY_FAILURE_THRESHOLD", 0),
     ):
         # Register the project so orchestrator can resolve project paths
@@ -140,9 +139,9 @@ async def integration_orchestrator(fake_backend, temp_db, temp_git_repo):
 async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
     """Start orchestrator and run until predicate() returns True or timeout.
 
-    Starts the full orchestrator stack (SSE, main_loop, permission loop,
-    merge loop) and polls predicate every 50ms. Tears everything down
-    in the finally block regardless of outcome.
+    Starts the full orchestrator stack (SSE, main_loop, merge loop) and
+    polls predicate every 50ms. Tears everything down in the finally
+    block regardless of outcome.
     """
     orchestrator.running = True
     orchestrator._setup_sse_handlers()
@@ -159,10 +158,9 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
     pre_existing_tasks = set(asyncio.all_tasks())
 
     sse_task = asyncio.create_task(orchestrator.backend.connect_with_reconnect(max_retries=3, retry_delay=0.1))
-    permission_task = asyncio.create_task(orchestrator.permission_unblocker_loop())
     merge_task = asyncio.create_task(orchestrator.merge_processor_loop())
     main_task = asyncio.create_task(orchestrator.main_loop())
-    managed_tasks = {sse_task, permission_task, merge_task, main_task}
+    managed_tasks = {sse_task, merge_task, main_task}
 
     try:
         deadline = asyncio.get_event_loop().time() + timeout
