@@ -527,9 +527,9 @@ async def test_session_cleanup_on_spawn_failure(integration_orchestrator, fake_s
     # But it should have been cleaned up (abort + delete removes it from fake_server.sessions)
     assert created_sid not in fake_server.sessions, f"Session {created_sid} was not cleaned up after spawn failure — session leak!"
 
-    # Issue should be marked failed
+    # Issue should be escalated
     issue = orch.db.get_issue(issue_id)
-    assert issue["status"] == "failed"
+    assert issue["status"] == "escalated"
 
     # Spawn error event logged
     events = orch.db.get_events(issue_id=issue_id, event_type="spawn_error")

@@ -358,14 +358,15 @@ class Orchestrator:
                     self.db.try_transition_issue_status(
                         issue_id,
                         from_status="in_progress",
-                        to_status="failed",
+                        to_status="escalated",
                         expected_assignee=agent_id,
                     )
+                    self.db.log_event(issue_id, agent_id, "escalated", {"reason": "Stale agent with exhausted retry budget"})
                     self.db.log_event(
                         issue_id,
                         agent_id,
                         "reconciled",
-                        {"reason": "stale agent, retry budget exhausted — marking failed"},
+                        {"reason": "stale agent, retry budget exhausted — escalating"},
                     )
 
             # Clean up worktree — but NOT if the issue is done with a
@@ -809,9 +810,10 @@ class Orchestrator:
             self.db.try_transition_issue_status(
                 issue_id,
                 from_status="in_progress",
-                to_status="failed",
+                to_status="escalated",
                 expected_assignee=agent_id,
             )
+            self.db.log_event(issue_id, agent_id, "escalated", {"reason": "Spawn failure"})
 
     def _gather_notes_for_worker(self, issue_id: str, project: str) -> Optional[List[Dict[str, Any]]]:
         """Gather relevant notes to inject into a worker's prompt.

@@ -1031,9 +1031,9 @@ async def test_reconcile_respects_retry_budget(temp_db, tmp_path):
 
     await orch._reconcile_stale_agents()
 
-    # Issue should be marked failed (not open)
+    # Issue should be escalated (not open)
     issue = temp_db.get_issue(issue_id)
-    assert issue["status"] == "failed"
+    assert issue["status"] == "escalated"
 
 
 @pytest.mark.asyncio

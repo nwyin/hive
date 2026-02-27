@@ -341,6 +341,8 @@ class Database:
         m = re.search(r"(CREATE VIEW IF NOT EXISTS agent_runs AS\b.+?);", SCHEMA, re.DOTALL)
         if m:
             self.conn.execute(m.group(1))
+        # Collapse 'failed' issue status into 'escalated'
+        self.conn.execute("UPDATE issues SET status = 'escalated' WHERE status = 'failed'")
         self.conn.commit()
 
         self._ensure_merge_queue_idempotency()
@@ -496,7 +498,7 @@ class Database:
                 SET status = ?,
                     assignee = CASE WHEN ? = 'open' THEN NULL ELSE assignee END,
                     updated_at = datetime('now'),
-                    closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'failed')
+                    closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'escalated')
                                      THEN datetime('now')
                                      ELSE closed_at END
                 WHERE id = ?
@@ -837,7 +839,7 @@ class Database:
                 SET status = ?,
                     assignee = CASE WHEN ? = 'open' THEN NULL ELSE assignee END,
                     updated_at = datetime('now'),
-                    closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'failed')
+                    closed_at = CASE WHEN ? IN ('done', 'finalized', 'canceled', 'escalated')
                                      THEN datetime('now')
                                      ELSE closed_at END
                 WHERE id = ?
@@ -1370,7 +1372,7 @@ class Database:
                 {group_col} as {group_alias},
                 COUNT(DISTINCT i.id) as issue_count,
                 SUM(CASE WHEN i.status IN ('done', 'finalized') THEN 1 ELSE 0 END) as successes,
-                SUM(CASE WHEN i.status IN ('failed', 'escalated') THEN 1 ELSE 0 END) as escalations,
+                SUM(CASE WHEN i.status = 'escalated' THEN 1 ELSE 0 END) as escalations,
                 (SELECT COUNT(*) FROM events e2 WHERE e2.issue_id = i.id AND e2.event_type = 'retry') as total_retries,
                 COALESCE(SUM(CAST(json_extract(e.detail, '$.input_tokens') AS INTEGER)), 0) as total_input_tokens,
                 COALESCE(SUM(CAST(json_extract(e.detail, '$.output_tokens') AS INTEGER)), 0) as total_output_tokens,
