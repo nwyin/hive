@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "56f1d5a3649e",
+  "session_id": "24786bb3-475c-44fc-aed5-d88f280bb39c",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-27T06:26:59.588291Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/IMPLEMENTATION_NOTES.md",
+    "docs/SMART_ROUTING_SPEC.md",
+    "src/hive/db.py",
+    "tests/test_orchestrator.py",
+    "tests/test_race_conditions.py",
+    "docs/STATE_MACHINE_SIMPLIFICATION.md",
+    "docs/TECHNICAL_DESIGN_DOC.md",
+    "src/hive/orchestrator.py",
+    "tests/conftest.py",
+    "tests/test_db.py",
+    "tests/test_diag.py",
+    "tests/test_integration.py",
+    "tests/test_multiworker.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "1cdae9616cf1",
+  "token_usage": {
+    "input_tokens": 283,
+    "cache_creation_tokens": 341425,
+    "cache_read_tokens": 24083716,
+    "output_tokens": 33790,
+    "api_call_count": 241
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-27T06:26:59.033364Z",
+    "agent_lines": 0,
+    "human_added": 0,
+    "human_modified": 375,
+    "human_removed": 84,
+    "total_committed": 0,
+    "agent_percentage": 0
+  },
+  "transcript_path": ".claude/projects/-Users-tau-projects-hive/24786bb3-475c-44fc-aed5-d88f280bb39c.jsonl"
+}

@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "56f1d5a3649e",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/IMPLEMENTATION_NOTES.md",
+    "docs/SMART_ROUTING_SPEC.md",
+    "docs/STATE_MACHINE_SIMPLIFICATION.md",
+    "docs/TECHNICAL_DESIGN_DOC.md",
+    "src/hive/db.py",
+    "src/hive/orchestrator.py",
+    "tests/conftest.py",
+    "tests/test_db.py",
+    "tests/test_diag.py",
+    "tests/test_integration.py",
+    "tests/test_multiworker.py",
+    "tests/test_orchestrator.py",
+    "tests/test_race_conditions.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/56/f1d5a3649e/0/metadata.json",
+      "transcript": "/56/f1d5a3649e/0/full.jsonl",
+      "context": "/56/f1d5a3649e/0/context.md",
+      "content_hash": "/56/f1d5a3649e/0/content_hash.txt",
+      "prompt": "/56/f1d5a3649e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 283,
+    "cache_creation_tokens": 341425,
+    "cache_read_tokens": 24083716,
+    "output_tokens": 33790,
+    "api_call_count": 241
+  }
+}
