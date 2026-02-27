@@ -270,7 +270,7 @@ class Orchestrator:
         """Bidirectional reconciliation on startup.
 
         Four phases:
-        - Phase 0: Fetch live sessions from OpenCode server
+        - Phase 0: Fetch live sessions from the backend
         - Phase 1: Reconcile DB agents with status='working' (ghost + live)
         - Phase 2: Clean up orphan sessions (alive on server, no DB agent)
         - Phase 3: Purge idle/failed agents (leftovers from previous runs)
@@ -315,7 +315,7 @@ class Orchestrator:
                         # Ghost agent — session already gone, just log
                         logger.info(f"Agent {agent_id} is a ghost (session {session_id} no longer exists)")
                 else:
-                    # OpenCode unreachable — best-effort abort/delete
+                    # Backend unreachable — best-effort abort/delete
                     await self.backend.cleanup_session(session_id, directory=worktree)
 
             # Mark agent failed
@@ -485,7 +485,7 @@ class Orchestrator:
 
         Args:
             agent: Agent identity
-            messages: List of session messages from OpenCode
+            messages: List of session messages from the backend
         """
         total_input_tokens = 0
         total_output_tokens = 0
@@ -524,7 +524,7 @@ class Orchestrator:
     async def cancel_agent_for_issue(self, issue_id: str):
         """Cancel the active agent working on an issue.
 
-        Aborts the opencode session, cleans up the agent and worktree.
+        Aborts the backend session, cleans up the agent and worktree.
         Called when an issue is canceled while an agent is working on it.
 
         Args:
@@ -599,7 +599,7 @@ class Orchestrator:
             await self.main_loop()
         finally:
             self.running = False
-            # Abort all active opencode sessions before shutting down
+            # Abort all active backend sessions before shutting down
             await self._shutdown_all_sessions()
             self.backend.stop()
             # Cancel background tasks so we don't block on their long sleeps
@@ -611,16 +611,16 @@ class Orchestrator:
         """Main orchestration loop."""
         while self.running:
             try:
-                # Check if OpenCode is healthy before scheduling work
+                # Check if backend is healthy before scheduling work
                 if not self._backend_healthy:
                     # In degraded mode - check health with exponential backoff
                     healthy = await self._check_backend_health()
 
                     if healthy:
-                        # OpenCode recovered
+                        # Backend recovered
                         degraded_duration = (datetime.now() - self._degraded_since).total_seconds() if self._degraded_since else 0
                         self.db.log_system_event(
-                            "opencode_recovered", {"degraded_duration_seconds": degraded_duration, "backoff_delay": self._backoff_delay}
+                            "backend_recovered", {"degraded_duration_seconds": degraded_duration, "backoff_delay": self._backoff_delay}
                         )
                         self._backend_healthy = True
                         self._degraded_since = None
@@ -648,7 +648,7 @@ class Orchestrator:
                             # Try to claim and spawn worker
                             await self.spawn_worker(issue)
                         except Exception as e:
-                            # Check if the error suggests OpenCode is unhealthy
+                            # Check if the error suggests backend is unhealthy
                             if self._is_backend_error(e):
                                 await self._enter_degraded_mode(str(e))
                     else:
@@ -663,7 +663,7 @@ class Orchestrator:
                     await self.check_stalled_agents()
 
             except Exception as e:
-                # Check if this is an OpenCode connectivity issue
+                # Check if this is a backend connectivity issue
                 if self._is_backend_error(e):
                     await self._enter_degraded_mode(str(e))
                 else:
@@ -727,7 +727,7 @@ class Orchestrator:
             self._delete_agent_row(agent_id)
             return
 
-        # Create OpenCode session
+        # Create backend session
         session_id = None  # Track for cleanup on failure
         try:
             session = await self.backend.create_session(
@@ -783,7 +783,7 @@ class Orchestrator:
                 "spawn_error",
                 {"error": _exc_detail(e)},
             )
-            # Clean up the OpenCode session if it was created (best-effort —
+            # Clean up the backend session if it was created (best-effort —
             # don't let cleanup failure prevent DB/worktree cleanup below)
             if session_id:
                 await self._best_effort_cleanup(
@@ -877,7 +877,7 @@ class Orchestrator:
         agent_id: Optional[str] = None,
         issue_id: Optional[str] = None,
     ) -> bool:
-        """Poll opencode to check if a session has gone idle.
+        """Poll backend to check if a session has gone idle.
 
         Fallback for when SSE events are missed (e.g., reconnect gap).
         Returns True if the session is idle, False otherwise.
@@ -1036,7 +1036,7 @@ class Orchestrator:
             self._session_last_activity.pop(my_session_id, None)
 
     async def _cleanup_session(self, agent: AgentIdentity):
-        """Abort and delete an agent's opencode session.
+        """Abort and delete an agent's backend session.
 
         Called after agent completion or failure to ensure the session
         does not linger and consume tokens.
@@ -1587,13 +1587,10 @@ class Orchestrator:
 
     async def _check_backend_health(self) -> bool:
         """
-        Check if OpenCode is healthy by listing sessions via the client.
-
-        Reuses the existing OpenCodeClient (and its connection pool / auth)
-        instead of creating a throwaway aiohttp.ClientSession per call.
+        Check if the backend is healthy by listing sessions.
 
         Returns:
-            True if OpenCode is healthy, False otherwise
+            True if backend is healthy, False otherwise
         """
         try:
             await self.backend.list_sessions()
@@ -1603,13 +1600,13 @@ class Orchestrator:
 
     def _is_backend_error(self, exception: Exception) -> bool:
         """
-        Determine if an exception indicates OpenCode connectivity issues.
+        Determine if an exception indicates backend connectivity issues.
 
         Args:
             exception: Exception to examine
 
         Returns:
-            True if this suggests OpenCode is unavailable
+            True if this suggests the backend is unavailable
         """
         error_msg = str(exception).lower()
 
@@ -1639,7 +1636,7 @@ class Orchestrator:
 
     async def _enter_degraded_mode(self, error_reason: str):
         """
-        Enter degraded mode due to OpenCode unavailability.
+        Enter degraded mode due to backend unavailability.
 
         Args:
             error_reason: Description of the error that caused degraded mode
@@ -1687,12 +1684,12 @@ class Orchestrator:
             except Exception:
                 pass
 
-        # For stalled agents, check OpenCode session status before handling
+        # For stalled agents, check backend session status before handling
         for agent in stalled:
             await self._handle_stalled_with_session_check(agent)
 
     async def _handle_stalled_with_session_check(self, agent: AgentIdentity) -> StalledSessionCheckResult:
-        """Handle stalled agent with OpenCode session status verification.
+        """Handle stalled agent with backend session status verification.
 
         Heartbeat-expiry policy:
         - if result file parses, treat as completion immediately;
@@ -1713,7 +1710,7 @@ class Orchestrator:
             return StalledSessionCheckResult.STOP_MONITORING
 
         try:
-            # Query OpenCode for actual session status
+            # Query backend for actual session status
             status = await self.backend.get_session_status(agent.session_id, directory=agent.worktree)
             status_type = status.get("type") if isinstance(status, dict) else None
 
@@ -1744,7 +1741,7 @@ class Orchestrator:
                 return StalledSessionCheckResult.STOP_MONITORING
 
         except Exception as e:
-            # OpenCode API failure falls through to stalled path.
+            # Backend API failure falls through to stalled path.
             self.db.log_event(agent.issue_id, agent.agent_id, "session_check_failed", {"error": str(e), "fallback": "handle_stalled_agent"})
 
         # Default fallback behavior
@@ -1830,7 +1827,7 @@ class Orchestrator:
         Apply policy rules to decide allow/deny.
 
         Args:
-            perm: Permission request dict from OpenCode
+            perm: Permission request dict from the backend
 
         Returns:
             "once", "always", or None if no rule matches

@@ -292,7 +292,7 @@ def assess_completion(
     Assess completion based on file-based result only.
 
     Args:
-        messages: List of message dicts from OpenCode session (unused, kept for compatibility)
+        messages: List of message dicts from backend session (unused, kept for compatibility)
         file_result: Optional parsed result from .hive-result.jsonl file.
             If provided, used directly to construct CompletionResult.
 

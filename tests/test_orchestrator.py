@@ -365,7 +365,7 @@ def git_repo(tmp_path):
 
 @pytest.mark.asyncio
 async def test_check_backend_health_success(temp_db, tmp_path):
-    """Test health check when OpenCode is responding."""
+    """Test health check when backend is responding."""
     mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[])
     orch = Orchestrator(
@@ -379,7 +379,7 @@ async def test_check_backend_health_success(temp_db, tmp_path):
 
 @pytest.mark.asyncio
 async def test_check_backend_health_server_error(temp_db, tmp_path):
-    """Test health check when OpenCode returns an error."""
+    """Test health check when backend returns an error."""
     mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(side_effect=Exception("500 Server Error"))
     orch = Orchestrator(
@@ -903,7 +903,7 @@ async def test_reconcile_orphan_sessions(temp_db, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reconcile_fallback_when_opencode_unreachable(temp_db, tmp_path):
+async def test_reconcile_fallback_when_backend_unreachable(temp_db, tmp_path):
     """list_sessions() throws — falls back to best-effort abort/delete."""
     mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(side_effect=Exception("Connection refused"))
@@ -1477,7 +1477,7 @@ async def test_handle_stalled_with_idle_session(temp_db, tmp_path):
     """Test that idle session triggers handle_agent_complete instead of handle_stalled_agent."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
-    # Mock OpenCode client
+    # Mock backend client
     orch.backend.get_session_status = AsyncMock(return_value={"type": "idle"})
     orch.handle_agent_complete = AsyncMock()
     orch.handle_stalled_agent = AsyncMock()
@@ -1506,7 +1506,7 @@ async def test_handle_stalled_with_busy_session_refreshes_heartbeat(temp_db, tmp
     """Test that busy session refreshes heartbeat on status check."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
-    # Mock OpenCode client
+    # Mock backend client
     orch.backend.get_session_status = AsyncMock(return_value={"type": "busy"})
     orch.handle_stalled_agent = AsyncMock()
 
@@ -1538,7 +1538,7 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
     """Test that busy sessions always refresh heartbeat and continue."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
-    # Mock OpenCode client
+    # Mock backend client
     orch.backend.get_session_status = AsyncMock(return_value={"type": "busy"})
     orch.handle_stalled_agent = AsyncMock()
 
@@ -1560,10 +1560,10 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
 
 @pytest.mark.asyncio
 async def test_handle_stalled_with_session_api_failure(temp_db, tmp_path):
-    """Test that OpenCode API failure falls back to handle_stalled_agent."""
+    """Test that backend API failure falls back to handle_stalled_agent."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
-    # Mock OpenCode client to raise exception
+    # Mock backend client to raise exception
     orch.backend.get_session_status = AsyncMock(side_effect=Exception("API Error"))
     orch.handle_stalled_agent = AsyncMock()
 
@@ -1593,7 +1593,7 @@ async def test_worker_started_event_contains_model(temp_db, tmp_path):
     from unittest.mock import AsyncMock, patch
     from hive.backends import HiveBackend
 
-    # Mock OpenCode client
+    # Mock backend client
     mock_backend = AsyncMock(spec=HiveBackend)
     mock_backend.create_session.return_value = {"id": "session-123"}
     mock_backend.send_message_async.return_value = None
@@ -1632,7 +1632,7 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
     from unittest.mock import AsyncMock, patch
     from hive.backends import HiveBackend
 
-    # Mock OpenCode client
+    # Mock backend client
     mock_backend = AsyncMock(spec=HiveBackend)
     mock_backend.get_messages.return_value = []
 

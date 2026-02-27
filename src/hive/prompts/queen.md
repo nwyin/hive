@@ -232,37 +232,37 @@ underspecified. Clarify before creating the issue.
 
 **Good example:**
 ```
-hive create "Add retry logic to OpenCode client" "Add exponential backoff retry to all HTTP methods in src/hive/opencode.py.
+hive create "Add retry logic to backend client" "Add exponential backoff retry to all backend send methods.
 
 Requirements:
-- Retry on 429 (rate limit) and 5xx status codes
+- Retry on transient errors (connection reset, timeout)
 - Exponential backoff: 1s, 2s, 4s, max 3 retries
 - Log each retry attempt
-- Do NOT retry on 4xx (client errors) except 429
+- Do NOT retry on permanent errors (auth failures, bad requests)
 
-The client is in src/hive/opencode.py. All methods use aiohttp and follow the same pattern: build headers, make request, return JSON. Add a decorator or wrapper method.
+The backend interface is in src/hive/backends/base.py. Add a decorator or wrapper method.
 
 ## Tests
-File: tests/test_opencode.py
+File: tests/test_backends.py
 
 Invariants (must always hold):
 - INV-1: Total retry time never exceeds 10s (backoff is bounded)
-- INV-2: Original request headers are preserved across retries
-- INV-3: Non-retryable errors (4xx except 429) propagate immediately
+- INV-2: Original message payload is preserved across retries
+- INV-3: Non-retryable errors propagate immediately
 
 Critical paths:
-- 429 response triggers retry with backoff, succeeds on retry
-- 5xx triggers retry, eventual success returns normally
+- Transient error triggers retry with backoff, succeeds on retry
+- Timeout triggers retry, eventual success returns normally
 
 Failure modes to cover:
-- All retries exhausted (429 x3) — must raise, not hang
+- All retries exhausted — must raise, not hang
 - Connection timeout during retry — must count toward retry budget
 
 Non-goals:
-- Do NOT test the aiohttp session lifecycle (framework concern)
-- Do NOT test individual HTTP methods separately if they share the retry wrapper
+- Do NOT test the backend session lifecycle (framework concern)
+- Do NOT test individual methods separately if they share the retry wrapper
 
-Verify: python -m pytest tests/test_opencode.py -v" --priority 1
+Verify: python -m pytest tests/test_backends.py -v" --priority 1
 ```
 
 **Bad example:**

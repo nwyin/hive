@@ -17,7 +17,7 @@ Internal contract details this file relies on:
   - Hive system prompt is injected once via
     `collaborationMode.settings.developer_instructions`.
 - Token accounting compatibility:
-  - Codex does not emit OpenCode-style messages; we synthesize a minimal assistant
+  - Codex does not emit standard session messages; we synthesize a minimal assistant
     message at turn completion using `thread/tokenUsage/updated` totals so Hive can
     log token usage and keep merge/completion fences stable.
 - Approval behavior:

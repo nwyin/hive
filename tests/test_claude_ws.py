@@ -187,7 +187,7 @@ async def test_route_unknown_session(backend):
 
 
 def test_translate_assistant_message(backend):
-    """assistant message translates to OpenCode format."""
+    """assistant message translates to standard message format."""
     msg = {
         "type": "assistant",
         "message": {
@@ -207,7 +207,7 @@ def test_translate_assistant_message(backend):
 
 
 def test_translate_result_message(backend):
-    """result message translates to OpenCode format."""
+    """result message translates to standard message format."""
     msg = {
         "type": "result",
         "usage": {"input_tokens": 500, "output_tokens": 200},

@@ -453,7 +453,7 @@ async def test_new1_spawn_worker_cleans_up_session_on_post_creation_failure(temp
     tracking is cleared.
 
     Before the fix, the except block only removed the worktree and marked the
-    issue failed — it leaked the OpenCode session, left the agent in
+    issue failed — it leaked the backend session, left the agent in
     active_agents, and didn't clean up reverse lookup maps.
     """
     mock_oc = AsyncMock(spec=HiveBackend)
@@ -499,7 +499,7 @@ async def test_new1_spawn_worker_no_session_cleanup_when_creation_fails(temp_db,
     """
     mock_oc = AsyncMock(spec=HiveBackend)
     # Session creation itself fails
-    mock_oc.create_session = AsyncMock(side_effect=Exception("OpenCode unreachable"))
+    mock_oc.create_session = AsyncMock(side_effect=Exception("Backend unreachable"))
 
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 

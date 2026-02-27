@@ -11,8 +11,7 @@ from hive.backends.base import HiveBackend
 class FakeBackend(HiveBackend):
     """A fake backend that stores everything in-memory for unit/integration tests.
 
-    Mirrors the test-facing API of the old FakeOpenCodeServer but without running
-    an HTTP server — all calls go directly to in-memory dicts.
+    All calls go directly to in-memory dicts — no HTTP server needed.
     """
 
     def __init__(self):
