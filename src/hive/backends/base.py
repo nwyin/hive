@@ -4,14 +4,7 @@ A backend provides two capabilities to the orchestrator:
 1. Session management (create, send messages, abort, delete, get status/messages)
 2. Event streaming (register handlers, connect, stop)
 
-The OpenCode backend splits these across two classes (OpenCodeClient + SSEClient)
-because OpenCode uses HTTP REST for session management and a separate SSE endpoint
-for events. The Claude backend combines both into a single class because its
-WebSocket connections carry both commands and events.
-
-The orchestrator accepts both via its constructor:
-    opencode_client: HiveBackend   — session management
-    sse_client: HiveBackend        — event streaming (same object for Claude)
+Both the Claude and Codex backends combine these into a single class.
 """
 
 from abc import ABC, abstractmethod
@@ -42,7 +35,7 @@ class HiveBackend(ABC):
         session_id: str,
         parts: List[Dict[str, Any]],
         agent: str = "build",
-        model: Optional[Dict[str, str]] = None,
+        model: Optional[str] = None,
         system: Optional[str] = None,
         directory: Optional[str] = None,
     ):

@@ -1,42 +1,24 @@
 """Claude WebSocket backend: direct Claude CLI via --sdk-url.
 
-## Architecture Comparison
-
-### OpenCode backend (backend_opencode.py)
-    Hive ──HTTP REST──> OpenCode server ──API──> Anthropic
-    Hive <──SSE────────  OpenCode server
-
-    OpenCode is a standalone Go server that manages Claude sessions. Hive talks
-    to it via REST (session CRUD, send messages) and consumes an SSE stream for
-    real-time events. Requires running OpenCode separately and uses Anthropic API
-    billing (you supply your own API key via OpenCode's config).
-
-### Claude backend (this file)
     Hive ──WebSocket──> Claude CLI process (one per session)
                         └──> Anthropic (using Claude Code subscription credits)
 
-    Instead of going through OpenCode, Hive spawns `claude` CLI processes with
-    `--sdk-url ws://<host>:<port>/agent/<session_id>`. Each CLI process connects
-    *back* to Hive's built-in WebSocket server, creating a bidirectional channel.
+Hive spawns `claude` CLI processes with
+`--sdk-url ws://<host>:<port>/agent/<session_id>`. Each CLI process connects
+*back* to Hive's built-in WebSocket server, creating a bidirectional channel.
 
-    Key differences from the OpenCode path:
-    - **Billing**: Uses Claude Code subscription credits, not API keys.
-    - **No middleware server**: Hive IS the server. Each `claude` CLI process is
-      a child process that connects back via WebSocket.
-    - **Process lifecycle**: One OS process per session (vs. OpenCode pooling).
-      Cleanup means killing the process group (SIGTERM → SIGKILL).
-    - **WS handshake protocol**: After Hive spawns the CLI and it connects via WS,
-      the CLI sends a `user` message first. Only after receiving this does Hive
-      respond with `system/init` (containing the system prompt). This is the
-      reverse of what you might expect — the CLI drives initialization.
-      See docs/claude_ws_protocol_reversed.md for the full protocol.
-    - **Permissions**: The CLI runs with `bypassPermissions` so the permission
-      API methods are no-ops.
-    - **Unified interface**: This single class implements both the session
-      management AND event streaming interfaces (HiveBackend). The orchestrator
-      passes the same instance as both `opencode_client` and `sse_client`.
-    - **Concurrency**: Controlled via MAX_AGENTS config (semaphore on process
-      spawning) to avoid overwhelming the machine.
+- **Billing**: Uses Claude Code subscription credits, not API keys.
+- **Process lifecycle**: One OS process per session. Cleanup means killing the
+  process group (SIGTERM → SIGKILL).
+- **WS handshake protocol**: After Hive spawns the CLI and it connects via WS,
+  the CLI sends a `user` message first. Only after receiving this does Hive
+  respond with `system/init` (containing the system prompt). This is the
+  reverse of what you might expect — the CLI drives initialization.
+  See docs/claude_ws_protocol_reversed.md for the full protocol.
+- **Permissions**: The CLI runs with `bypassPermissions` so the permission
+  API methods are no-ops.
+- **Concurrency**: Controlled via MAX_AGENTS config (semaphore on process
+  spawning) to avoid overwhelming the machine.
 """
 
 import asyncio
@@ -199,7 +181,7 @@ class ClaudeWSBackend(HiveBackend):
         session_id: str,
         parts: List[Dict[str, Any]],
         agent: str = "build",
-        model: Optional[Dict[str, str]] = None,
+        model: Optional[str] = None,
         system: Optional[str] = None,
         directory: Optional[str] = None,
     ):
@@ -271,7 +253,7 @@ class ClaudeWSBackend(HiveBackend):
         directory: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Return collected messages, translated to OpenCode format."""
+        """Return collected messages, translated to standard format."""
         session = self.sessions.get(session_id)
         if not session:
             return []
@@ -473,7 +455,7 @@ class ClaudeWSBackend(HiveBackend):
             logger.debug(f"Unhandled message type '{msg_type}' from session {session_id}")
 
     def _translate_message(self, msg: dict) -> dict:
-        """Translate WS protocol message to OpenCode message format."""
+        """Translate WS protocol message to standard message format."""
         if msg.get("type") == "assistant":
             usage = msg.get("message", {}).get("usage", {})
             return {

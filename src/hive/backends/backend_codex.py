@@ -169,7 +169,7 @@ class CodexAppServerBackend(HiveBackend):
         session_id: str,
         parts: List[Dict[str, Any]],
         agent: str = "build",
-        model: Optional[Dict[str, str]] = None,
+        model: Optional[str] = None,
         system: Optional[str] = None,
         directory: Optional[str] = None,
     ):
@@ -185,10 +185,7 @@ class CodexAppServerBackend(HiveBackend):
                 text = part.get("text", "")
                 break
 
-        model_id = None
-        if isinstance(model, dict):
-            model_id = model.get("modelID")
-        model_id = model_id or state.model or Config.WORKER_MODEL or Config.DEFAULT_MODEL
+        model_id = model or state.model or Config.WORKER_MODEL or Config.DEFAULT_MODEL
 
         approval_policy = getattr(Config, "CODEX_APPROVAL_POLICY", state.approval_policy or "never")
         personality = getattr(Config, "CODEX_PERSONALITY", "pragmatic")
