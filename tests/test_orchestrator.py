@@ -692,6 +692,7 @@ async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     # Create worktree dir and write notes file
     worktree = tmp_path / "worktree"
@@ -750,6 +751,7 @@ async def test_harvest_notes_no_file(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Test task")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -898,6 +900,22 @@ def _make_stale_agent(temp_db, name="stale-agent", issue_title="Stale task", ses
     )
     temp_db.conn.commit()
     return agent_id, issue_id, session_id
+
+
+def _activate_agent_for_issue(temp_db, issue_id: str, agent_id: str, *, keep_issue_status: bool = False):
+    """Mark an agent as an actively running worker for direct handler tests."""
+    if keep_issue_status:
+        temp_db.conn.execute(
+            "UPDATE agents SET status = 'working', current_issue = ? WHERE id = ?",
+            (issue_id, agent_id),
+        )
+        temp_db.conn.execute(
+            "UPDATE issues SET assignee = ? WHERE id = ?",
+            (agent_id, issue_id),
+        )
+        temp_db.conn.commit()
+        return
+    temp_db.claim_issue(issue_id, agent_id)
 
 
 @pytest.mark.asyncio
@@ -1195,6 +1213,7 @@ async def test_handle_stalled_agent_double_call_guard(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -1234,6 +1253,7 @@ async def test_handle_stalled_agent_terminal_issue_skips_escalation(temp_db, tmp
     issue_id = temp_db.create_issue("Terminal stalled task", "Already canceled")
     temp_db.update_issue_status(issue_id, "canceled")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id, keep_issue_status=True)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -1264,6 +1284,7 @@ async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -1309,6 +1330,7 @@ async def test_handle_agent_complete_terminal_transition_skips_message_fetch(tem
     issue_id = temp_db.create_issue("Terminal task", "Already canceled")
     temp_db.update_issue_status(issue_id, "canceled")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id, keep_issue_status=True)
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -1336,6 +1358,7 @@ async def test_handle_agent_complete_budget_transition_routes_failure(temp_db, t
 
     issue_id = temp_db.create_issue("Budget task", "Hit budget")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -1546,10 +1569,7 @@ async def test_handle_stalled_with_idle_session(temp_db, tmp_path):
     # Create test agent
     issue_id = temp_db.create_issue("Test Issue")
     agent_id = temp_db.create_agent("test-agent")
-
-    # Assign agent to issue to satisfy foreign key constraint
-    temp_db.conn.execute("UPDATE agents SET current_issue = ? WHERE id = ?", (issue_id, agent_id))
-    temp_db.conn.commit()
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     agent = AgentIdentity(agent_id=agent_id, name="test-agent", issue_id=issue_id, worktree="/tmp/test", session_id="session-123")
 
@@ -1562,7 +1582,7 @@ async def test_handle_stalled_with_idle_session(temp_db, tmp_path):
     # Should log missed_completion event
     events = temp_db.get_events(agent_id=agent_id, event_type="missed_completion")
     assert len(events) == 1
-    assert events[0]["detail"] == '{"session_status": "idle", "reason": "sse_missed"}'
+    assert events[0]["detail"] == '{"source": "lease_expiry", "session_status": "idle"}'
 
 
 @pytest.mark.asyncio
@@ -1577,10 +1597,7 @@ async def test_handle_stalled_with_busy_session_extends_lease(temp_db, tmp_path)
     # Create test agent
     issue_id = temp_db.create_issue("Test Issue")
     agent_id = temp_db.create_agent("test-agent")
-
-    # Assign agent to issue to satisfy foreign key constraint
-    temp_db.conn.execute("UPDATE agents SET current_issue = ? WHERE id = ?", (issue_id, agent_id))
-    temp_db.conn.commit()
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     agent = AgentIdentity(agent_id=agent_id, name="test-agent", issue_id=issue_id, worktree="/tmp/test", session_id="session-123")
 
@@ -1601,7 +1618,7 @@ async def test_handle_stalled_with_busy_session_extends_lease(temp_db, tmp_path)
 
 @pytest.mark.asyncio
 async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_path):
-    """Test that previously extended busy session is treated as truly stalled."""
+    """Test that busy sessions always get lease extension and continue."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
@@ -1611,10 +1628,7 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
     # Create test agent
     issue_id = temp_db.create_issue("Test Issue")
     agent_id = temp_db.create_agent("test-agent")
-
-    # Assign agent to issue to satisfy foreign key constraint
-    temp_db.conn.execute("UPDATE agents SET current_issue = ? WHERE id = ?", (issue_id, agent_id))
-    temp_db.conn.commit()
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
     # Pre-populate a lease_extended event within the lease period
     temp_db.log_event(issue_id, agent_id, "lease_extended", {"test": "data"})
@@ -1623,8 +1637,8 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
 
     await orch._handle_stalled_with_session_check(agent)
 
-    # Should call handle_stalled_agent since lease was already extended
-    orch.handle_stalled_agent.assert_called_once_with(agent)
+    # Should keep extending lease and avoid stalled handling.
+    orch.handle_stalled_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2103,6 +2117,7 @@ async def test_completion_blocked_by_unacked_required_notes(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Gate task", "Needs ack")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -2136,6 +2151,7 @@ async def test_completion_not_blocked_when_no_required_notes(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Normal notes task", "No must_read")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -2174,6 +2190,7 @@ async def test_completion_not_blocked_when_all_acked(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Acked task", "All acked")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -2210,6 +2227,7 @@ async def test_completion_gate_logs_event(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Event log task", "Check logging")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",
@@ -2243,6 +2261,7 @@ async def test_completion_gate_materializes_first(temp_db, tmp_path):
 
     issue_id = temp_db.create_issue("Materialize task", "Issue-following note")
     agent_id = temp_db.create_agent("test-agent")
+    _activate_agent_for_issue(temp_db, issue_id, agent_id)
     agent = AgentIdentity(
         agent_id=agent_id,
         name="test-agent",

@@ -34,6 +34,12 @@ def _make_agent(temp_db, orch, name="test-agent", issue_title="Test task", sessi
     """Create an agent identity and register it in the orchestrator."""
     issue_id = temp_db.create_issue(issue_title)
     agent_id = temp_db.create_agent(name)
+    temp_db.claim_issue(issue_id, agent_id)
+    temp_db.conn.execute(
+        "UPDATE agents SET session_id = ?, worktree = ? WHERE id = ?",
+        (session_id, worktree, agent_id),
+    )
+    temp_db.conn.commit()
 
     agent = AgentIdentity(
         agent_id=agent_id,
@@ -248,12 +254,9 @@ async def test_bug3_agent_marked_failed_on_worktree_error(temp_db, tmp_path):
 
 @pytest.mark.asyncio
 async def test_dc2_handling_guard_prevents_concurrent_processing(temp_db, tmp_path):
-    """Verify that _handling_agents guard prevents two handlers from
-    processing the same agent simultaneously.
+    """Verify DB fence prevents duplicate completion handling.
 
-    Simulates: handle_agent_complete is running (yields at await),
-    and handle_stalled_agent is called for the same agent. The second
-    call should be a no-op.
+    First call claims agent handling via DB CAS; second call is a no-op.
     """
     mock_oc = AsyncMock(spec=OpenCodeClient)
     mock_oc.get_messages = AsyncMock(return_value=[])
@@ -268,28 +271,22 @@ async def test_dc2_handling_guard_prevents_concurrent_processing(temp_db, tmp_pa
     events_after_first = temp_db.get_events(issue_id=agent.issue_id)
     first_call_count = len(events_after_first)
 
-    # Re-add agent to active_agents (simulating it wasn't removed yet
-    # because the first handler yielded at an await point)
+    # Re-add agent to active_agents to simulate a stale in-memory entry.
     orch.active_agents[agent.agent_id] = agent
 
-    # Manually add to _handling_agents to simulate concurrent execution
-    orch._handling_agents.add(agent.agent_id)
-
-    # Second call should be blocked by the guard
+    # Second call should be blocked by DB CAS fence.
     await orch.handle_agent_complete(agent)
 
     # No additional events should have been logged
     events_after_second = temp_db.get_events(issue_id=agent.issue_id)
     assert len(events_after_second) == first_call_count, (
-        "Second concurrent call to handle_agent_complete logged additional events — _handling_agents guard failed to prevent double processing"
+        "Second concurrent call to handle_agent_complete logged additional events despite DB handling fence"
     )
-
-    orch._handling_agents.discard(agent.agent_id)
 
 
 @pytest.mark.asyncio
 async def test_dc2_handling_guard_cleanup_on_exception(temp_db, tmp_path):
-    """Verify that _handling_agents is cleaned up even when processing raises."""
+    """Verify DB fence still blocks re-entry after exception."""
     mock_oc = AsyncMock(spec=OpenCodeClient)
     # Make get_messages raise to trigger exception path
     mock_oc.get_messages = AsyncMock(side_effect=Exception("API Error"))
@@ -297,33 +294,33 @@ async def test_dc2_handling_guard_cleanup_on_exception(temp_db, tmp_path):
 
     agent = _make_agent(temp_db, orch)
 
+    # First call exercises exception path and tears down agent.
     await orch.handle_agent_complete(agent)
 
-    # Guard should be cleaned up after exception
-    assert agent.agent_id not in orch._handling_agents, (
-        "_handling_agents not cleaned up after exception — future calls for this agent will be permanently blocked"
-    )
+    orch.active_agents[agent.agent_id] = agent
+    events_after_first = len(temp_db.get_events(issue_id=agent.issue_id))
+    await orch.handle_agent_complete(agent)
+    events_after_second = len(temp_db.get_events(issue_id=agent.issue_id))
+    assert events_after_second == events_after_first
 
 
 @pytest.mark.asyncio
 async def test_dc2_stalled_handler_uses_guard(temp_db, tmp_path):
-    """Verify handle_stalled_agent also respects the _handling_agents guard."""
+    """Verify handle_stalled_agent respects DB handling fence."""
     mock_oc = AsyncMock(spec=OpenCodeClient)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     agent = _make_agent(temp_db, orch)
 
-    # Pretend agent is already being handled
-    orch._handling_agents.add(agent.agent_id)
+    # Pretend another handler has already claimed this agent.
+    temp_db.try_transition_agent_status(agent.agent_id, from_status="working", to_status="failed")
 
     # Call handle_stalled_agent — should be a no-op
     await orch.handle_stalled_agent(agent)
 
     # No 'stalled' event should have been logged
     stall_events = [e for e in temp_db.get_events(issue_id=agent.issue_id) if e["event_type"] == "stalled"]
-    assert len(stall_events) == 0, "handle_stalled_agent ran despite _handling_agents guard"
-
-    orch._handling_agents.discard(agent.agent_id)
+    assert len(stall_events) == 0, "handle_stalled_agent ran despite DB handling fence"
 
 
 # =============================================================================
