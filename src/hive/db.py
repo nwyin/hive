@@ -250,6 +250,8 @@ class Database:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Drop views before schema so CREATE VIEW IF NOT EXISTS picks up new definitions
+        self.conn.execute("DROP VIEW IF EXISTS agent_runs")
         self.conn.executescript(SCHEMA)
         self._migrate_if_needed()
 
@@ -331,16 +333,6 @@ class Database:
             self.conn.commit()
             logger.info(f"Backfilled {backfilled} agents.last_heartbeat_at")
 
-        # Recreate agent_runs view (outcome 'failed' → 'incomplete', join on 'incomplete' event).
-        # The schema's CREATE VIEW IF NOT EXISTS already ran in connect(), so we must
-        # drop-and-recreate to pick up the new definition on existing DBs.
-        self.conn.execute("DROP VIEW IF EXISTS agent_runs")
-        # Re-extract just the CREATE VIEW statement from SCHEMA
-        import re
-
-        m = re.search(r"(CREATE VIEW IF NOT EXISTS agent_runs AS\b.+?);", SCHEMA, re.DOTALL)
-        if m:
-            self.conn.execute(m.group(1))
         # Collapse 'failed' issue status into 'escalated'
         self.conn.execute("UPDATE issues SET status = 'escalated' WHERE status = 'failed'")
         self.conn.commit()

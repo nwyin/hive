@@ -922,7 +922,7 @@ class HiveCLI:
         daemon = self._make_daemon()
         daemon_status = daemon.status()
 
-        # Surface issues needing human attention (escalated/failed)
+        # Surface issues needing human attention
         attention_cursor = self.db.conn.execute(
             "SELECT id, title, status FROM issues WHERE project = ? AND status = 'escalated' ORDER BY updated_at DESC",
             (self.project_name,),

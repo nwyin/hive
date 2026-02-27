@@ -805,7 +805,7 @@ class Orchestrator:
                 self._unregister_agent(agent_id)
             # Mark agent as failed in DB
             self._mark_agent_failed(agent_id)
-            # Clean up worktree and mark issue failed
+            # Clean up worktree and escalate issue
             await remove_worktree_async(worktree_path)
             self.db.try_transition_issue_status(
                 issue_id,
