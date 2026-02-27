@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model       TEXT,
     lease_expires_at TEXT,
     last_progress_at TEXT,
+    last_heartbeat_at TEXT,
     metadata    TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -295,6 +296,7 @@ class Database:
         self._ensure_column("notes", "project", "TEXT")
         self._ensure_column("agents", "project", "TEXT")
         self._ensure_column("notes", "must_read", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("agents", "last_heartbeat_at", "TEXT")
 
         # Create tags index (safe after column exists via CREATE TABLE or migration)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)")
@@ -313,6 +315,21 @@ class Database:
         # Create index on notes.project if it doesn't exist
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)")
         self.conn.commit()
+
+        # Backfill heartbeat for pre-migration agent rows.
+        # Use a local delta so logging isn't polluted by prior statements on this connection.
+        before_changes = self.conn.total_changes
+        self.conn.execute(
+            """
+            UPDATE agents
+            SET last_heartbeat_at = COALESCE(last_progress_at, datetime('now'))
+            WHERE last_heartbeat_at IS NULL
+            """
+        )
+        backfilled = self.conn.total_changes - before_changes
+        if backfilled > 0:
+            self.conn.commit()
+            logger.info(f"Backfilled {backfilled} agents.last_heartbeat_at")
 
         self._ensure_merge_queue_idempotency()
 
@@ -747,6 +764,57 @@ class Database:
         cursor = self.conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+
+    def try_transition_agent_status(
+        self,
+        agent_id: str,
+        *,
+        from_status: str,
+        to_status: str,
+    ) -> bool:
+        """CAS-style agent status transition."""
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE agents
+                SET status = ?,
+                    updated_at = datetime('now')
+                WHERE id = ? AND status = ?
+                """,
+                (to_status, agent_id, from_status),
+            )
+            return cursor.rowcount == 1
+
+    def try_touch_agent_heartbeat(
+        self,
+        agent_id: str,
+        *,
+        required_status: str = "working",
+    ) -> bool:
+        """Update an agent heartbeat if it is in the expected status."""
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE agents
+                SET last_heartbeat_at = datetime('now'),
+                    last_progress_at = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE id = ? AND status = ?
+                """,
+                (agent_id, required_status),
+            )
+            return cursor.rowcount == 1
+
+    def try_extend_agent_lease(
+        self,
+        agent_id: str,
+        *,
+        extension_seconds: int,
+        required_status: str = "working",
+    ) -> bool:
+        """Backward-compatible alias for heartbeat touches."""
+        _ = extension_seconds
+        return self.try_touch_agent_heartbeat(agent_id, required_status=required_status)
 
     def update_issue_status(self, issue_id: str, status: str):
         """Update issue status. Clears assignee when setting to 'open' (INV-2)."""

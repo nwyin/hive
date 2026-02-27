@@ -1582,12 +1582,12 @@ async def test_handle_stalled_with_idle_session(temp_db, tmp_path):
     # Should log missed_completion event
     events = temp_db.get_events(agent_id=agent_id, event_type="missed_completion")
     assert len(events) == 1
-    assert events[0]["detail"] == '{"source": "lease_expiry", "session_status": "idle"}'
+    assert events[0]["detail"] == '{"source": "heartbeat_expiry", "session_status": "idle"}'
 
 
 @pytest.mark.asyncio
-async def test_handle_stalled_with_busy_session_extends_lease(temp_db, tmp_path):
-    """Test that busy session gets lease extension on first check."""
+async def test_handle_stalled_with_busy_session_refreshes_heartbeat(temp_db, tmp_path):
+    """Test that busy session refreshes heartbeat on status check."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
@@ -1606,19 +1606,20 @@ async def test_handle_stalled_with_busy_session_extends_lease(temp_db, tmp_path)
     # Should not call handle_stalled_agent
     orch.handle_stalled_agent.assert_not_called()
 
-    # Should log lease_extended event
-    events = temp_db.get_events(agent_id=agent_id, event_type="lease_extended")
+    # Should log heartbeat_refreshed event
+    events = temp_db.get_events(agent_id=agent_id, event_type="heartbeat_refreshed")
     assert len(events) == 1
 
-    # Agent lease should be updated
-    cursor = temp_db.conn.execute("SELECT lease_expires_at FROM agents WHERE id = ?", (agent_id,))
+    # Agent heartbeat should be updated
+    cursor = temp_db.conn.execute("SELECT last_heartbeat_at FROM agents WHERE id = ?", (agent_id,))
     row = cursor.fetchone()
     assert row is not None
+    assert row["last_heartbeat_at"] is not None
 
 
 @pytest.mark.asyncio
 async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_path):
-    """Test that busy sessions always get lease extension and continue."""
+    """Test that busy sessions always refresh heartbeat and continue."""
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
@@ -1630,8 +1631,8 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
     agent_id = temp_db.create_agent("test-agent")
     _activate_agent_for_issue(temp_db, issue_id, agent_id)
 
-    # Pre-populate a lease_extended event within the lease period
-    temp_db.log_event(issue_id, agent_id, "lease_extended", {"test": "data"})
+    # Pre-populate a historical heartbeat event; busy status should still continue.
+    temp_db.log_event(issue_id, agent_id, "heartbeat_refreshed", {"test": "data"})
 
     agent = AgentIdentity(agent_id=agent_id, name="test-agent", issue_id=issue_id, worktree="/tmp/test", session_id="session-123")
 

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -73,6 +72,13 @@ class StalledTransition(str, Enum):
     FAIL_STALLED_TERMINAL = "fail_stalled_terminal"
 
 
+class StalledSessionCheckResult(str, Enum):
+    """Outcome for lease-expiry session verification."""
+
+    CONTINUE_MONITORING = "continue_monitoring"
+    STOP_MONITORING = "stop_monitoring"
+
+
 @dataclass
 class CompletionDecision:
     """Decision payload from completion transition analysis."""
@@ -130,11 +136,6 @@ class Orchestrator:
         # Running flag
         self.running = False
 
-        # Guard against double-handling: tracks agent_ids currently being
-        # processed by handle_agent_complete or handle_stalled_agent. Prevents
-        # interleaving across await points from causing duplicate processing.
-        self._handling_agents: set[str] = set()
-
         # Degraded mode state
         self._opencode_healthy = True
         self._degraded_since: Optional[datetime] = None
@@ -174,8 +175,8 @@ class Orchestrator:
                 logger.warning(f"session.status event missing sessionID: {properties}")
                 return
 
-            # Any session activity = renew the lease for the associated agent
-            self._renew_lease_for_session(session_id)
+            # Any session activity = refresh worker heartbeat for this session.
+            self._record_heartbeat_for_session(session_id)
 
             # If session becomes idle, signal completion
             if status_type == "idle":
@@ -258,32 +259,20 @@ class Orchestrator:
                 },
             )
 
-    def _renew_lease_for_session(self, session_id: str):
-        """Renew the lease for the agent associated with a session.
+    def _record_heartbeat_for_session(self, session_id: str):
+        """Record worker heartbeat for the agent associated with a session.
 
         Called on any SSE activity from the session, proving the worker
-        is still alive and making progress. Uses LEASE_EXTENSION (not
-        LEASE_DURATION) so renewals grant a shorter window than the
-        initial lease.
+        is still alive and making progress.
         """
         now = datetime.now()
         self._session_last_activity[session_id] = now
 
-        # Find agent for this session and extend its DB lease
+        # Find agent for this session and touch heartbeat in DB.
         agent_id = self._session_to_agent.get(session_id)
         if agent_id and agent_id in self.active_agents:
-            agent = self.active_agents[agent_id]
             try:
-                self.db.conn.execute(
-                    """
-                    UPDATE agents
-                    SET lease_expires_at = datetime('now', '+{} seconds'),
-                        last_progress_at = datetime('now')
-                    WHERE id = ?
-                    """.format(Config.LEASE_EXTENSION),
-                    (agent.agent_id,),
-                )
-                self.db.conn.commit()
+                self.db.try_touch_agent_heartbeat(agent_id)
             except Exception:
                 pass  # Non-critical, best-effort
 
@@ -763,10 +752,10 @@ class Orchestrator:
                 UPDATE agents
                 SET session_id = ?,
                     worktree = ?,
-                    lease_expires_at = datetime('now', '+{} seconds'),
+                    last_heartbeat_at = datetime('now'),
                     last_progress_at = datetime('now')
                 WHERE id = ?
-                """.format(Config.LEASE_DURATION),
+                """,
                 (session_id, worktree_path, agent_id),
             )
             self.db.conn.commit()
@@ -953,17 +942,35 @@ class Orchestrator:
             # Record initial activity
             self._session_last_activity[my_session_id] = datetime.now()
 
-            # Poll loop: check for completion or inactivity
+            # Poll loop: result file is the source of completion truth.
+            # SSE/poll idle are only hints that completion may now be available.
             check_interval = min(30, Config.LEASE_DURATION // 4)
             completion_detected_via = "unknown"
+            file_result: Optional[Dict[str, Any]] = None
+            idle_hint_seen = False
             logger.info(
                 f"Starting monitor for session {my_session_id} "
                 f"(agent={agent.agent_id}, issue={agent.issue_id}, check_interval={check_interval}s)"
             )
             while True:
+                # Completion truth: parsed result file.
+                file_result = read_result_file(agent.worktree)
+                if file_result is not None:
+                    if completion_detected_via == "unknown":
+                        completion_detected_via = "file"
+                    break
+                # If the session has gone idle (via SSE or polling) but the
+                # worker didn't write a result file, treat that as completion
+                # and let handle_agent_complete record the failure instead of
+                # waiting out the full lease duration.
+                if idle_hint_seen:
+                    if completion_detected_via == "unknown":
+                        completion_detected_via = "idle_hint_no_file"
+                    break
+
                 try:
                     await asyncio.wait_for(event.wait(), timeout=check_interval)
-                    # Event was set — could be idle (done) or canceled
+                    # Event was set — could be idle (hint) or canceled.
                     # Check if canceled before assessing completion
                     if self._is_issue_canceled(agent.issue_id):
                         # Issue was canceled while agent was working.
@@ -972,8 +979,9 @@ class Orchestrator:
                             f"Monitor exiting due to cancellation for session {my_session_id} (agent={agent.agent_id}, issue={agent.issue_id})"
                         )
                         return
-                    completion_detected_via = "event"
-                    break
+                    completion_detected_via = "event_hint"
+                    idle_hint_seen = True
+                    event.clear()
                 except asyncio.TimeoutError:
                     logger.debug(
                         f"Monitor timeout waiting for idle event for session {my_session_id}; "
@@ -992,40 +1000,26 @@ class Orchestrator:
                         agent_id=agent.agent_id,
                         issue_id=agent.issue_id,
                     ):
-                        completion_detected_via = "poll"
-                        break
+                        completion_detected_via = "poll_hint"
+                        idle_hint_seen = True
 
                     # Check if there's been recent activity
                     last_activity = self._session_last_activity.get(my_session_id, datetime.now())
                     elapsed = (datetime.now() - last_activity).total_seconds()
 
                     if elapsed > Config.LEASE_DURATION:
-                        # No activity for full lease duration — truly stalled
-                        await self.handle_stalled_agent(agent)
+                        # Heartbeat appears stale. Re-check file/session once.
+                        check_result = await self._handle_stalled_with_session_check(agent)
+                        if check_result == StalledSessionCheckResult.CONTINUE_MONITORING:
+                            # Status is still busy; keep monitor alive.
+                            self._session_last_activity[my_session_id] = datetime.now()
+                            continue
                         return
-                    # Otherwise, keep waiting — worker is active
 
-            # AFTER idle detected, read result file for structured data
-            file_result = read_result_file(agent.worktree)
-            if file_result is None:
-                result_path = Path(agent.worktree) / ".hive-result.jsonl"
-                exists = result_path.exists()
-                size = None
-                mtime = None
-                if exists:
-                    try:
-                        stat = result_path.stat()
-                        size = stat.st_size
-                        mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-                    except OSError as e:
-                        logger.warning(f"Failed to stat result file for session {my_session_id}: {e}")
-                logger.error(
-                    f"Completion signal missing after idle detection for session {my_session_id} "
-                    f"(detected_via={completion_detected_via}, current_agent_session={agent.session_id}, "
-                    f"result_file={result_path}, exists={exists}, size={size}, mtime={mtime})"
-                )
-
-            # Agent finished, assess completion
+            logger.info(
+                f"Completion result detected for session {my_session_id} "
+                f"(agent={agent.agent_id}, issue={agent.issue_id}, detected_via={completion_detected_via})"
+            )
             await self.handle_agent_complete(agent, file_result=file_result)
 
         except Exception as e:
@@ -1081,6 +1075,26 @@ class Orchestrator:
             expected_assignee=expected_assignee,
         )
 
+    def _try_claim_agent_for_handling(self, agent: AgentIdentity, *, handler_name: str) -> bool:
+        """Claim agent handling ownership via DB CAS fence.
+
+        The first handler that transitions `working -> failed` owns teardown and
+        completion/failure routing for that agent. All concurrent handlers exit.
+        """
+        if agent.agent_id not in self.active_agents:
+            logger.debug(f"Skipping {handler_name} for {agent.name} — already removed from active agents")
+            return False
+
+        claimed = self.db.try_transition_agent_status(
+            agent.agent_id,
+            from_status="working",
+            to_status="failed",
+        )
+        if not claimed:
+            logger.debug(f"Skipping {handler_name} for {agent.name} — already claimed by another handler")
+            return False
+        return True
+
     def _delete_agent_row(self, agent_id: str):
         """Delete agent row for early spawn-orphan cleanup paths."""
         self.db.conn.execute("PRAGMA foreign_keys = OFF")
@@ -1116,25 +1130,6 @@ class Orchestrator:
 
         if remove_worktree and agent.worktree:
             await self._best_effort_cleanup("remove_worktree", remove_worktree_async(agent.worktree))
-
-    @contextmanager
-    def _agent_handling_scope(self, agent: AgentIdentity, *, handler_name: str):
-        """Guard against double-handling and ensure membership cleanup."""
-        if agent.agent_id not in self.active_agents:
-            logger.debug(f"Skipping {handler_name} for {agent.name} — already removed from active agents")
-            yield False
-            return
-
-        if agent.agent_id in self._handling_agents:
-            logger.debug(f"Skipping {handler_name} for {agent.name} — already being handled")
-            yield False
-            return
-
-        self._handling_agents.add(agent.agent_id)
-        try:
-            yield True
-        finally:
-            self._handling_agents.discard(agent.agent_id)
 
     async def _dispatch_worker_to_issue(
         self,
@@ -1298,147 +1293,146 @@ class Orchestrator:
                 If provided, used directly for completion assessment (skips
                 message parsing heuristics).
         """
-        with self._agent_handling_scope(agent, handler_name="completion handling") as should_handle:
-            if not should_handle:
-                return
+        if not self._try_claim_agent_for_handling(agent, handler_name="completion handling"):
+            return
 
-            decision: Optional[CompletionDecision] = None
-            remove_worktree_on_teardown = False
+        decision: Optional[CompletionDecision] = None
+        remove_worktree_on_teardown = False
 
+        try:
+            # Always clean up the result file if it exists
+            remove_result_file(agent.worktree)
+
+            # Harvest notes (best-effort) — do this BEFORE the canceled check
+            # so even canceled/failed workers' discoveries are saved.
             try:
-                # Always clean up the result file if it exists
-                remove_result_file(agent.worktree)
-
-                # Harvest notes (best-effort) — do this BEFORE the canceled check
-                # so even canceled/failed workers' discoveries are saved.
-                try:
-                    notes_data = read_notes_file(agent.worktree)
-                    if notes_data:
-                        for note in notes_data:
-                            self.db.add_note(
-                                issue_id=agent.issue_id,
-                                agent_id=agent.agent_id,
-                                content=note.get("content", ""),
-                                category=note.get("category", "discovery"),
-                                project=agent.project,
-                            )
-                        self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
-                        logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
-                except Exception as e:
-                    logger.warning(f"Failed to harvest notes from {agent.name}: {e}")
-                finally:
-                    remove_notes_file(agent.worktree)
-
-                decision = await self._decide_completion_transition(agent, file_result=file_result)
-
-                match decision.transition:
-                    case CompletionTransition.SKIP_TERMINAL_ISSUE:
-                        status = decision.terminal_status or "unknown"
-                        remove_worktree_on_teardown = True
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "agent_complete_skipped",
-                            {"reason": f"issue already {status}, cleaning up session"},
-                        )
-
-                    case CompletionTransition.FAIL_BUDGET:
-                        remove_worktree_on_teardown = True
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "budget_exceeded",
-                            {"issue_tokens": decision.budget_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
-                        )
-                        if decision.result is not None:
-                            await self._handle_agent_failure(agent, decision.result)
-
-                    case CompletionTransition.FAIL_VALIDATION_NO_DIFF:
-                        remove_worktree_on_teardown = True
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "validation_failed",
-                            {
-                                "reason": "No commits relative to main despite claiming success",
-                                "original_summary": decision.validation_original_summary,
-                            },
-                        )
-                        if decision.result is not None:
-                            await self._handle_agent_failure(agent, decision.result)
-
-                    case CompletionTransition.FAIL_ASSESSMENT:
-                        remove_worktree_on_teardown = True
-                        if decision.result is not None:
-                            await self._handle_agent_failure(agent, decision.result)
-
-                    case CompletionTransition.SUCCESS_DONE:
-                        if decision.result is None:
-                            raise RuntimeError("Missing completion result for success transition")
-
-                        transitioned = self.db.try_transition_issue_status(
-                            agent.issue_id,
-                            from_status="in_progress",
-                            to_status="done",
-                            expected_assignee=agent.agent_id,
-                        )
-                        if not transitioned:
-                            current_issue = self.db.get_issue(agent.issue_id)
-                            current_status = current_issue.get("status") if current_issue else None
-                            if current_status != "done":
-                                remove_worktree_on_teardown = True
-                                self.db.log_event(
-                                    agent.issue_id,
-                                    agent.agent_id,
-                                    "agent_complete_skipped",
-                                    {"reason": f"success result but issue is {current_status or 'missing'}, skipping merge enqueue"},
-                                )
-                                return
-
-                        # Get commit hash if available.
-                        commit_hash = decision.result.git_commit or get_commit_hash(agent.worktree)
-
-                        # Extract test_command from worker's file_result.
-                        test_command = file_result.get("test_command") if file_result else None
-
-                        self.db.enqueue_merge(
+                notes_data = read_notes_file(agent.worktree)
+                if notes_data:
+                    for note in notes_data:
+                        self.db.add_note(
                             issue_id=agent.issue_id,
                             agent_id=agent.agent_id,
+                            content=note.get("content", ""),
+                            category=note.get("category", "discovery"),
                             project=agent.project,
-                            worktree=agent.worktree,
-                            branch_name=f"agent/{agent.name}",
-                            test_command=test_command,
                         )
-
-                        # Get agent model from database.
-                        agent_row = self.db.get_agent(agent.agent_id)
-                        model = agent_row["model"] if agent_row else None
-
-                        self.db.log_event(
-                            agent.issue_id,
-                            agent.agent_id,
-                            "completed",
-                            {
-                                "summary": decision.result.summary,
-                                "commit": commit_hash,
-                                "artifacts": decision.result.artifacts,
-                                "model": model,
-                            },
-                        )
-
-                    case _:
-                        raise RuntimeError(f"Unhandled completion transition: {decision.transition}")
-
+                    self.db.log_event(agent.issue_id, agent.agent_id, "notes_harvested", {"count": len(notes_data)})
+                    logger.info(f"Harvested {len(notes_data)} notes from {agent.name}")
             except Exception as e:
-                transition = decision.transition.value if decision else CompletionTransition.ERROR_COMPLETION_HANDLER.value
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "completion_error",
-                    {"error": str(e), "transition": transition},
-                )
+                logger.warning(f"Failed to harvest notes from {agent.name}: {e}")
             finally:
-                await self._teardown_agent(agent, remove_worktree=remove_worktree_on_teardown)
+                remove_notes_file(agent.worktree)
+
+            decision = await self._decide_completion_transition(agent, file_result=file_result)
+
+            match decision.transition:
+                case CompletionTransition.SKIP_TERMINAL_ISSUE:
+                    status = decision.terminal_status or "unknown"
+                    remove_worktree_on_teardown = True
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "agent_complete_skipped",
+                        {"reason": f"issue already {status}, cleaning up session"},
+                    )
+
+                case CompletionTransition.FAIL_BUDGET:
+                    remove_worktree_on_teardown = True
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "budget_exceeded",
+                        {"issue_tokens": decision.budget_tokens, "limit": Config.MAX_TOKENS_PER_ISSUE},
+                    )
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
+
+                case CompletionTransition.FAIL_VALIDATION_NO_DIFF:
+                    remove_worktree_on_teardown = True
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "validation_failed",
+                        {
+                            "reason": "No commits relative to main despite claiming success",
+                            "original_summary": decision.validation_original_summary,
+                        },
+                    )
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
+
+                case CompletionTransition.FAIL_ASSESSMENT:
+                    remove_worktree_on_teardown = True
+                    if decision.result is not None:
+                        await self._handle_agent_failure(agent, decision.result)
+
+                case CompletionTransition.SUCCESS_DONE:
+                    if decision.result is None:
+                        raise RuntimeError("Missing completion result for success transition")
+
+                    transitioned = self.db.try_transition_issue_status(
+                        agent.issue_id,
+                        from_status="in_progress",
+                        to_status="done",
+                        expected_assignee=agent.agent_id,
+                    )
+                    if not transitioned:
+                        current_issue = self.db.get_issue(agent.issue_id)
+                        current_status = current_issue.get("status") if current_issue else None
+                        if current_status != "done":
+                            remove_worktree_on_teardown = True
+                            self.db.log_event(
+                                agent.issue_id,
+                                agent.agent_id,
+                                "agent_complete_skipped",
+                                {"reason": f"success result but issue is {current_status or 'missing'}, skipping merge enqueue"},
+                            )
+                            return
+
+                    # Get commit hash if available.
+                    commit_hash = decision.result.git_commit or get_commit_hash(agent.worktree)
+
+                    # Extract test_command from worker's file_result.
+                    test_command = file_result.get("test_command") if file_result else None
+
+                    self.db.enqueue_merge(
+                        issue_id=agent.issue_id,
+                        agent_id=agent.agent_id,
+                        project=agent.project,
+                        worktree=agent.worktree,
+                        branch_name=f"agent/{agent.name}",
+                        test_command=test_command,
+                    )
+
+                    # Get agent model from database.
+                    agent_row = self.db.get_agent(agent.agent_id)
+                    model = agent_row["model"] if agent_row else None
+
+                    self.db.log_event(
+                        agent.issue_id,
+                        agent.agent_id,
+                        "completed",
+                        {
+                            "summary": decision.result.summary,
+                            "commit": commit_hash,
+                            "artifacts": decision.result.artifacts,
+                            "model": model,
+                        },
+                    )
+
+                case _:
+                    raise RuntimeError(f"Unhandled completion transition: {decision.transition}")
+
+        except Exception as e:
+            transition = decision.transition.value if decision else CompletionTransition.ERROR_COMPLETION_HANDLER.value
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "completion_error",
+                {"error": str(e), "transition": transition},
+            )
+        finally:
+            await self._teardown_agent(agent, remove_worktree=remove_worktree_on_teardown)
 
     def _choose_escalation(self, issue_id: str) -> EscalationDecision:
         """Decide escalation tier based on anomaly/retry/switch counts."""
@@ -1571,38 +1565,33 @@ class Orchestrator:
         # Stalled transition table:
         # - FAIL_STALLED_IN_PROGRESS -> mark failed + escalate via _handle_agent_failure + teardown
         # - FAIL_STALLED_TERMINAL    -> mark failed + teardown (no escalation)
+        if not self._try_claim_agent_for_handling(agent, handler_name="stall handling"):
+            return
 
-        with self._agent_handling_scope(agent, handler_name="stall handling") as should_handle:
-            if not should_handle:
-                return
+        stalled_transition = StalledTransition.FAIL_STALLED_TERMINAL
+        try:
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "stalled",
+                {"lease_expired": True},
+            )
 
-            stalled_transition = StalledTransition.FAIL_STALLED_TERMINAL
-            try:
-                self.db.log_event(
-                    agent.issue_id,
-                    agent.agent_id,
-                    "stalled",
-                    {"lease_expired": True},
+            # Route through escalation chain (retry → agent_switch → escalate)
+            # instead of unconditionally resetting to open, which caused an
+            # infinite spawn loop for issues whose workers always stall.
+            current_issue = self.db.get_issue(agent.issue_id)
+            if current_issue and current_issue.get("status") == "in_progress":
+                stalled_transition = StalledTransition.FAIL_STALLED_IN_PROGRESS
+                stall_result = CompletionResult(
+                    success=False,
+                    reason="Agent stalled (lease expired, no activity)",
+                    summary="Worker became unresponsive",
                 )
-
-                # Mark agent as failed so it's not picked up again
-                self._mark_agent_failed(agent.agent_id)
-
-                # Route through escalation chain (retry → agent_switch → escalate)
-                # instead of unconditionally resetting to open, which caused an
-                # infinite spawn loop for issues whose workers always stall.
-                current_issue = self.db.get_issue(agent.issue_id)
-                if current_issue and current_issue.get("status") == "in_progress":
-                    stalled_transition = StalledTransition.FAIL_STALLED_IN_PROGRESS
-                    stall_result = CompletionResult(
-                        success=False,
-                        reason="Agent stalled (lease expired, no activity)",
-                        summary="Worker became unresponsive",
-                    )
-                    await self._handle_agent_failure(agent, stall_result)
-            finally:
-                logger.debug(f"Stall transition for {agent.name}: {stalled_transition.value}")
-                await self._teardown_agent(agent, remove_worktree=True)
+                await self._handle_agent_failure(agent, stall_result)
+        finally:
+            logger.debug(f"Stall transition for {agent.name}: {stalled_transition.value}")
+            await self._teardown_agent(agent, remove_worktree=True)
 
     async def _check_opencode_health(self) -> bool:
         """
@@ -1684,18 +1673,21 @@ class Orchestrator:
         if not self.active_agents:
             return
 
-        # Check each active agent against the DB lease
+        # Check each active agent against heartbeat freshness in DB.
         stalled = []
         for agent_id, agent in list(self.active_agents.items()):
             try:
                 cursor = self.db.conn.execute(
                     """
-                    SELECT lease_expires_at
+                    SELECT last_heartbeat_at
                     FROM agents
                     WHERE id = ? AND status = 'working'
-                      AND lease_expires_at < datetime('now')
+                      AND (
+                        last_heartbeat_at IS NULL
+                        OR last_heartbeat_at < datetime('now', ?)
+                      )
                     """,
-                    (agent_id,),
+                    (agent_id, f"-{Config.LEASE_DURATION} seconds"),
                 )
                 row = cursor.fetchone()
                 if row:
@@ -1707,58 +1699,65 @@ class Orchestrator:
         for agent in stalled:
             await self._handle_stalled_with_session_check(agent)
 
-    async def _handle_stalled_with_session_check(self, agent: AgentIdentity):
+    async def _handle_stalled_with_session_check(self, agent: AgentIdentity) -> StalledSessionCheckResult:
         """Handle stalled agent with OpenCode session status verification.
 
-        Checks if the session is actually idle (completion missed due to SSE failure)
-        or busy (false positive, extend lease) before falling back to handle_stalled_agent.
+        Heartbeat-expiry policy:
+        - if result file parses, treat as completion immediately;
+        - else check session status once:
+          - idle -> completion path
+          - busy -> refresh heartbeat and continue monitoring
+          - error/not_found -> stalled path
         """
+        file_result = read_result_file(agent.worktree)
+        if file_result is not None:
+            self.db.log_event(
+                agent.issue_id,
+                agent.agent_id,
+                "missed_completion",
+                {"source": "heartbeat_expiry", "reason": "result_file_present"},
+            )
+            await self.handle_agent_complete(agent, file_result=file_result)
+            return StalledSessionCheckResult.STOP_MONITORING
+
         try:
             # Query OpenCode for actual session status
             status = await self.opencode.get_session_status(agent.session_id, directory=agent.worktree)
+            status_type = status.get("type") if isinstance(status, dict) else None
 
-            if status["type"] == "idle":
-                # Session finished but we missed the SSE completion event
-                self.db.log_event(agent.issue_id, agent.agent_id, "missed_completion", {"session_status": "idle", "reason": "sse_missed"})
-                await self.handle_agent_complete(agent)
-                return
-
-            elif status["type"] == "busy":
-                # Session still active - check if we've already extended the lease
-                cursor = self.db.conn.execute(
-                    """
-                    SELECT 1 FROM events 
-                    WHERE agent_id = ? AND event_type = 'lease_extended'
-                    AND created_at > datetime('now', '-{} seconds')
-                    """.format(Config.LEASE_DURATION),
-                    (agent.agent_id,),
+            if status_type == "idle":
+                # Idle is only a hint; completion still routes through standard handler.
+                self.db.log_event(
+                    agent.issue_id,
+                    agent.agent_id,
+                    "missed_completion",
+                    {"source": "heartbeat_expiry", "session_status": "idle"},
                 )
+                await self.handle_agent_complete(agent)
+                return StalledSessionCheckResult.STOP_MONITORING
 
-                if cursor.fetchone():
-                    # Already extended lease in current period - treat as truly stalled
-                    await self.handle_stalled_agent(agent)
-                else:
-                    # First extension - extend the lease
-                    self.db.conn.execute(
-                        "UPDATE agents SET lease_expires_at = datetime('now', '+{} seconds') WHERE id = ?".format(Config.LEASE_DURATION),
-                        (agent.agent_id,),
-                    )
-                    self.db.conn.commit()
+            if status_type == "busy":
+                self._session_last_activity[agent.session_id] = datetime.now()
+                self.db.try_touch_agent_heartbeat(agent.agent_id)
+                self.db.log_event(
+                    agent.issue_id,
+                    agent.agent_id,
+                    "heartbeat_refreshed",
+                    {"session_status": "busy"},
+                )
+                return StalledSessionCheckResult.CONTINUE_MONITORING
 
-                    self.db.log_event(
-                        agent.issue_id,
-                        agent.agent_id,
-                        "lease_extended",
-                        {"session_status": "busy", "new_expires_at": "now+{}s".format(Config.LEASE_DURATION)},
-                    )
-                return
+            if status_type in ("error", "not_found"):
+                await self.handle_stalled_agent(agent)
+                return StalledSessionCheckResult.STOP_MONITORING
 
         except Exception as e:
-            # OpenCode API failure - fall back to original behavior
+            # OpenCode API failure falls through to stalled path.
             self.db.log_event(agent.issue_id, agent.agent_id, "session_check_failed", {"error": str(e), "fallback": "handle_stalled_agent"})
 
         # Default fallback behavior
         await self.handle_stalled_agent(agent)
+        return StalledSessionCheckResult.STOP_MONITORING
 
     def _on_merge_task_done(self, task: asyncio.Task):
         """Handle merge_processor_loop task completion/failure.

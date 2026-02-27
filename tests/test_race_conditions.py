@@ -5,6 +5,7 @@ The test is designed to FAIL against the old code and PASS against the fix.
 """
 
 import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ from hive.utils import AgentIdentity
 from hive.backends import OpenCodeClient
 from hive.orchestrator import Orchestrator
 from hive.backends import SSEClient
+from hive.config import Config
 
 
 # --- Helpers ---
@@ -160,6 +162,47 @@ async def test_bug1_monitor_poll_uses_snapshotted_session_id(temp_db, tmp_path):
         agent_id=agent.agent_id,
         issue_id=agent.issue_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_monitor_keeps_running_after_busy_heartbeat_refresh(temp_db, tmp_path):
+    """Lease/heartbeat expiry with busy status should not drop the monitor."""
+    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc.get_session_status = AsyncMock(return_value={"type": "busy"})
+    orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
+
+    session_id = "busy-session-1"
+    agent = _make_agent(temp_db, orch, session_id=session_id, worktree=str(tmp_path))
+    orch.session_status_events[session_id] = asyncio.Event()
+
+    file_result = {
+        "status": "success",
+        "summary": "done",
+        "files_changed": [],
+        "tests_added": [],
+        "tests_run": True,
+        "blockers": [],
+        "artifacts": [],
+    }
+
+    async def timeout_and_stale(awaitable, timeout):
+        orch._session_last_activity[session_id] = datetime.now() - timedelta(seconds=Config.LEASE_DURATION + 5)
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    orch.handle_agent_complete = AsyncMock()
+    orch._poll_session_idle = AsyncMock(return_value=False)
+
+    with (
+        patch("hive.orchestrator.asyncio.wait_for", side_effect=timeout_and_stale),
+        patch("hive.orchestrator.read_result_file", side_effect=[None, None, file_result]),
+    ):
+        await orch.monitor_agent(agent)
+
+    orch.handle_agent_complete.assert_called_once_with(agent, file_result=file_result)
+    assert session_id not in orch.session_status_events
+    events = temp_db.get_events(issue_id=agent.issue_id, event_type="heartbeat_refreshed")
+    assert len(events) == 1
 
 
 # =============================================================================

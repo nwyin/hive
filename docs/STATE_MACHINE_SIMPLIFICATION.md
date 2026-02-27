@@ -281,8 +281,12 @@ Concretely (recommended order):
    - Code refs: `src/hive/db.py` (`try_transition_issue_status`, `try_transition_merge_queue_status`),
      `src/hive/orchestrator.py`, `src/hive/merge.py`
 
-3) **Consolidate liveness/progress signals** *(next)*
-   - Pick a single authoritative completion artifact (recommend: the file protocol),
-     and treat session idle as a performance optimization only.
-   - Reduce lease branching by collapsing “progress” into one DB-updated timestamp
-     and using one stall handler path.
+3) **Consolidate liveness/progress signals** *(implemented 2026-02-27, phase 1-2)*
+   - Completion truth is now file-first in worker monitoring:
+     parsed `.hive-result.jsonl` drives completion, while idle events/polls are hints.
+   - Heartbeat-expiry handling now follows a single pass:
+     file check -> one `get_session_status` check -> (`idle` complete, `busy` extend lease, `error/not_found` stall-fail).
+   - Removed one-off “extend once then stall” branching; busy status always refreshes heartbeat.
+   - Monitoring no longer drops on heartbeat-expiry + `busy`: monitor loop stays alive after refresh.
+   - Staleness checks now key off `agents.last_heartbeat_at` rather than `lease_expires_at`.
+   - Code refs: `src/hive/orchestrator.py` (`monitor_agent`, `_handle_stalled_with_session_check`)
