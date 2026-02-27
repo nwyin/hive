@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.5",
+  "checkpoint_id": "517eaa7dd14e",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/STATE_MACHINE_SIMPLIFICATION.md",
+    "src/hive/db.py",
+    "src/hive/merge.py",
+    "src/hive/orchestrator.py",
+    "tests/test_db.py",
+    "tests/test_merge.py",
+    "tests/test_orchestrator.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/51/7eaa7dd14e/0/metadata.json",
+      "transcript": "/51/7eaa7dd14e/0/full.jsonl",
+      "context": "/51/7eaa7dd14e/0/context.md",
+      "content_hash": "/51/7eaa7dd14e/0/content_hash.txt",
+      "prompt": "/51/7eaa7dd14e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 283,
+    "cache_creation_tokens": 341425,
+    "cache_read_tokens": 24083716,
+    "output_tokens": 33790,
+    "api_call_count": 241
+  }
+}
