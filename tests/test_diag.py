@@ -38,16 +38,6 @@ def test_system_info_has_versions(report):
     assert "platform" in sys_info
 
 
-def test_config_sanitizes_password(temp_db, tmp_path, monkeypatch):
-    monkeypatch.setenv("OPENCODE_SERVER_PASSWORD", "supersecret")
-    Config.load_global(project_root=tmp_path)
-    report = gather_report(temp_db, str(tmp_path), "test-project")
-    cfg = report["config"]
-    pw_entry = next(e for e in cfg if e["field"] == "OPENCODE_PASSWORD")
-    assert pw_entry["value"] == "***"
-    assert pw_entry["source"] == "env"
-
-
 def test_db_stats_row_counts(temp_db, tmp_path):
     temp_db.create_issue("Test issue", "desc", project="test-project")
     report = gather_report(temp_db, str(tmp_path), "test-project")

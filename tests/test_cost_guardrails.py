@@ -130,11 +130,11 @@ async def test_per_issue_budget_triggers_failure(temp_db):
     """When issue token total exceeds budget, handle_agent_complete treats it as failure."""
     from hive.orchestrator import Orchestrator
 
-    opencode = AsyncMock()
-    opencode.get_messages = AsyncMock(return_value=[])
-    opencode.cleanup_session = AsyncMock()
+    mock_backend = AsyncMock()
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    mock_backend.cleanup_session = AsyncMock()
 
-    orch = Orchestrator(db=temp_db, opencode_client=opencode)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     # Create issue and agent
     issue_id = temp_db.create_issue("Budget test", project="test")
@@ -173,15 +173,15 @@ async def test_per_issue_budget_allows_under_limit(temp_db):
     """When issue tokens are under budget, normal completion proceeds."""
     from hive.orchestrator import Orchestrator
 
-    opencode = AsyncMock()
-    opencode.get_messages = AsyncMock(
+    mock_backend = AsyncMock()
+    mock_backend.get_messages = AsyncMock(
         return_value=[
             {"metadata": {"input_tokens": 100, "output_tokens": 50, "model": "test"}},
         ]
     )
-    opencode.cleanup_session = AsyncMock()
+    mock_backend.cleanup_session = AsyncMock()
 
-    orch = Orchestrator(db=temp_db, opencode_client=opencode)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     issue_id = temp_db.create_issue("Under budget test", project="test")
     agent_id = temp_db.create_agent("worker-1")
@@ -219,8 +219,8 @@ async def test_anomaly_detection_escalates(temp_db):
     """Rapid failures trigger anomaly detection and auto-escalation."""
     from hive.orchestrator import Orchestrator
 
-    opencode = AsyncMock()
-    orch = Orchestrator(db=temp_db, opencode_client=opencode)
+    mock_backend = AsyncMock()
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     issue_id = temp_db.create_issue("Anomaly test", project="test")
     agent_id = temp_db.create_agent("worker-1")
@@ -258,8 +258,8 @@ async def test_anomaly_detection_allows_normal_retry(temp_db):
     """Below anomaly threshold, normal retry proceeds."""
     from hive.orchestrator import Orchestrator
 
-    opencode = AsyncMock()
-    orch = Orchestrator(db=temp_db, opencode_client=opencode)
+    mock_backend = AsyncMock()
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     issue_id = temp_db.create_issue("Normal retry test", project="test")
     agent_id = temp_db.create_agent("worker-1")

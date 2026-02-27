@@ -3,6 +3,7 @@
 import json
 import subprocess
 import unittest.mock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -516,13 +517,12 @@ def test_cli_logs(temp_db, tmp_path, capsys):
 
 def test_evaluate_permission_policy():
     """Test permission policy evaluation."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
     from hive.orchestrator import Orchestrator
 
     # Create a minimal orchestrator for testing
-    db = None
-    opencode = OpenCodeClient()
-    orch = Orchestrator(db, opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=None, backend=mock_backend)
 
     # Test deny rules
     assert orch.evaluate_permission_policy({"permission": "question", "patterns": []}) == "reject"
@@ -540,25 +540,21 @@ def test_evaluate_permission_policy():
 
 
 @pytest.mark.asyncio
-@pytest.mark.integration
 async def test_permission_unblocker_auto_resolve(temp_db, tmp_path):
-    """Test that permission unblocker auto-resolves permissions (requires OpenCode server)."""
-    from hive.backends import OpenCodeClient
+    """Test that permission unblocker auto-resolves permissions."""
+    from hive.backends import HiveBackend
     from hive.orchestrator import Orchestrator
 
-    async with OpenCodeClient() as opencode:
-        Orchestrator(
-            db=temp_db,
-            opencode_client=opencode,
-        )
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_pending_permissions = AsyncMock(return_value=[])
+    Orchestrator(
+        db=temp_db,
+        backend=mock_backend,
+    )
 
-        # Get pending permissions (should be empty initially)
-        pending = await opencode.get_pending_permissions()
-
-        # For now, just verify the method works
-        # In a real scenario, we'd create a session that triggers a permission request
-        # and verify it gets auto-resolved
-        assert isinstance(pending, list)
+    # Get pending permissions (should be empty initially)
+    pending = await mock_backend.get_pending_permissions()
+    assert isinstance(pending, list)
 
 
 def test_cli_costs_no_data(temp_db, tmp_path, capsys):
@@ -718,7 +714,7 @@ def test_setup_skips_existing_config(tmp_path, capsys):
     """Test setup doesn't overwrite existing config."""
     from hive.cli import _do_setup
 
-    (tmp_path / ".hive.toml").write_text('[hive]\nbackend = "opencode"\n')
+    (tmp_path / ".hive.toml").write_text('[hive]\nbackend = "claude"\n')
 
     _do_setup(tmp_path, tmp_path.name, json_mode=True)
 
@@ -727,7 +723,7 @@ def test_setup_skips_existing_config(tmp_path, capsys):
     assert data["config_exists"] is True
 
     # Original content preserved
-    assert "opencode" in (tmp_path / ".hive.toml").read_text()
+    assert "claude" in (tmp_path / ".hive.toml").read_text()
 
 
 def test_queen_auto_starts_daemon(temp_db, tmp_path):

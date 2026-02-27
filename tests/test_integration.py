@@ -1,98 +1,65 @@
-"""Integration tests for the Hive orchestrator with fake OpenCode server.
+"""Integration tests for the Hive orchestrator with fake backend.
 
-These tests exercise the real orchestrator code against a fake OpenCode server
-(FakeOpenCodeServer) to validate the seams between components: SSE event flow,
-session lifecycle, completion handling, retry escalation, and epic cycling.
+These tests exercise the real orchestrator code against a FakeBackend
+to validate the seams between components: event flow, session lifecycle,
+completion handling, retry escalation, and epic cycling.
 
 Run with: pytest -m integration -v
 """
 
 import asyncio
-import json
 from unittest.mock import patch
 
 import pytest
 
 from hive.config import Config
-from hive.backends import OpenCodeClient
 from tests.conftest import await_session_created, complete_worker, run_orchestrator_until, write_hive_result
 
 
 # =============================================================================
-# Fake server plumbing validation
+# Fake backend plumbing validation
 # =============================================================================
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_fake_server_basic_functionality(fake_server):
-    """Validate the fake OpenCode server: session CRUD, messages, global SSE."""
-    async with OpenCodeClient(base_url=fake_server.url) as client:
-        # Create a session
-        session = await client.create_session(title="Test Session")
-        session_id = session["id"]
-        assert session_id.startswith("fake-")
-        assert session_id in fake_server.get_created_sessions()
+async def test_fake_backend_basic_functionality(fake_backend):
+    """Validate the FakeBackend: session CRUD, messages, event dispatch."""
+    # Create a session
+    session = await fake_backend.create_session(title="Test Session")
+    session_id = session["id"]
+    assert session_id.startswith("fake-")
+    assert session_id in fake_backend.get_created_sessions()
 
-        # Initial status is idle
-        status = await client.get_session_status(session_id)
-        assert status["type"] == "idle"
+    # Initial status is idle
+    status = await fake_backend.get_session_status(session_id)
+    assert status["type"] == "idle"
 
-        # Send message → status becomes busy, message is recorded
-        await client.send_message_async(session_id, [{"type": "text", "text": "Hello"}])
-        status = await client.get_session_status(session_id)
-        assert status["type"] == "busy"
+    # Send message → status becomes busy, message is recorded
+    await fake_backend.send_message_async(session_id, [{"type": "text", "text": "Hello"}])
+    status = await fake_backend.get_session_status(session_id)
+    assert status["type"] == "busy"
 
-        messages = await client.get_messages(session_id)
-        assert len(messages) == 1
+    messages = await fake_backend.get_messages(session_id)
+    assert len(messages) == 1
 
-        # inject_idle → status becomes idle
-        fake_server.inject_idle(session_id)
-        status = await client.get_session_status(session_id)
-        assert status["type"] == "idle"
+    # inject_idle_async → status becomes idle
+    await fake_backend.inject_idle_async(session_id)
+    status = await fake_backend.get_session_status(session_id)
+    assert status["type"] == "idle"
 
-        # Global SSE stream receives the event
-        events_received = []
+    # list_sessions returns flat list
+    sessions = await fake_backend.list_sessions()
+    assert isinstance(sessions, list)
+    assert any(s["id"] == session_id for s in sessions)
 
-        async def collect_one_event():
-            from aiohttp import ClientSession, ClientTimeout
+    # Abort + delete
+    await fake_backend.abort_session(session_id)
+    await fake_backend.delete_session(session_id)
 
-            timeout = ClientTimeout(total=3)
-            async with ClientSession(timeout=timeout) as http:
-                async with http.get(f"{fake_server.url}/global/event") as resp:
-                    async for line in resp.content:
-                        decoded = line.decode("utf-8").strip()
-                        if decoded.startswith("data: "):
-                            events_received.append(json.loads(decoded[6:]))
-                            return
-
-        # Push another event and verify it arrives via global SSE
-        task = asyncio.create_task(collect_one_event())
-        await asyncio.sleep(0.1)  # Let SSE connection establish
-        fake_server.inject_event(session_id, "session.status", {"sessionID": session_id, "status": {"type": "busy"}})
-
-        try:
-            await asyncio.wait_for(task, timeout=2.0)
-        except asyncio.TimeoutError:
-            pytest.fail("SSE event not received via /global/event")
-
-        assert len(events_received) == 1
-        payload = events_received[0]["payload"]
-        assert payload["type"] == "session.status"
-        assert payload["properties"]["sessionID"] == session_id
-
-        # list_sessions returns flat list
-        sessions = await client.list_sessions()
-        assert isinstance(sessions, list)
-        assert any(s["id"] == session_id for s in sessions)
-
-        # Abort + delete
-        await client.abort_session(session_id)
-        await client.delete_session(session_id)
-
-        # Permissions endpoint
-        perms = await client.get_pending_permissions()
-        assert perms == []
+    # Permissions endpoint
+    perms = await fake_backend.get_pending_permissions()
+    assert perms == []
 
 
 # =============================================================================
@@ -102,7 +69,7 @@ async def test_fake_server_basic_functionality(fake_server):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_happy_path_direct_completion(integration_orchestrator, fake_server, temp_git_repo):
+async def test_happy_path_direct_completion(integration_orchestrator, fake_backend, temp_git_repo):
     """Issue → spawn_worker → write result → handle_agent_complete → merge queued.
 
     This test calls handle_agent_complete directly (bypasses SSE monitoring)
@@ -118,7 +85,7 @@ async def test_happy_path_direct_completion(integration_orchestrator, fake_serve
     await orch.spawn_worker(ready_issues[0])
 
     # Verify session created on fake server
-    sessions = fake_server.get_created_sessions()
+    sessions = fake_backend.get_created_sessions()
     assert len(sessions) >= 1
 
     # Get agent
@@ -155,7 +122,7 @@ async def test_happy_path_direct_completion(integration_orchestrator, fake_serve
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_happy_path_via_sse(integration_orchestrator, fake_server, temp_git_repo):
+async def test_happy_path_via_sse(integration_orchestrator, fake_backend, temp_git_repo):
     """Full integration: issue → main_loop spawns → SSE idle → completion → merge queued.
 
     This is the "one test that matters most" — it exercises the full flow
@@ -167,7 +134,7 @@ async def test_happy_path_via_sse(integration_orchestrator, fake_server, temp_gi
 
     async def inject_completion_when_ready():
         # Wait for spawn_worker to create a session
-        session_id = await await_session_created(fake_server, count=1, timeout=5)
+        session_id = await await_session_created(fake_backend, count=1, timeout=5)
 
         # Find the agent for this session
         for _ in range(50):
@@ -175,7 +142,7 @@ async def test_happy_path_via_sse(integration_orchestrator, fake_server, temp_gi
                 if agent.session_id == session_id:
                     # Give monitor_agent time to set up its asyncio.Event
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, session_id, agent.worktree)
+                    complete_worker(fake_backend, session_id, agent.worktree)
                     return
             await asyncio.sleep(0.05)
         raise RuntimeError("Agent not found for session")
@@ -207,7 +174,7 @@ async def test_happy_path_via_sse(integration_orchestrator, fake_server, temp_gi
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_worker_failure_and_retry(integration_orchestrator, fake_server, temp_git_repo):
+async def test_worker_failure_and_retry(integration_orchestrator, fake_backend, temp_git_repo):
     """First attempt fails → retry → second attempt succeeds."""
     orch = integration_orchestrator
 
@@ -215,12 +182,12 @@ async def test_worker_failure_and_retry(integration_orchestrator, fake_server, t
 
     async def inject_outcomes():
         # First attempt: failure
-        sid1 = await await_session_created(fake_server, count=1, timeout=5)
+        sid1 = await await_session_created(fake_backend, count=1, timeout=5)
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid1:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid1, agent.worktree, status="failed", summary="Tests broke")
+                    complete_worker(fake_backend, sid1, agent.worktree, status="failed", summary="Tests broke")
                     break
             else:
                 await asyncio.sleep(0.05)
@@ -232,12 +199,12 @@ async def test_worker_failure_and_retry(integration_orchestrator, fake_server, t
         # The count includes the refinery session created by merge_processor.initialize(),
         # so we need to account for that. Actually, count is based on created_session_ids
         # which tracks ALL sessions. Let's wait for the right count.
-        sid2 = await await_session_created(fake_server, count=len(fake_server.created_session_ids) + 1, timeout=10)
+        sid2 = await await_session_created(fake_backend, count=len(fake_backend.created_session_ids) + 1, timeout=10)
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid2:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid2, agent.worktree, status="success", summary="Fixed it")
+                    complete_worker(fake_backend, sid2, agent.worktree, status="success", summary="Fixed it")
                     return
             await asyncio.sleep(0.05)
         raise RuntimeError("Agent not found for retry session")
@@ -268,7 +235,7 @@ async def test_worker_failure_and_retry(integration_orchestrator, fake_server, t
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_epic_three_step_flow(integration_orchestrator, fake_server, temp_git_repo):
+async def test_epic_three_step_flow(integration_orchestrator, fake_backend, temp_git_repo):
     """Parent epic with 3 sequential steps → each step runs as its own worker."""
     orch = integration_orchestrator
 
@@ -284,12 +251,12 @@ async def test_epic_three_step_flow(integration_orchestrator, fake_server, temp_
 
     async def inject_step_completions():
         # Step 1: wait for initial spawn
-        sid1 = await await_session_created(fake_server, count=1, timeout=5)
+        sid1 = await await_session_created(fake_backend, count=1, timeout=5)
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid1:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid1, agent.worktree, summary="Step 1 done")
+                    complete_worker(fake_backend, sid1, agent.worktree, summary="Step 1 done")
                     break
             else:
                 await asyncio.sleep(0.05)
@@ -297,12 +264,12 @@ async def test_epic_three_step_flow(integration_orchestrator, fake_server, temp_
             break
 
         # Step 2: new worker/session (no cycling)
-        sid2 = await await_session_created(fake_server, count=2, timeout=5)
+        sid2 = await await_session_created(fake_backend, count=2, timeout=5)
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid2:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid2, agent.worktree, summary="Step 2 done")
+                    complete_worker(fake_backend, sid2, agent.worktree, summary="Step 2 done")
                     break
             else:
                 await asyncio.sleep(0.05)
@@ -310,12 +277,12 @@ async def test_epic_three_step_flow(integration_orchestrator, fake_server, temp_
             break
 
         # Step 3: new worker/session
-        sid3 = await await_session_created(fake_server, count=3, timeout=5)
+        sid3 = await await_session_created(fake_backend, count=3, timeout=5)
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid3:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid3, agent.worktree, summary="Step 3 done")
+                    complete_worker(fake_backend, sid3, agent.worktree, summary="Step 3 done")
                     return
             await asyncio.sleep(0.05)
         raise RuntimeError("Agent not found for step 3 session")
@@ -344,7 +311,7 @@ async def test_epic_three_step_flow(integration_orchestrator, fake_server, temp_
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_stall_detection(integration_orchestrator, fake_server, temp_git_repo):
+async def test_stall_detection(integration_orchestrator, fake_backend, temp_git_repo):
     """Worker stalls (no SSE activity), stall handler fires, retry succeeds.
 
     With LEASE_DURATION=4 and check_interval=min(30, 4//4)=1, the monitor_agent
@@ -356,21 +323,21 @@ async def test_stall_detection(integration_orchestrator, fake_server, temp_git_r
 
     async def handle_stall_then_succeed():
         # First attempt: don't inject anything — let it stall
-        await await_session_created(fake_server, count=1, timeout=5)
+        await await_session_created(fake_backend, count=1, timeout=5)
 
         # Wait for stall detection to fire and main_loop to spawn a retry.
         # LEASE_DURATION=4s, so we need to wait a bit longer.
         # The stall handler marks the agent failed, releases the issue,
         # and main_loop picks it up for retry.
-        current_count = len(fake_server.created_session_ids)
-        sid2 = await await_session_created(fake_server, count=current_count + 1, timeout=15)
+        current_count = len(fake_backend.created_session_ids)
+        sid2 = await await_session_created(fake_backend, count=current_count + 1, timeout=15)
 
         # Complete the retry
         for _ in range(50):
             for agent in orch.active_agents.values():
                 if agent.session_id == sid2:
                     await asyncio.sleep(0.2)
-                    complete_worker(fake_server, sid2, agent.worktree, summary="Fixed after stall")
+                    complete_worker(fake_backend, sid2, agent.worktree, summary="Fixed after stall")
                     return
             await asyncio.sleep(0.05)
         raise RuntimeError("Agent not found for retry session")
@@ -396,7 +363,7 @@ async def test_stall_detection(integration_orchestrator, fake_server, temp_git_r
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_budget_exhaustion(integration_orchestrator, fake_server, temp_git_repo):
+async def test_budget_exhaustion(integration_orchestrator, fake_backend, temp_git_repo):
     """Exceed per-issue token budget → failure handling triggered."""
     orch = integration_orchestrator
 
@@ -404,21 +371,21 @@ async def test_budget_exhaustion(integration_orchestrator, fake_server, temp_git
         issue_id = orch.db.create_issue(title="Expensive task", priority=1, issue_type="task", project="test-project")
 
         async def inject_with_high_tokens():
-            sid = await await_session_created(fake_server, count=1, timeout=5)
+            sid = await await_session_created(fake_backend, count=1, timeout=5)
 
             for _ in range(50):
                 for agent in orch.active_agents.values():
                     if agent.session_id == sid:
                         # Pre-populate messages with high token metadata so
                         # _log_token_usage extracts them and budget check fires
-                        fake_server.set_messages(
+                        fake_backend.set_messages(
                             sid,
                             [
                                 {"metadata": {"input_tokens": 80, "output_tokens": 50, "model": "test-model"}},
                             ],
                         )
                         await asyncio.sleep(0.2)
-                        complete_worker(fake_server, sid, agent.worktree, summary="Done but expensive")
+                        complete_worker(fake_backend, sid, agent.worktree, summary="Done but expensive")
                         return
                 await asyncio.sleep(0.05)
             raise RuntimeError("Agent not found")
@@ -444,7 +411,7 @@ async def test_budget_exhaustion(integration_orchestrator, fake_server, temp_git
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_startup_reconciliation(integration_orchestrator, fake_server, temp_git_repo):
+async def test_startup_reconciliation(integration_orchestrator, fake_backend, temp_git_repo):
     """Pre-populate stale agents in DB → reconcile → verify cleanup."""
     orch = integration_orchestrator
 
@@ -453,17 +420,9 @@ async def test_startup_reconciliation(integration_orchestrator, fake_server, tem
     agent_id = orch.db.create_agent("stale-worker")
     orch.db.claim_issue(issue_id, agent_id)
 
-    # Create a matching session on the fake server
-    from aiohttp import ClientSession
-
-    async with ClientSession() as http:
-        resp = await http.post(
-            f"{fake_server.url}/session",
-            json={"title": "stale session"},
-            headers={"X-OpenCode-Directory": str(temp_git_repo)},
-        )
-        session_data = await resp.json()
-        stale_session_id = session_data["id"]
+    # Create a matching session on the fake backend
+    session_data = await fake_backend.create_session(title="stale session", directory=str(temp_git_repo))
+    stale_session_id = session_data["id"]
 
     # Update agent with stale session
     orch.db.conn.execute(
@@ -485,7 +444,7 @@ async def test_startup_reconciliation(integration_orchestrator, fake_server, tem
     assert issue["assignee"] is None
 
     # Session should be cleaned up on fake server (abort+delete)
-    assert stale_session_id not in fake_server.sessions
+    assert stale_session_id not in fake_backend.sessions
 
 
 # =============================================================================
@@ -495,7 +454,7 @@ async def test_startup_reconciliation(integration_orchestrator, fake_server, tem
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_session_cleanup_on_spawn_failure(integration_orchestrator, fake_server, temp_git_repo):
+async def test_session_cleanup_on_spawn_failure(integration_orchestrator, fake_backend, temp_git_repo):
     """Session created then send_message fails → session deleted on fake server.
 
     This validates the NEW-1 fix (session leak in spawn_worker) against a
@@ -507,25 +466,25 @@ async def test_session_cleanup_on_spawn_failure(integration_orchestrator, fake_s
     issue = orch.db.get_issue(issue_id)
 
     # Patch send_message_async to fail after session creation
-    original_send = orch.opencode.send_message_async
+    original_send = orch.backend.send_message_async
 
     async def failing_send(*args, **kwargs):
         raise Exception("Simulated send failure")
 
-    orch.opencode.send_message_async = failing_send
+    orch.backend.send_message_async = failing_send
 
     try:
         await orch.spawn_worker(issue)
     finally:
-        orch.opencode.send_message_async = original_send
+        orch.backend.send_message_async = original_send
 
     # A session was created on the fake server
-    sessions = fake_server.get_created_sessions()
+    sessions = fake_backend.get_created_sessions()
     assert len(sessions) >= 1
     created_sid = sessions[-1]
 
-    # But it should have been cleaned up (abort + delete removes it from fake_server.sessions)
-    assert created_sid not in fake_server.sessions, f"Session {created_sid} was not cleaned up after spawn failure — session leak!"
+    # But it should have been cleaned up (abort + delete removes it from fake_backend.sessions)
+    assert created_sid not in fake_backend.sessions, f"Session {created_sid} was not cleaned up after spawn failure — session leak!"
 
     # Issue should be escalated
     issue = orch.db.get_issue(issue_id)

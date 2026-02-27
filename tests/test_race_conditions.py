@@ -11,24 +11,23 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from hive.utils import AgentIdentity
-from hive.backends import OpenCodeClient
+from hive.backends import HiveBackend
 from hive.orchestrator import Orchestrator
-from hive.backends import SSEClient
 from hive.config import Config
 
 
 # --- Helpers ---
 
 
-def _make_orchestrator(temp_db, tmp_path, mock_opencode=None):
-    """Helper to create an orchestrator with a mocked OpenCodeClient."""
-    if mock_opencode is None:
-        mock_opencode = AsyncMock(spec=OpenCodeClient)
+def _make_orchestrator(temp_db, tmp_path, mock_backend=None):
+    """Helper to create an orchestrator with a mocked HiveBackend."""
+    if mock_backend is None:
+        mock_backend = AsyncMock(spec=HiveBackend)
     # Register a "test" project so spawn_worker can resolve project paths
     temp_db.register_project("test", str(tmp_path))
     return Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
 
@@ -75,7 +74,7 @@ async def test_bug1_monitor_agent_preserves_new_session_event_after_cycling(temp
     This isolates the BUG-1 fix (snapshotting my_session_id) from side effects
     of the full cycling flow (spawned tasks, DB interactions, etc.).
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     old_session_id = "old-session-111"
@@ -137,7 +136,7 @@ async def test_bug1_monitor_poll_uses_snapshotted_session_id(temp_db, tmp_path):
     If agent.session_id mutates during a monitor timeout (cycle in flight),
     monitor must still poll old_session_id to avoid cross-session false idle.
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     old_session_id = "old-session-333"
@@ -167,7 +166,7 @@ async def test_bug1_monitor_poll_uses_snapshotted_session_id(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_monitor_keeps_running_after_busy_heartbeat_refresh(temp_db, tmp_path):
     """Lease/heartbeat expiry with busy status should not drop the monitor."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.get_session_status = AsyncMock(return_value={"type": "busy"})
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -268,7 +267,7 @@ async def test_bug3_agent_marked_failed_on_worktree_error(temp_db, tmp_path):
     Before the fix, spawn_worker would create_agent() then return early
     on worktree error, leaving the agent record in 'idle' forever.
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     # Create an issue to work on
@@ -301,7 +300,7 @@ async def test_dc2_handling_guard_prevents_concurrent_processing(temp_db, tmp_pa
 
     First call claims agent handling via DB CAS; second call is a no-op.
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.get_messages = AsyncMock(return_value=[])
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -330,7 +329,7 @@ async def test_dc2_handling_guard_prevents_concurrent_processing(temp_db, tmp_pa
 @pytest.mark.asyncio
 async def test_dc2_handling_guard_cleanup_on_exception(temp_db, tmp_path):
     """Verify DB fence still blocks re-entry after exception."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     # Make get_messages raise to trigger exception path
     mock_oc.get_messages = AsyncMock(side_effect=Exception("API Error"))
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
@@ -350,7 +349,7 @@ async def test_dc2_handling_guard_cleanup_on_exception(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_dc2_stalled_handler_uses_guard(temp_db, tmp_path):
     """Verify handle_stalled_agent respects DB handling fence."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     agent = _make_agent(temp_db, orch)
@@ -367,63 +366,6 @@ async def test_dc2_stalled_handler_uses_guard(temp_db, tmp_path):
 
 
 # =============================================================================
-# DC-4: SSE stop() defeated by connect() resetting self.running
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_dc4_stop_not_defeated_by_connect():
-    """Verify that calling stop() actually stops the SSE client,
-    and connect() does NOT reset self.running = True.
-
-    Before the fix, connect() always set self.running = True, so if
-    stop() was called between reconnect attempts, the next connect()
-    would undo the stop.
-    """
-    client = SSEClient(base_url="http://localhost:9999")  # Non-existent
-
-    # Simulate: connect_with_reconnect sets running=True, then connect fails
-    client.running = True
-    client.stop()
-    assert client.running is False
-
-    # Now simulate what happens if connect() is called after stop()
-    # Before the fix, this would reset running to True
-    try:
-        await asyncio.wait_for(client.connect(), timeout=0.5)
-    except Exception:
-        pass  # Connection will fail, that's expected
-
-    # Critical: running should still be False after connect() returns
-    assert client.running is False, (
-        "SSE client running flag was reset to True by connect()! This means stop() is unreliable — the client will keep reconnecting."
-    )
-
-
-@pytest.mark.asyncio
-async def test_dc4_connect_with_reconnect_sets_running():
-    """Verify connect_with_reconnect sets running=True at the start."""
-    client = SSEClient(base_url="http://localhost:9999")
-    assert client.running is False
-
-    # connect_with_reconnect should set running=True
-    # It will fail to connect and retry, but we stop it quickly
-    task = asyncio.create_task(client.connect_with_reconnect(max_retries=1, retry_delay=0))
-
-    await asyncio.sleep(0.1)
-    # running should have been set to True by connect_with_reconnect
-    was_running = client.running
-    client.stop()
-
-    try:
-        await asyncio.wait_for(task, timeout=2.0)
-    except Exception:
-        pass
-
-    assert was_running is True, "connect_with_reconnect didn't set running=True at start"
-
-
-# =============================================================================
 # SA-2: Stuck 'running' merge entries after daemon crash
 # =============================================================================
 
@@ -437,7 +379,7 @@ async def test_sa2_initialize_resets_stuck_running_merges(temp_db, tmp_path):
     """
     from hive.merge import MergeProcessor
 
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.create_session = AsyncMock(return_value={"id": "refinery-session"})
 
     mp = MergeProcessor(temp_db, mock_oc, str(tmp_path), "test")
@@ -474,7 +416,7 @@ async def test_sa2_initialize_ignores_queued_entries(temp_db, tmp_path):
     """Verify initialize() doesn't touch entries that are already 'queued'."""
     from hive.merge import MergeProcessor
 
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.create_session = AsyncMock(return_value={"id": "refinery-session"})
 
     mp = MergeProcessor(temp_db, mock_oc, str(tmp_path), "test")
@@ -514,7 +456,7 @@ async def test_new1_spawn_worker_cleans_up_session_on_post_creation_failure(temp
     issue failed — it leaked the OpenCode session, left the agent in
     active_agents, and didn't clean up reverse lookup maps.
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.create_session = AsyncMock(return_value={"id": "leaked-session-999"})
     # Make send_message_async fail to trigger the except block AFTER session creation
     mock_oc.send_message_async = AsyncMock(side_effect=Exception("network timeout"))
@@ -555,7 +497,7 @@ async def test_new1_spawn_worker_no_session_cleanup_when_creation_fails(temp_db,
     """Verify that when session creation itself fails (before session_id is set),
     cleanup_session is NOT called (there's nothing to clean up).
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     # Session creation itself fails
     mock_oc.create_session = AsyncMock(side_effect=Exception("OpenCode unreachable"))
 
@@ -591,7 +533,7 @@ async def test_new3_agent_marked_failed_on_claim_failure(temp_db, tmp_path):
     Before the fix, only the worktree was cleaned up and the agent record
     lingered in the DB indefinitely.
     """
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     # Create an issue and pre-claim it (simulating another worker won the race)

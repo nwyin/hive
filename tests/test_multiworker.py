@@ -1,7 +1,5 @@
 """Tests for multi-worker pool and epics."""
 
-import pytest
-
 
 def test_ready_queue_epic_steps_respects_dependencies(temp_db):
     """Ready queue should surface epic steps as their deps resolve."""
@@ -127,41 +125,3 @@ def test_epic_execution_order(temp_db):
     # Step 4: Test should be ready now
     ready = temp_db.get_ready_queue(project="test", limit=10)
     assert [i["id"] for i in ready] == [test]
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_multi_worker_pool(temp_db, git_repo):
-    """Test spawning multiple workers concurrently (requires OpenCode server)."""
-    from hive.config import Config
-    from hive.backends import OpenCodeClient
-    from hive.orchestrator import Orchestrator
-
-    # Create multiple independent issues
-    issue1 = temp_db.create_issue("Task 1", "Do task 1", project="test")
-    issue2 = temp_db.create_issue("Task 2", "Do task 2", project="test")
-    issue3 = temp_db.create_issue("Task 3", "Do task 3", project="test")
-
-    async with OpenCodeClient() as opencode:
-        orch = Orchestrator(
-            db=temp_db,
-            opencode_client=opencode,
-            project_path=str(git_repo),
-            project_name="test",
-        )
-
-        # Spawn workers
-        await orch.spawn_worker(temp_db.get_issue(issue1))
-        await orch.spawn_worker(temp_db.get_issue(issue2))
-        await orch.spawn_worker(temp_db.get_issue(issue3))
-
-        # Check that multiple workers are active
-        cursor = temp_db.conn.execute("SELECT COUNT(*) FROM agents WHERE status = 'working'")
-        active_count = cursor.fetchone()[0]
-        assert active_count <= Config.MAX_AGENTS
-
-        # Clean up
-        agents = temp_db.get_active_agents()
-        for agent_dict in agents:
-            if agent_dict["session_id"]:
-                await opencode.delete_session(agent_dict["session_id"], directory=agent_dict["worktree"])

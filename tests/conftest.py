@@ -13,7 +13,7 @@ import pytest_asyncio
 
 from hive.config import Config
 from hive.db import Database
-from tests.fake_opencode import FakeOpenCodeServer
+from tests.fake_backend import FakeBackend
 
 
 def pytest_collection_modifyitems(config, items):
@@ -69,24 +69,10 @@ def db_with_issues(temp_db):
 
 
 @pytest_asyncio.fixture
-async def fake_server() -> AsyncGenerator[FakeOpenCodeServer, None]:
-    """Provide a fake OpenCode server for integration tests."""
-    server = FakeOpenCodeServer()
-    host, port = await server.start_server()
-    url = f"http://{host}:{port}"
-    server.set_url(url)
-
-    with patch.object(Config, "OPENCODE_URL", url):
-        yield server
-
-    await server.stop_server()
-
-
-@pytest.fixture
-def patched_config(fake_server):
-    """Provide Config patched to use fake server."""
-    with patch.object(Config, "OPENCODE_URL", fake_server.url):
-        yield Config
+async def fake_backend() -> AsyncGenerator[FakeBackend, None]:
+    """Provide a fake backend for integration tests."""
+    backend = FakeBackend()
+    yield backend
 
 
 @pytest.fixture
@@ -113,7 +99,7 @@ def temp_git_repo(tmp_path):
 
 
 @pytest_asyncio.fixture
-async def integration_orchestrator(fake_server, temp_db, temp_git_repo):
+async def integration_orchestrator(fake_backend, temp_db, temp_git_repo):
     """Create a fully wired Orchestrator for integration testing.
 
     Config overrides for fast, deterministic tests:
@@ -122,11 +108,9 @@ async def integration_orchestrator(fake_server, temp_db, temp_git_repo):
     - MERGE_QUEUE_ENABLED=False: no merge processing (tested separately)
     - ANOMALY_FAILURE_THRESHOLD=0: disable anomaly detection (0 is falsy)
     """
-    from hive.backends import OpenCodeClient
     from hive.orchestrator import Orchestrator
 
     with (
-        patch.object(Config, "OPENCODE_URL", fake_server.url),
         patch.object(Config, "MAX_AGENTS", 1),
         patch.object(Config, "POLL_INTERVAL", 0.1),
         patch.object(Config, "LEASE_DURATION", 4),
@@ -138,19 +122,16 @@ async def integration_orchestrator(fake_server, temp_db, temp_git_repo):
         # Register the project so orchestrator can resolve project paths
         temp_db.register_project("test-project", str(temp_git_repo))
 
-        async with OpenCodeClient(base_url=fake_server.url) as opencode_client:
-            orchestrator = Orchestrator(
-                db=temp_db,
-                opencode_client=opencode_client,
-            )
-            # Point SSE client at fake server
-            orchestrator.sse_client.base_url = fake_server.url
+        orchestrator = Orchestrator(
+            db=temp_db,
+            backend=fake_backend,
+        )
 
-            yield orchestrator
+        yield orchestrator
 
-            orchestrator.running = False
-            orchestrator.sse_client.stop()
-            orchestrator.active_agents.clear()
+        orchestrator.running = False
+        orchestrator.backend.stop()
+        orchestrator.active_agents.clear()
 
 
 # ── Integration test helpers ───────────────────────────────────────────
@@ -177,7 +158,7 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
     # (i.e., fire-and-forget monitor_agent tasks from spawn_worker).
     pre_existing_tasks = set(asyncio.all_tasks())
 
-    sse_task = asyncio.create_task(orchestrator.sse_client.connect_with_reconnect(max_retries=3, retry_delay=0.1))
+    sse_task = asyncio.create_task(orchestrator.backend.connect_with_reconnect(max_retries=3, retry_delay=0.1))
     permission_task = asyncio.create_task(orchestrator.permission_unblocker_loop())
     merge_task = asyncio.create_task(orchestrator.merge_processor_loop())
     main_task = asyncio.create_task(orchestrator.main_loop())
@@ -192,7 +173,7 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
         raise TimeoutError(f"Predicate not satisfied within {timeout}s")
     finally:
         orchestrator.running = False
-        orchestrator.sse_client.stop()
+        orchestrator.backend.stop()
 
         # Cancel managed tasks + any fire-and-forget tasks spawned during the run
         # (monitor_agent tasks created by spawn_worker).
@@ -208,28 +189,28 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
         orchestrator.session_status_events.clear()
 
 
-async def await_session_created(fake_server, count=1, timeout=5.0):
-    """Wait until fake_server has at least `count` created sessions.
+async def await_session_created(fake_backend, count=1, timeout=5.0):
+    """Wait until fake_backend has at least `count` created sessions.
 
     Returns the most recently created session_id.
     """
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        if len(fake_server.created_session_ids) >= count:
-            return fake_server.created_session_ids[count - 1]
+        if len(fake_backend.created_session_ids) >= count:
+            return fake_backend.created_session_ids[count - 1]
         await asyncio.sleep(0.05)
-    raise TimeoutError(f"Expected {count} session(s), got {len(fake_server.created_session_ids)}")
+    raise TimeoutError(f"Expected {count} session(s), got {len(fake_backend.created_session_ids)}")
 
 
-def complete_worker(fake_server, session_id, worktree, status="success", summary="Done", artifacts=None):
-    """Simulate a worker completing: write result file + inject idle SSE event."""
+def complete_worker(fake_backend, session_id, worktree, status="success", summary="Done", artifacts=None):
+    """Simulate a worker completing: write result file + inject idle event."""
     write_hive_result(
         worktree_path=worktree,
         status=status,
         summary=summary,
         artifacts=artifacts or [{"type": "git_commit", "value": "abc1234"}],
     )
-    fake_server.inject_idle(session_id)
+    fake_backend.inject_idle(session_id)
 
 
 def write_hive_result(

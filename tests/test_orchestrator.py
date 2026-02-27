@@ -7,110 +7,24 @@ import pytest
 
 from hive.config import Config
 from hive.utils import AgentIdentity, CompletionResult
-from hive.backends import OpenCodeClient
+from hive.backends import HiveBackend
 from hive.orchestrator import Orchestrator
 
 
-# Integration tests (require OpenCode server and git repo)
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_spawn_worker(temp_db, git_repo):
-    """Test spawning a worker for an issue (requires OpenCode server)."""
-    from hive.backends import OpenCodeClient
-
-    # Register project so orchestrator can resolve project path
-    temp_db.register_project("test", str(git_repo))
-
-    # Create an issue
-    issue_id = temp_db.create_issue("Test task", "Do something", project="test")
-
-    async with OpenCodeClient() as opencode:
-        orch = Orchestrator(
-            db=temp_db,
-            opencode_client=opencode,
-        )
-
-        # Get the issue
-        issue = temp_db.get_issue(issue_id)
-
-        # Spawn worker
-        await orch.spawn_worker(issue)
-
-        # Check that issue was claimed
-        updated_issue = temp_db.get_issue(issue_id)
-        assert updated_issue["status"] == "in_progress"
-        assert updated_issue["assignee"] is not None
-
-        # Check that agent was created
-        agent_id = updated_issue["assignee"]
-        agent = temp_db.get_agent(agent_id)
-        assert agent is not None
-        assert agent["status"] == "working"
-        assert agent["session_id"] is not None
-
-        # Clean up session
-        if agent["session_id"]:
-            await opencode.delete_session(agent["session_id"], directory=agent["worktree"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_full_worker_lifecycle(temp_db, git_repo):
-    """Test complete worker lifecycle from spawn to completion (requires OpenCode server)."""
-    import asyncio
-    from hive.backends import OpenCodeClient
-
-    # Register project so orchestrator can resolve project path
-    temp_db.register_project("test", str(git_repo))
-
-    # Create a simple issue
-    issue_id = temp_db.create_issue(
-        "Create README",
-        "Create a README.md file with project description",
-        project="test",
-    )
-
-    async with OpenCodeClient() as opencode:
-        orch = Orchestrator(
-            db=temp_db,
-            opencode_client=opencode,
-        )
-
-        # Setup SSE handlers
-        orch._setup_sse_handlers()
-
-        # Get the issue
-        issue = temp_db.get_issue(issue_id)
-
-        # Spawn worker
-        await orch.spawn_worker(issue)
-
-        # Wait a bit for the agent to work
-        await asyncio.sleep(10)
-
-        # Check if issue completed
-        updated_issue = temp_db.get_issue(issue_id)
-
-        # Clean up - get agent and delete session
-        if updated_issue["assignee"]:
-            agent = temp_db.get_agent(updated_issue["assignee"])
-            if agent and agent["session_id"]:
-                await opencode.delete_session(agent["session_id"], directory=agent["worktree"])
+# Unit tests
 
 
 @pytest.mark.asyncio
 async def test_handle_agent_failure_retry_tier(temp_db, tmp_path):
     """Test first tier of escalation chain - retry same agent."""
     from unittest.mock import AsyncMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -161,13 +75,13 @@ async def test_handle_agent_failure_retry_tier(temp_db, tmp_path):
 async def test_handle_agent_failure_agent_switch_tier(temp_db, tmp_path):
     """Test second tier of escalation chain - switch agent."""
     from unittest.mock import AsyncMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -217,13 +131,13 @@ async def test_handle_agent_failure_agent_switch_tier(temp_db, tmp_path):
 async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
     """Test third tier of escalation chain - escalate to human."""
     from unittest.mock import AsyncMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -270,13 +184,13 @@ async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
 async def test_escalation_chain_full_progression(temp_db, tmp_path):
     """Test full progression through all escalation tiers."""
     from unittest.mock import AsyncMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Disable anomaly detection so we can test the full retry→switch→escalate chain
@@ -370,10 +284,10 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_agent_failure_anomaly_escalates_immediately(temp_db, tmp_path):
     """Anomaly threshold should force immediate escalation."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     issue_id = temp_db.create_issue("Anomaly task", "Repeated failures")
@@ -450,88 +364,88 @@ def git_repo(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_check_opencode_health_success(temp_db, tmp_path):
+async def test_check_backend_health_success(temp_db, tmp_path):
     """Test health check when OpenCode is responding."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[])
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_oc,
+        backend=mock_oc,
     )
 
-    result = await orch._check_opencode_health()
+    result = await orch._check_backend_health()
     assert result is True
 
 
 @pytest.mark.asyncio
-async def test_check_opencode_health_server_error(temp_db, tmp_path):
+async def test_check_backend_health_server_error(temp_db, tmp_path):
     """Test health check when OpenCode returns an error."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(side_effect=Exception("500 Server Error"))
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_oc,
+        backend=mock_oc,
     )
 
-    result = await orch._check_opencode_health()
+    result = await orch._check_backend_health()
     assert result is False
 
 
-def test_is_opencode_error():
-    """Test detection of OpenCode-related errors."""
-    from hive.backends import OpenCodeClient
+def test_is_backend_error():
+    """Test detection of backend-related errors."""
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=MagicMock(),
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
     # Test connection errors
-    assert orch._is_opencode_error(Exception("Connection refused"))
-    assert orch._is_opencode_error(Exception("Connection failed"))
-    assert orch._is_opencode_error(Exception("timeout"))
-    assert orch._is_opencode_error(Exception("Server error"))
-    assert orch._is_opencode_error(Exception("Network unreachable"))
+    assert orch._is_backend_error(Exception("Connection refused"))
+    assert orch._is_backend_error(Exception("Connection failed"))
+    assert orch._is_backend_error(Exception("timeout"))
+    assert orch._is_backend_error(Exception("Server error"))
+    assert orch._is_backend_error(Exception("Network unreachable"))
 
-    # Test non-OpenCode errors
-    assert not orch._is_opencode_error(Exception("Git merge conflict"))
-    assert not orch._is_opencode_error(Exception("File not found"))
+    # Test non-backend errors
+    assert not orch._is_backend_error(Exception("Git merge conflict"))
+    assert not orch._is_backend_error(Exception("File not found"))
 
     # Test HTTP 5xx status codes
     http_error = Exception("HTTP error")
     http_error.status = 503
-    assert orch._is_opencode_error(http_error)
+    assert orch._is_backend_error(http_error)
 
     # Test HTTP 4xx status codes (should not be treated as degraded mode)
     http_error_4xx = Exception("HTTP error")
     http_error_4xx.status = 404
-    assert not orch._is_opencode_error(http_error_4xx)
+    assert not orch._is_backend_error(http_error_4xx)
 
 
 @pytest.mark.asyncio
 async def test_enter_degraded_mode(temp_db, tmp_path):
     """Test entering degraded mode."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
-    assert orch._opencode_healthy is True
+    assert orch._backend_healthy is True
     assert orch._degraded_since is None
 
     # Enter degraded mode
     await orch._enter_degraded_mode("Connection refused")
 
-    assert orch._opencode_healthy is False
+    assert orch._backend_healthy is False
     assert orch._degraded_since is not None
     assert orch._backoff_delay == 5
 
     # Check that system event was logged
-    events = temp_db.get_events(event_type="opencode_degraded")
+    events = temp_db.get_events(event_type="backend_degraded")
     assert len(events) == 1
     assert events[0]["issue_id"] is None
     assert events[0]["agent_id"] is None
@@ -543,12 +457,12 @@ async def test_enter_degraded_mode(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_merge_task_auto_restart(temp_db, tmp_path):
     """Test auto-restart of merge_processor_loop on unexpected death."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
     # Test callback with exception (should restart if running)
@@ -580,12 +494,12 @@ async def test_merge_task_auto_restart(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_merge_task_no_restart_when_cancelled(temp_db, tmp_path):
     """Test no restart when task is cancelled."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
     # Test callback with cancelled task (should not restart)
@@ -603,12 +517,12 @@ async def test_merge_task_no_restart_when_cancelled(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_merge_task_no_restart_when_not_running(temp_db, tmp_path):
     """Test no restart when orchestrator is not running."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
     # Test callback when not running (should not restart)
@@ -629,12 +543,12 @@ async def test_merge_task_no_restart_when_not_running(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_merge_processor_loop_health_check(temp_db, tmp_path):
     """Test merge_processor_loop calls health_check periodically."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    opencode = OpenCodeClient()
+    backend_mock = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=opencode,
+        backend=backend_mock,
     )
 
     # Mock pool methods (the loop now delegates to the pool)
@@ -678,17 +592,17 @@ async def test_merge_processor_loop_health_check(temp_db, tmp_path):
 async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
     """Test that notes are harvested from worktree on agent completion."""
     import json
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
     from hive.prompts import NOTES_FILE_NAME
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    mock_opencode.abort_session = AsyncMock()
-    mock_opencode.delete_session = AsyncMock()
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    mock_backend.abort_session = AsyncMock()
+    mock_backend.delete_session = AsyncMock()
 
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -739,16 +653,16 @@ async def test_harvest_notes_on_agent_complete(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_harvest_notes_no_file(temp_db, tmp_path):
     """Test harvest is a no-op when no notes file exists."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    mock_opencode.abort_session = AsyncMock()
-    mock_opencode.delete_session = AsyncMock()
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    mock_backend.abort_session = AsyncMock()
+    mock_backend.delete_session = AsyncMock()
 
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     issue_id = temp_db.create_issue("Test task")
@@ -781,12 +695,12 @@ async def test_harvest_notes_no_file(temp_db, tmp_path):
 
 def test_gather_notes_for_worker_with_epic(temp_db, tmp_path):
     """Test _gather_notes_for_worker combines epic + project notes with dedup."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = MagicMock(spec=OpenCodeClient)
+    mock_backend = MagicMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create a epic with steps
@@ -814,12 +728,12 @@ def test_gather_notes_for_worker_with_epic(temp_db, tmp_path):
 
 def test_gather_notes_for_worker_deduplicates(temp_db, tmp_path):
     """Test _gather_notes_for_worker deduplicates by note ID."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = MagicMock(spec=OpenCodeClient)
+    mock_backend = MagicMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create a epic with a step
@@ -842,12 +756,12 @@ def test_gather_notes_for_worker_deduplicates(temp_db, tmp_path):
 
 def test_gather_notes_for_worker_no_notes(temp_db, tmp_path):
     """Test _gather_notes_for_worker returns None when no notes exist."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = MagicMock(spec=OpenCodeClient)
+    mock_backend = MagicMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     issue_id = temp_db.create_issue("Standalone task")
@@ -857,12 +771,12 @@ def test_gather_notes_for_worker_no_notes(temp_db, tmp_path):
 
 def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
     """Test _gather_notes_for_worker for a standalone issue (no parent)."""
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = MagicMock(spec=OpenCodeClient)
+    mock_backend = MagicMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     issue_id = temp_db.create_issue("Standalone task")
@@ -879,13 +793,13 @@ def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
 # --- Bidirectional reconciliation tests ---
 
 
-def _make_orchestrator(temp_db, tmp_path, mock_opencode=None):
-    """Helper to create an orchestrator with a mocked OpenCodeClient."""
-    if mock_opencode is None:
-        mock_opencode = AsyncMock(spec=OpenCodeClient)
+def _make_orchestrator(temp_db, tmp_path, mock_backend=None):
+    """Helper to create an orchestrator with a mocked HiveBackend."""
+    if mock_backend is None:
+        mock_backend = AsyncMock(spec=HiveBackend)
     return Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
 
@@ -923,7 +837,7 @@ def _activate_agent_for_issue(temp_db, issue_id: str, agent_id: str, *, keep_iss
 @pytest.mark.asyncio
 async def test_reconcile_ghost_agents(temp_db, tmp_path):
     """Ghost agent: DB says working, but session is gone from server."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     # Server returns no sessions — the agent's session is gone
     mock_oc.list_sessions = AsyncMock(return_value=[])
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
@@ -947,7 +861,7 @@ async def test_reconcile_ghost_agents(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_reconcile_stale_agents_with_live_sessions(temp_db, tmp_path):
     """Stale agent whose session is still alive on the server — abort + delete."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[{"id": "live-sess"}])
     mock_oc.cleanup_session = AsyncMock()
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
@@ -969,7 +883,7 @@ async def test_reconcile_stale_agents_with_live_sessions(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_reconcile_orphan_sessions(temp_db, tmp_path):
     """Sessions alive on server with no DB agent — cleaned up as orphans."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     # Server has two sessions, DB knows about neither
     mock_oc.list_sessions = AsyncMock(return_value=[{"id": "orphan-1"}, {"id": "orphan-2"}])
     mock_oc.cleanup_session = AsyncMock()
@@ -991,7 +905,7 @@ async def test_reconcile_orphan_sessions(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_reconcile_fallback_when_opencode_unreachable(temp_db, tmp_path):
     """list_sessions() throws — falls back to best-effort abort/delete."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(side_effect=Exception("Connection refused"))
     mock_oc.cleanup_session = AsyncMock()
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
@@ -1017,7 +931,7 @@ async def test_reconcile_fallback_when_opencode_unreachable(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_reconcile_respects_retry_budget(temp_db, tmp_path):
     """Exhausted retry budget → issue marked failed, not open."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[])
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -1039,7 +953,7 @@ async def test_reconcile_respects_retry_budget(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_reconcile_mixed_ghost_live_orphan(temp_db, tmp_path):
     """All three conditions in one reconciliation run."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     # Server has: live-sess (stale agent's), orphan-sess (no agent), but NOT ghost-sess
     mock_oc.list_sessions = AsyncMock(return_value=[{"id": "live-sess"}, {"id": "orphan-sess"}])
     mock_oc.cleanup_session = AsyncMock()
@@ -1092,8 +1006,8 @@ async def test_reconcile_purges_idle_and_failed_agents(temp_db, tmp_path):
     assert temp_db.get_agent(failed_agent_id) is not None
     assert temp_db.get_agent(working_agent_id) is not None
 
-    # Mock opencode client to return no live sessions
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    # Mock backend to return no live sessions
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[])
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -1115,7 +1029,7 @@ async def test_reconcile_purges_idle_and_failed_agents(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_permission_event_with_id(temp_db, tmp_path):
     """SSE permission event with id resolves directly."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.reply_permission = AsyncMock()
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -1128,7 +1042,7 @@ async def test_handle_permission_event_with_id(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_permission_event_without_id_fetches_pending(temp_db, tmp_path):
     """SSE permission event without id falls back to fetching pending."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.get_pending_permissions = AsyncMock(
         return_value=[
             {"id": "perm-2", "permission": "read", "sessionID": "s1"},
@@ -1146,7 +1060,7 @@ async def test_handle_permission_event_without_id_fetches_pending(temp_db, tmp_p
 @pytest.mark.asyncio
 async def test_handle_permission_event_rejects_question(temp_db, tmp_path):
     """SSE permission event for 'question' gets rejected."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.reply_permission = AsyncMock()
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -1159,7 +1073,7 @@ async def test_handle_permission_event_rejects_question(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_permission_event_error_handling(temp_db, tmp_path):
     """SSE permission handler doesn't raise on errors."""
-    mock_oc = AsyncMock(spec=OpenCodeClient)
+    mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.reply_permission = AsyncMock(side_effect=Exception("Network error"))
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
@@ -1208,9 +1122,9 @@ def test_log_permission_resolved_unknown_session(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_stalled_agent_double_call_guard(temp_db, tmp_path):
     """Test that handle_stalled_agent guards against double execution."""
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
@@ -1249,8 +1163,8 @@ async def test_handle_stalled_agent_double_call_guard(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_stalled_agent_terminal_issue_skips_escalation(temp_db, tmp_path):
     """Stalled terminal issues should mark failed and teardown without escalation."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Terminal stalled task", "Already canceled")
     temp_db.update_issue_status(issue_id, "canceled")
@@ -1277,11 +1191,11 @@ async def test_handle_stalled_agent_terminal_issue_skips_escalation(temp_db, tmp
 @pytest.mark.asyncio
 async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
     """Test that handle_agent_complete guards against double execution."""
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     # Mock get_messages to return empty list to avoid processing issues
-    mock_opencode.get_messages.return_value = []
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend.get_messages.return_value = []
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     # Create issue and agent
     issue_id = temp_db.create_issue("Test task", "Do something")
@@ -1325,9 +1239,9 @@ async def test_handle_agent_complete_double_call_guard(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_handle_agent_complete_terminal_transition_skips_message_fetch(temp_db, tmp_path):
     """Canceled/finalized issue should skip message fetch and log skip event."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Terminal task", "Already canceled")
     temp_db.update_issue_status(issue_id, "canceled")
@@ -1345,7 +1259,7 @@ async def test_handle_agent_complete_terminal_transition_skips_message_fetch(tem
 
     await orch.handle_agent_complete(agent)
 
-    mock_opencode.get_messages.assert_not_called()
+    mock_backend.get_messages.assert_not_called()
     events = temp_db.get_events(issue_id=issue_id, event_type="agent_complete_skipped")
     assert len(events) == 1
     assert agent_id not in orch.active_agents
@@ -1354,9 +1268,9 @@ async def test_handle_agent_complete_terminal_transition_skips_message_fetch(tem
 @pytest.mark.asyncio
 async def test_handle_agent_complete_budget_transition_routes_failure(temp_db, tmp_path):
     """Budget exceeded transition should log and route through failure handling."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Budget task", "Hit budget")
     agent_id = temp_db.create_agent("test-agent")
@@ -1391,9 +1305,9 @@ async def test_handle_agent_complete_budget_transition_routes_failure(temp_db, t
 @pytest.mark.asyncio
 async def test_handle_agent_complete_epic_step_does_not_cycle(temp_db, tmp_path):
     """Epic steps should complete normally without session cycling."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     parent_id = temp_db.create_issue("Epic parent", issue_type="epic")
     issue_id = temp_db.create_issue("Step 1", issue_type="step", parent_id=parent_id)
@@ -1438,17 +1352,17 @@ async def test_handle_agent_complete_epic_step_does_not_cycle(temp_db, tmp_path)
 async def test_session_error_handler_registration_and_trigger(temp_db, tmp_path):
     """Test that session.error handler is registered and triggers handle_stalled_agent."""
     # Create orchestrator with mocked SSE client and handle_stalled_agent
-    opencode = AsyncMock(spec=OpenCodeClient)
-    orch = _make_orchestrator(temp_db, tmp_path, opencode)
+    mock_bk = AsyncMock(spec=HiveBackend)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
     # Mock the SSE client
-    orch.sse_client = Mock()
+    orch.backend = Mock()
     registered_handlers = {}
 
     def mock_on(event_type, handler):
         registered_handlers[event_type] = handler
 
-    orch.sse_client.on = mock_on
+    orch.backend.on = mock_on
 
     # Mock handle_stalled_agent
     orch.handle_stalled_agent = AsyncMock()
@@ -1501,17 +1415,17 @@ async def test_session_error_handler_registration_and_trigger(temp_db, tmp_path)
 @pytest.mark.asyncio
 async def test_session_error_handler_missing_session_id(temp_db, tmp_path):
     """Test that session.error handler ignores events without sessionID."""
-    opencode = AsyncMock(spec=OpenCodeClient)
-    orch = _make_orchestrator(temp_db, tmp_path, opencode)
+    mock_bk = AsyncMock(spec=HiveBackend)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
     # Mock the SSE client
-    orch.sse_client = Mock()
+    orch.backend = Mock()
     registered_handlers = {}
 
     def mock_on(event_type, handler):
         registered_handlers[event_type] = handler
 
-    orch.sse_client.on = mock_on
+    orch.backend.on = mock_on
 
     # Mock handle_stalled_agent
     orch.handle_stalled_agent = AsyncMock()
@@ -1531,17 +1445,17 @@ async def test_session_error_handler_missing_session_id(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_session_error_handler_unknown_session(temp_db, tmp_path):
     """Test that session.error handler ignores events for unknown sessions."""
-    opencode = AsyncMock(spec=OpenCodeClient)
-    orch = _make_orchestrator(temp_db, tmp_path, opencode)
+    mock_bk = AsyncMock(spec=HiveBackend)
+    orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
     # Mock the SSE client
-    orch.sse_client = Mock()
+    orch.backend = Mock()
     registered_handlers = {}
 
     def mock_on(event_type, handler):
         registered_handlers[event_type] = handler
 
-    orch.sse_client.on = mock_on
+    orch.backend.on = mock_on
 
     # Mock handle_stalled_agent
     orch.handle_stalled_agent = AsyncMock()
@@ -1564,7 +1478,7 @@ async def test_handle_stalled_with_idle_session(temp_db, tmp_path):
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
-    orch.opencode.get_session_status = AsyncMock(return_value={"type": "idle"})
+    orch.backend.get_session_status = AsyncMock(return_value={"type": "idle"})
     orch.handle_agent_complete = AsyncMock()
     orch.handle_stalled_agent = AsyncMock()
 
@@ -1593,7 +1507,7 @@ async def test_handle_stalled_with_busy_session_refreshes_heartbeat(temp_db, tmp
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
-    orch.opencode.get_session_status = AsyncMock(return_value={"type": "busy"})
+    orch.backend.get_session_status = AsyncMock(return_value={"type": "busy"})
     orch.handle_stalled_agent = AsyncMock()
 
     # Create test agent
@@ -1625,7 +1539,7 @@ async def test_handle_stalled_with_busy_session_already_extended(temp_db, tmp_pa
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client
-    orch.opencode.get_session_status = AsyncMock(return_value={"type": "busy"})
+    orch.backend.get_session_status = AsyncMock(return_value={"type": "busy"})
     orch.handle_stalled_agent = AsyncMock()
 
     # Create test agent
@@ -1650,7 +1564,7 @@ async def test_handle_stalled_with_session_api_failure(temp_db, tmp_path):
     orch = _make_orchestrator(temp_db, tmp_path)
 
     # Mock OpenCode client to raise exception
-    orch.opencode.get_session_status = AsyncMock(side_effect=Exception("API Error"))
+    orch.backend.get_session_status = AsyncMock(side_effect=Exception("API Error"))
     orch.handle_stalled_agent = AsyncMock()
 
     # Create test agent
@@ -1677,17 +1591,17 @@ async def test_handle_stalled_with_session_api_failure(temp_db, tmp_path):
 async def test_worker_started_event_contains_model(temp_db, tmp_path):
     """Test that worker_started events contain the model field."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
     # Mock OpenCode client
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.create_session.return_value = {"id": "session-123"}
-    mock_opencode.send_message_async.return_value = None
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.create_session.return_value = {"id": "session-123"}
+    mock_backend.send_message_async.return_value = None
 
     # Create orchestrator
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Register project so orchestrator can resolve project path for "test" project
@@ -1716,16 +1630,16 @@ async def test_worker_started_event_contains_model(temp_db, tmp_path):
 async def test_completed_event_contains_model(temp_db, tmp_path):
     """Test that completed events contain the model field."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
     # Mock OpenCode client
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages.return_value = []
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages.return_value = []
 
     # Create orchestrator
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -1782,13 +1696,13 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
 async def test_validation_no_commits_routes_to_failure(temp_db, tmp_path):
     """Test that validation failure when worker claims success but has no commits routes to _handle_agent_failure."""
     from unittest.mock import AsyncMock, patch, MagicMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    # Create orchestrator with mock opencode
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    # Create orchestrator with mock backend
+    mock_backend = AsyncMock(spec=HiveBackend)
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -1906,15 +1820,15 @@ def test_exc_detail_subclass_no_message():
 async def test_spawn_error_event_non_empty_on_timeout(temp_db, tmp_path):
     """spawn_error event detail must not be empty for TimeoutError (regression test)."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_backend = AsyncMock(spec=HiveBackend)
     # Raise asyncio.TimeoutError (str(e) == "") during create_session
-    mock_opencode.create_session = AsyncMock(side_effect=asyncio.TimeoutError())
+    mock_backend.create_session = AsyncMock(side_effect=asyncio.TimeoutError())
 
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     temp_db.register_project("test", str(tmp_path))
@@ -1937,13 +1851,13 @@ async def test_spawn_error_event_non_empty_on_timeout(temp_db, tmp_path):
 async def test_worktree_error_event_non_empty_on_timeout(temp_db, tmp_path):
     """worktree_error event detail must not be empty for TimeoutError."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_backend = AsyncMock(spec=HiveBackend)
 
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     temp_db.register_project("test", str(tmp_path))
@@ -1967,15 +1881,15 @@ async def test_worktree_error_event_non_empty_on_timeout(temp_db, tmp_path):
 
 
 def _make_orch(temp_db, tmp_path):
-    """Helper: create an Orchestrator with a mock opencode client."""
+    """Helper: create an Orchestrator with a mock backend."""
     from unittest.mock import AsyncMock
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
+    mock_backend = AsyncMock(spec=HiveBackend)
     return Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
-    ), mock_opencode
+        backend=mock_backend,
+    ), mock_backend
 
 
 def test_prepare_inbox_no_deliveries(temp_db, tmp_path):
@@ -2074,15 +1988,15 @@ def test_prepare_inbox_logs_event(temp_db, tmp_path):
 async def test_worker_dispatch_includes_inbox(temp_db, tmp_path):
     """Worker dispatch passes inbox_section to build_worker_prompt when deliveries exist."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.create_session.return_value = {"id": "session-inbox-test"}
-    mock_opencode.send_message_async.return_value = None
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.create_session.return_value = {"id": "session-inbox-test"}
+    mock_backend.send_message_async.return_value = None
 
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Register project so orchestrator can resolve project path
@@ -2098,8 +2012,8 @@ async def test_worker_dispatch_includes_inbox(temp_db, tmp_path):
         await orch.spawn_worker(issue)
 
     # Verify send_message_async was called with a prompt containing the inbox section
-    assert mock_opencode.send_message_async.called
-    call_args = mock_opencode.send_message_async.call_args
+    assert mock_backend.send_message_async.called
+    call_args = mock_backend.send_message_async.call_args
     parts = call_args.kwargs.get("parts") or call_args.args[1] if len(call_args.args) > 1 else None
     if parts is None and call_args.kwargs:
         parts = call_args.kwargs.get("parts", [])
@@ -2114,9 +2028,9 @@ async def test_worker_dispatch_includes_inbox(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_blocked_by_unacked_required_notes(temp_db, tmp_path):
     """FAIL_ASSESSMENT is returned when a must_read delivery has not been acked."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Gate task", "Needs ack")
     agent_id = temp_db.create_agent("test-agent")
@@ -2148,9 +2062,9 @@ async def test_completion_blocked_by_unacked_required_notes(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_not_blocked_when_no_required_notes(temp_db, tmp_path):
     """Normal (non-must_read) notes do NOT block completion."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Normal notes task", "No must_read")
     agent_id = temp_db.create_agent("test-agent")
@@ -2187,9 +2101,9 @@ async def test_completion_not_blocked_when_no_required_notes(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_not_blocked_when_all_acked(temp_db, tmp_path):
     """After acking all required notes, the gate passes."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Acked task", "All acked")
     agent_id = temp_db.create_agent("test-agent")
@@ -2224,9 +2138,9 @@ async def test_completion_not_blocked_when_all_acked(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_gate_logs_event(temp_db, tmp_path):
     """completion_blocked_unacked_notes event is logged with count and delivery IDs."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Event log task", "Check logging")
     agent_id = temp_db.create_agent("test-agent")
@@ -2258,9 +2172,9 @@ async def test_completion_gate_logs_event(temp_db, tmp_path):
 @pytest.mark.asyncio
 async def test_completion_gate_materializes_first(temp_db, tmp_path):
     """materialize_issue_deliveries is called before checking unacked notes."""
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages = AsyncMock(return_value=[])
-    orch = _make_orchestrator(temp_db, tmp_path, mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages = AsyncMock(return_value=[])
+    orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Materialize task", "Issue-following note")
     agent_id = temp_db.create_agent("test-agent")
@@ -2298,14 +2212,14 @@ async def test_completion_gate_materializes_first(temp_db, tmp_path):
 async def test_completion_proceeds_when_required_notes_acked(temp_db, tmp_path, git_repo):
     """Completion is not blocked when all must_read notes are acked."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
     from hive.utils import CompletionResult
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages.return_value = []
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages.return_value = []
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     issue_id = temp_db.create_issue("Unblocked task", "Do something", project="test")
@@ -2344,14 +2258,14 @@ async def test_completion_proceeds_when_required_notes_acked(temp_db, tmp_path, 
 async def test_completion_blocked_unacked_notes_event_logged(temp_db, tmp_path):
     """completion_blocked_unacked_notes event is logged when must_read notes are not acked."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
     from hive.utils import CompletionResult
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.get_messages.return_value = []
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.get_messages.return_value = []
     orch = Orchestrator(
         db=temp_db,
-        opencode_client=mock_opencode,
+        backend=mock_backend,
     )
 
     # Create issue and agent
@@ -2398,7 +2312,7 @@ async def test_completion_blocked_unacked_notes_event_logged(temp_db, tmp_path):
 async def test_inv1_issue_from_project_a_creates_worktree_in_project_a(temp_db, tmp_path):
     """INV-1: Issue from project A creates worktree in project A's repo path, not elsewhere."""
     from unittest.mock import AsyncMock, patch
-    from hive.backends import OpenCodeClient
+    from hive.backends import HiveBackend
 
     repo_a = tmp_path / "repo_a"
     repo_a.mkdir()
@@ -2408,11 +2322,11 @@ async def test_inv1_issue_from_project_a_creates_worktree_in_project_a(temp_db, 
     temp_db.register_project("proj-a", str(repo_a))
     temp_db.register_project("proj-b", str(repo_b))
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.create_session.return_value = {"id": "session-a"}
-    mock_opencode.send_message_async.return_value = None
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.create_session.return_value = {"id": "session-a"}
+    mock_backend.send_message_async.return_value = None
 
-    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     issue_id = temp_db.create_issue("Task A", "Do something in A", project="proj-a")
     issue = temp_db.get_issue(issue_id)
@@ -2445,11 +2359,11 @@ async def test_inv2_project_b_issue_never_touches_project_a_repo(temp_db, tmp_pa
     temp_db.register_project("proj-a", str(repo_a))
     temp_db.register_project("proj-b", str(repo_b))
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.create_session.return_value = {"id": "session-b"}
-    mock_opencode.send_message_async.return_value = None
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.create_session.return_value = {"id": "session-b"}
+    mock_backend.send_message_async.return_value = None
 
-    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     issue_id = temp_db.create_issue("Task B", "Do something in B", project="proj-b")
     issue = temp_db.get_issue(issue_id)
@@ -2496,8 +2410,8 @@ async def test_inv4_unknown_project_raises_value_error(temp_db, tmp_path):
     """INV-4: Spawning an issue whose project is not registered raises ValueError."""
     from unittest.mock import AsyncMock
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
 
     # Issue belongs to a project not registered in the DB
     issue_id = temp_db.create_issue("Orphan task", "No project path", project="unregistered-project")
@@ -2520,13 +2434,13 @@ async def test_two_projects_both_get_dispatched(temp_db, tmp_path):
     temp_db.register_project("proj-a", str(repo_a))
     temp_db.register_project("proj-b", str(repo_b))
 
-    mock_opencode = AsyncMock(spec=OpenCodeClient)
-    mock_opencode.create_session.side_effect = [
+    mock_backend = AsyncMock(spec=HiveBackend)
+    mock_backend.create_session.side_effect = [
         {"id": "session-a"},
         {"id": "session-b"},
     ]
-    mock_opencode.send_message_async.return_value = None
-    mock_opencode.list_sessions = AsyncMock(return_value=[])
+    mock_backend.send_message_async.return_value = None
+    mock_backend.list_sessions = AsyncMock(return_value=[])
 
     id_a = temp_db.create_issue("Task A", "", project="proj-a")
     id_b = temp_db.create_issue("Task B", "", project="proj-b")
@@ -2543,7 +2457,7 @@ async def test_two_projects_both_get_dispatched(temp_db, tmp_path):
         patch.object(Config, "MERGE_QUEUE_ENABLED", False),
         patch("hive.orchestrator.create_worktree_async", side_effect=fake_create_worktree),
     ):
-        orch = Orchestrator(db=temp_db, opencode_client=mock_opencode)
+        orch = Orchestrator(db=temp_db, backend=mock_backend)
 
         # Run main loop briefly to dispatch both issues
         async def stop_when_both_claimed():
