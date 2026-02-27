@@ -499,19 +499,19 @@ def test_count_events_by_type_nonexistent_issue(temp_db):
 
 def test_log_system_event(temp_db):
     """Test logging system-level events."""
-    temp_db.log_system_event("backend_degraded", {"reason": "Connection timeout"})
+    temp_db.log_system_event("daemon_started", {"reason": "Connection timeout"})
 
     # Get all events
     events = temp_db.get_events()
 
     # Find the system event
-    system_events = [e for e in events if e["event_type"] == "backend_degraded"]
+    system_events = [e for e in events if e["event_type"] == "daemon_started"]
     assert len(system_events) == 1
 
     event = system_events[0]
     assert event["issue_id"] is None
     assert event["agent_id"] is None
-    assert event["event_type"] == "backend_degraded"
+    assert event["event_type"] == "daemon_started"
 
     detail = json.loads(event["detail"])
     assert detail == {"reason": "Connection timeout"}

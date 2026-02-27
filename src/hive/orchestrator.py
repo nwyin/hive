@@ -126,11 +126,6 @@ class Orchestrator:
         # Running flag
         self.running = False
 
-        # Degraded mode state
-        self._backend_healthy = True
-        self._degraded_since: Optional[datetime] = None
-        self._backoff_delay = 5  # Initial backoff delay in seconds
-
         # Guard against TOCTOU race in main_loop: tracks issue_ids currently
         # being spawned. Prevents duplicate spawn_worker calls when
         # create_worktree_async yields control back to the event loop.
@@ -571,7 +566,7 @@ class Orchestrator:
         # If the backend has a server_ready gate, wait for it before proceeding.
         # IMPORTANT: if the event loop task dies before setting server_ready
         # (e.g. missing binary / auth failure), don't hang forever.
-        if hasattr(self.sse_client, "server_ready"):
+        if hasattr(self.backend, "server_ready"):
             server_ready = self.backend.server_ready
             while not server_ready.is_set():
                 if sse_task.done():
@@ -611,64 +606,28 @@ class Orchestrator:
         """Main orchestration loop."""
         while self.running:
             try:
-                # Check if backend is healthy before scheduling work
-                if not self._backend_healthy:
-                    # In degraded mode - check health with exponential backoff
-                    healthy = await self._check_backend_health()
-
-                    if healthy:
-                        # Backend recovered
-                        degraded_duration = (datetime.now() - self._degraded_since).total_seconds() if self._degraded_since else 0
-                        self.db.log_system_event(
-                            "backend_recovered", {"degraded_duration_seconds": degraded_duration, "backoff_delay": self._backoff_delay}
-                        )
-                        self._backend_healthy = True
-                        self._degraded_since = None
-                        self._backoff_delay = 5  # Reset backoff
-                        logger.info(f"Backend recovered after {degraded_duration:.1f}s degraded mode")
-                    else:
-                        # Still unhealthy - wait with exponential backoff
-                        await asyncio.sleep(self._backoff_delay)
-                        self._backoff_delay = min(60, self._backoff_delay * 2)  # Cap at 60 seconds
-                        continue  # Skip scheduling and stall checks
-
-                # Normal operation - check if we can spawn more agents
-                # Count both registered agents and in-flight spawns to avoid
-                # transient over-spawning during concurrent teardown/spawn.
                 if len(self.active_agents) + len(self._spawning_issues) < Config.MAX_AGENTS:
-                    # Get ready work across all registered projects
                     ready = self.db.get_ready_queue(project=None, limit=1)
 
                     if ready:
                         issue = ready[0]
                         if issue["id"] in self._spawning_issues:
-                            await asyncio.sleep(1)  # Back off briefly while spawn completes
+                            await asyncio.sleep(1)
                             continue
                         try:
-                            # Try to claim and spawn worker
                             await self.spawn_worker(issue)
                         except Exception as e:
-                            # Check if the error suggests backend is unhealthy
-                            if self._is_backend_error(e):
-                                await self._enter_degraded_mode(str(e))
+                            logger.error(f"Failed to spawn worker for {issue['id']}: {e}")
                     else:
-                        # No ready work, wait before polling again
                         await asyncio.sleep(Config.POLL_INTERVAL)
                 else:
-                    # At capacity, wait
                     await asyncio.sleep(Config.POLL_INTERVAL)
 
-                # Check for stalled agents (only when healthy)
-                if self._backend_healthy:
-                    await self.check_stalled_agents()
+                await self.check_stalled_agents()
 
             except Exception as e:
-                # Check if this is a backend connectivity issue
-                if self._is_backend_error(e):
-                    await self._enter_degraded_mode(str(e))
-                else:
-                    logger.error(f"Error in main loop: {e}")
-                    await asyncio.sleep(Config.POLL_INTERVAL)
+                logger.error(f"Error in main loop: {e}")
+                await asyncio.sleep(Config.POLL_INTERVAL)
 
     async def spawn_worker(self, issue: Dict[str, str]):
         """
@@ -1584,70 +1543,6 @@ class Orchestrator:
         finally:
             logger.debug(f"Stall transition for {agent.name}: {stalled_transition.value}")
             await self._teardown_agent(agent, remove_worktree=True)
-
-    async def _check_backend_health(self) -> bool:
-        """
-        Check if the backend is healthy by listing sessions.
-
-        Returns:
-            True if backend is healthy, False otherwise
-        """
-        try:
-            await self.backend.list_sessions()
-            return True
-        except Exception:
-            return False
-
-    def _is_backend_error(self, exception: Exception) -> bool:
-        """
-        Determine if an exception indicates backend connectivity issues.
-
-        Args:
-            exception: Exception to examine
-
-        Returns:
-            True if this suggests the backend is unavailable
-        """
-        error_msg = str(exception).lower()
-
-        # Common connectivity issues
-        if any(
-            phrase in error_msg
-            for phrase in [
-                "connection refused",
-                "connection failed",
-                "timeout",
-                "server error",
-                "network",
-                "unreachable",
-                "500",
-                "502",
-                "503",
-                "504",
-            ]
-        ):
-            return True
-
-        # HTTP status code 5xx errors
-        if hasattr(exception, "status") and hasattr(exception.status, "__ge__"):
-            return exception.status >= 500
-
-        return False
-
-    async def _enter_degraded_mode(self, error_reason: str):
-        """
-        Enter degraded mode due to backend unavailability.
-
-        Args:
-            error_reason: Description of the error that caused degraded mode
-        """
-        if self._backend_healthy:  # Only log the first time we enter degraded mode
-            self._backend_healthy = False
-            self._degraded_since = datetime.now()
-            self._backoff_delay = 5  # Reset backoff
-
-            self.db.log_system_event("backend_degraded", {"reason": error_reason, "timestamp": self._degraded_since.isoformat()})
-            logger.warning(f"Entering degraded mode: {error_reason}")
 
     async def check_stalled_agents(self):
         """Check for stalled agents owned by THIS daemon and handle them.
