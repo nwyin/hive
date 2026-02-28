@@ -12,7 +12,7 @@ from hive.diag import format_report_text, gather_report
 def report(temp_db, tmp_path):
     """Gather a diagnostic report using the temp DB and a scratch project dir."""
     Config.load_global(project_root=tmp_path)
-    return gather_report(temp_db, str(tmp_path), "test-project")
+    return gather_report(temp_db, str(tmp_path))
 
 
 def test_gather_report_returns_all_sections(report):
@@ -39,7 +39,7 @@ def test_system_info_has_versions(report):
 
 def test_db_stats_row_counts(temp_db, tmp_path):
     temp_db.create_issue("Test issue", "desc", project="test-project")
-    report = gather_report(temp_db, str(tmp_path), "test-project")
+    report = gather_report(temp_db, str(tmp_path))
     db_stats = report["db_stats"]
     assert "row_counts" in db_stats
     assert db_stats["row_counts"]["issues"] >= 1
@@ -47,7 +47,7 @@ def test_db_stats_row_counts(temp_db, tmp_path):
 
 def test_recent_events_captured(temp_db, tmp_path):
     temp_db.create_issue("Event test", "desc", project="test-project")
-    report = gather_report(temp_db, str(tmp_path), "test-project")
+    report = gather_report(temp_db, str(tmp_path))
     events = report["recent_events"]
     assert isinstance(events, list)
     assert any(e["event_type"] == "created" for e in events)

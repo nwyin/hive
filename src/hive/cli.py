@@ -1191,7 +1191,7 @@ class HiveCLI:
         """Print a full diagnostic report."""
         from .diag import format_report_text, gather_report
 
-        report = gather_report(self.db, str(self.project_path), self.project_name)
+        report = gather_report(self.db, str(self.project_path))
         if json_mode:
             print(json.dumps(report, default=str))
         else:
@@ -1346,7 +1346,7 @@ class HiveCLI:
         if foreground:
             from .daemon import run_daemon_foreground
 
-            run_daemon_foreground(self.db, str(self.project_path), self.project_name)
+            run_daemon_foreground(self.db)
             return
 
         daemon = self._make_daemon()

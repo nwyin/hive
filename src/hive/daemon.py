@@ -292,15 +292,8 @@ class HiveDaemon:
                 print(f"Failed to read logs: {e2}")
 
 
-def run_daemon_foreground(db, project_path: str = "", project_name: str = ""):
-    """
-    Run the orchestrator in the foreground (for debugging or as daemon child).
-
-    Args:
-        db: Database instance (must be connected)
-        project_path: (unused, kept for backward compat)
-        project_name: (unused, kept for backward compat)
-    """
+def run_daemon_foreground(db):
+    """Run the orchestrator in the foreground (called by daemon child process)."""
     import asyncio
 
     from .orchestrator import Orchestrator

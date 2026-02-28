@@ -75,10 +75,10 @@ def _gather_config(project_path: Path | None) -> list[dict]:
     return Config.get_resolved_config(project_root=project_path)
 
 
-def _gather_daemon(project_name: str, project_path: str) -> dict:
+def _gather_daemon() -> dict:
     from .daemon import HiveDaemon
 
-    daemon = HiveDaemon(project_name, project_path)
+    daemon = HiveDaemon()
     return daemon.status()
 
 
@@ -122,8 +122,8 @@ def _gather_recent_events(db: Database, limit: int = 50) -> list[dict]:
     return db.get_recent_events(n=limit)
 
 
-def _gather_daemon_log_tail(project_name: str, lines: int = 50) -> list[str]:
-    log_file = HIVE_DIR / "logs" / f"orchestrator-{project_name}.log"
+def _gather_daemon_log_tail(lines: int = 50) -> list[str]:
+    log_file = HIVE_DIR / "logs" / "orchestrator.log"
     if not log_file.exists():
         return [f"(no log file: {log_file})"]
     try:
@@ -166,17 +166,17 @@ def _gather_backend_reachability() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def gather_report(db: Database, project_path: str, project_name: str) -> dict:
+def gather_report(db: Database, project_path: str) -> dict:
     """Collect all diagnostic sections into a single dict."""
     pp = Path(project_path)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "system": _section(_gather_system),
         "config": _section(_gather_config, pp),
-        "daemon": _section(_gather_daemon, project_name, project_path),
+        "daemon": _section(_gather_daemon),
         "db_stats": _section(_gather_db_stats, db),
         "recent_events": _section(_gather_recent_events, db),
-        "daemon_log_tail": _section(_gather_daemon_log_tail, project_name),
+        "daemon_log_tail": _section(_gather_daemon_log_tail),
         "backend_reachability": _section(_gather_backend_reachability),
     }
 
