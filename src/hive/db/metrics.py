@@ -8,6 +8,41 @@ logger = logging.getLogger(__name__)
 
 
 class MetricsMixin:
+    def _build_token_select(
+        self,
+        from_clause: str,
+        where_clause: str,
+        params: list,
+        select_extra: str = "",
+        extra_where: str = "",
+        group_by: str = "",
+    ) -> list:
+        """Execute a token aggregation query with common SELECT columns.
+
+        Args:
+            from_clause: The FROM ... clause (table + joins)
+            where_clause: The base WHERE conditions (joined with AND)
+            params: Query parameters for the base WHERE clause
+            select_extra: Optional extra SELECT expression (e.g. "e.issue_id")
+            extra_where: Optional extra AND condition appended to WHERE
+            group_by: Optional GROUP BY expression
+
+        Returns:
+            List of sqlite3.Row objects
+        """
+        extra_select = f"{select_extra}, " if select_extra else ""
+        extra_cond = f" AND {extra_where}" if extra_where else ""
+        group = f"\n            GROUP BY {group_by}" if group_by else ""
+        query = f"""
+            SELECT
+                {extra_select}COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
+                COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
+            {from_clause}
+            WHERE {where_clause} AND json_valid(e.detail){extra_cond}{group}
+        """
+        cursor = self.conn.execute(query, params)
+        return cursor.fetchall()
+
     def get_token_usage(
         self,
         issue_id: Optional[str] = None,
@@ -46,74 +81,54 @@ class MetricsMixin:
 
         where_clause = " AND ".join(conditions)
 
-        # Get totals using json_extract
-        totals_query = f"""
-            SELECT
-                COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as total_input,
-                COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as total_output
-            {from_clause}
-            WHERE {where_clause} AND json_valid(e.detail)
-        """
-
-        cursor = self.conn.execute(totals_query, params)
-        totals_row = cursor.fetchone()
-        total_input_tokens = totals_row["total_input"]
-        total_output_tokens = totals_row["total_output"]
+        # Totals
+        totals_rows = self._build_token_select(from_clause, where_clause, params)
+        totals_row = totals_rows[0]
+        total_input_tokens = totals_row["input_tokens"]
+        total_output_tokens = totals_row["output_tokens"]
         total_tokens = total_input_tokens + total_output_tokens
 
-        # Get breakdown by issue
+        # Breakdown by issue
         issue_breakdown = {}
-        if issue_id is None:  # Only aggregate by issue if not filtering by specific issue
-            issue_query = f"""
-                SELECT
-                    e.issue_id,
-                    COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
-                    COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
-                {from_clause}
-                WHERE {where_clause} AND e.issue_id IS NOT NULL AND json_valid(e.detail)
-                GROUP BY e.issue_id
-            """
-            cursor = self.conn.execute(issue_query, params)
-            for row in cursor.fetchall():
+        if issue_id is None:
+            rows = self._build_token_select(
+                from_clause,
+                where_clause,
+                params,
+                select_extra="e.issue_id",
+                extra_where="e.issue_id IS NOT NULL",
+                group_by="e.issue_id",
+            )
+            for row in rows:
                 issue_breakdown[row["issue_id"]] = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
         elif issue_id:
-            # If filtering by specific issue, include it in breakdown
             issue_breakdown[issue_id] = {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
 
-        # Get breakdown by agent
+        # Breakdown by agent
         agent_breakdown = {}
-        if agent_id is None:  # Only aggregate by agent if not filtering by specific agent
-            agent_query = f"""
-                SELECT
-                    e.agent_id,
-                    COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
-                    COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
-                {from_clause}
-                WHERE {where_clause} AND e.agent_id IS NOT NULL AND json_valid(e.detail)
-                GROUP BY e.agent_id
-            """
-            cursor = self.conn.execute(agent_query, params)
-            for row in cursor.fetchall():
+        if agent_id is None:
+            rows = self._build_token_select(
+                from_clause,
+                where_clause,
+                params,
+                select_extra="e.agent_id",
+                extra_where="e.agent_id IS NOT NULL",
+                group_by="e.agent_id",
+            )
+            for row in rows:
                 agent_breakdown[row["agent_id"]] = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
         elif agent_id:
-            # If filtering by specific agent, include it in breakdown
             agent_breakdown[agent_id] = {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
 
-        # Get breakdown by model
-        model_query = f"""
-            SELECT
-                COALESCE(json_extract(e.detail, '$.model'), 'unknown') as model,
-                COALESCE(SUM(json_extract(e.detail, '$.input_tokens')), 0) as input_tokens,
-                COALESCE(SUM(json_extract(e.detail, '$.output_tokens')), 0) as output_tokens
-            {from_clause}
-            WHERE {where_clause} AND json_valid(e.detail)
-            GROUP BY json_extract(e.detail, '$.model')
-        """
-
-        model_breakdown = {}
-        cursor = self.conn.execute(model_query, params)
-        for row in cursor.fetchall():
-            model_breakdown[row["model"]] = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
+        # Breakdown by model
+        rows = self._build_token_select(
+            from_clause,
+            where_clause,
+            params,
+            select_extra="COALESCE(json_extract(e.detail, '$.model'), 'unknown') as model",
+            group_by="json_extract(e.detail, '$.model')",
+        )
+        model_breakdown = {row["model"]: {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]} for row in rows}
 
         # Estimate cost (rough approximation, varies by model)
         # Using Claude Sonnet pricing as baseline: ~$15/1M input, ~$75/1M output
@@ -210,10 +225,46 @@ class MetricsMixin:
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        # Join with issues table to filter by project
-        from_clause = "FROM agent_runs ar"
+        # Build outer query conditions
+        outer_join = ""
+        conditions: list = []
+        params: list = []
+
         if project is not None:
-            from_clause += " JOIN issues i ON ar.issue_id = i.id"
+            outer_join = " JOIN issues i ON ar.issue_id = i.id"
+            if project:
+                conditions.append("i.project = ?")
+                params.append(project)
+        if model:
+            conditions.append("ar.model = ?")
+            params.append(model)
+        if tag:
+            conditions.append("ar.tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        if issue_type:
+            conditions.append("ar.issue_type = ?")
+            params.append(issue_type)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        # Build merge-health subquery conditions (same project/tag/issue_type filters, no model filter)
+        mh_join = ""
+        mh_conditions: list = ["e.event_type IN ('tests_passed', 'test_failure', 'rebase_conflict')"]
+        mh_params: list = []
+
+        if project is not None:
+            mh_join = " JOIN issues i2 ON ar2.issue_id = i2.id"
+            if project:
+                mh_conditions.append("i2.project = ?")
+                mh_params.append(project)
+        if tag:
+            mh_conditions.append("ar2.tags LIKE ?")
+            mh_params.append(f'%"{tag}"%')
+        if issue_type:
+            mh_conditions.append("ar2.issue_type = ?")
+            mh_params.append(issue_type)
+
+        mh_where = " AND ".join(mh_conditions)
 
         query = f"""
             SELECT
@@ -224,68 +275,39 @@ class MetricsMixin:
                 SUM(CASE WHEN ar.outcome = 'escalated' THEN 1 ELSE 0 END) as escalated_count,
                 ROUND(100.0 * SUM(CASE WHEN ar.outcome = 'done' THEN 1 ELSE 0 END) / COUNT(*), 1) as success_rate,
                 ROUND(AVG(ar.duration_s), 1) as avg_duration_s,
-                ROUND(AVG(ar.retry_count), 1) as avg_retries
-            {from_clause}
-            WHERE 1=1
-        """
-        params: list = []
-
-        if project:
-            query += " AND i.project = ?"
-            params.append(project)
-        if model:
-            query += " AND ar.model = ?"
-            params.append(model)
-        if tag:
-            query += " AND ar.tags LIKE ?"
-            params.append(f'%"{tag}"%')
-        if issue_type:
-            query += " AND ar.issue_type = ?"
-            params.append(issue_type)
-
-        query += " GROUP BY ar.model ORDER BY runs DESC"
-
-        cursor = self.conn.execute(query, params)
-        results = [dict(row) for row in cursor.fetchall()]
-
-        # Add merge health calculation per model
-        for result in results:
-            model_name = result["model"]
-            # Count merge-related events for issues run by this model
-            merge_from_clause = "FROM events e JOIN agent_runs ar ON e.issue_id = ar.issue_id"
-            if project is not None:
-                merge_from_clause += " JOIN issues i ON ar.issue_id = i.id"
-
-            merge_query = f"""
+                ROUND(AVG(ar.retry_count), 1) as avg_retries,
+                COALESCE(mh.tests_passed, 0) as tests_passed,
+                COALESCE(mh.test_failure, 0) as test_failure,
+                COALESCE(mh.rebase_conflict, 0) as rebase_conflict
+            FROM agent_runs ar{outer_join}
+            LEFT JOIN (
                 SELECT
+                    ar2.model,
                     SUM(CASE WHEN e.event_type = 'tests_passed' THEN 1 ELSE 0 END) as tests_passed,
                     SUM(CASE WHEN e.event_type = 'test_failure' THEN 1 ELSE 0 END) as test_failure,
                     SUM(CASE WHEN e.event_type = 'rebase_conflict' THEN 1 ELSE 0 END) as rebase_conflict
-                {merge_from_clause}
-                WHERE ar.model = ?
-            """
-            merge_params = [model_name]
-            if project:
-                merge_query += " AND i.project = ?"
-                merge_params.append(project)
-            if tag:
-                merge_query += " AND ar.tags LIKE ?"
-                merge_params.append(f'%"{tag}"%')
-            if issue_type:
-                merge_query += " AND ar.issue_type = ?"
-                merge_params.append(issue_type)
+                FROM events e
+                JOIN agent_runs ar2 ON e.issue_id = ar2.issue_id{mh_join}
+                WHERE {mh_where}
+                GROUP BY ar2.model
+            ) mh ON mh.model = ar.model
+            {where_clause}
+            GROUP BY ar.model
+            ORDER BY runs DESC
+        """
 
-            cursor = self.conn.execute(merge_query, merge_params)
-            merge_row = cursor.fetchone()
-            tests_passed = merge_row["tests_passed"] or 0
-            test_failure = merge_row["test_failure"] or 0
-            rebase_conflict = merge_row["rebase_conflict"] or 0
+        # Subquery params come first in SQL text, then outer WHERE params
+        cursor = self.conn.execute(query, mh_params + params)
+
+        results = []
+        for row in cursor.fetchall():
+            r = dict(row)
+            tests_passed = r.pop("tests_passed")
+            test_failure = r.pop("test_failure")
+            rebase_conflict = r.pop("rebase_conflict")
             total_merge_events = tests_passed + test_failure + rebase_conflict
-
-            if total_merge_events > 0:
-                result["merge_health"] = round(100.0 * tests_passed / total_merge_events, 1)
-            else:
-                result["merge_health"] = None
+            r["merge_health"] = round(100.0 * tests_passed / total_merge_events, 1) if total_merge_events > 0 else None
+            results.append(r)
 
         return results
 
