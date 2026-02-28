@@ -46,6 +46,21 @@ def get_prompt_version(template_name: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 
+def _parse_event_detail(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse the detail field of an event into a dict.
+
+    Returns the detail as-is if already a dict, attempts JSON parsing if a string,
+    and falls back to an empty dict on failure or absence.
+    """
+    detail = event.get("detail", {})
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except json.JSONDecodeError:
+            detail = {}
+    return detail if isinstance(detail, dict) else {}
+
+
 def build_retry_context(db, issue_id: str) -> Optional[str]:
     """
     Build retry context by querying previous failure events for an issue.
@@ -67,13 +82,7 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
 
     # Process incomplete events
     for event in incomplete_events:
-        detail = event.get("detail", {})
-        if isinstance(detail, str):
-            try:
-                detail = json.loads(detail)
-            except json.JSONDecodeError:
-                detail = {}
-
+        detail = _parse_event_detail(event)
         reason = detail.get("reason", "Unknown reason")
         summary = detail.get("summary", "")
 
@@ -84,25 +93,13 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
 
     # Process merge_rejected events
     for event in merge_rejected_events:
-        detail = event.get("detail", {})
-        if isinstance(detail, str):
-            try:
-                detail = json.loads(detail)
-            except json.JSONDecodeError:
-                detail = {}
-
+        detail = _parse_event_detail(event)
         summary = detail.get("summary", "Merge was rejected")
         failures.append(f"**Merge rejected**: {summary}")
 
     # Process stalled events (similar structure to incomplete)
     for event in stalled_events:
-        detail = event.get("detail", {})
-        if isinstance(detail, str):
-            try:
-                detail = json.loads(detail)
-            except json.JSONDecodeError:
-                detail = {}
-
+        detail = _parse_event_detail(event)
         reason = detail.get("reason", "Agent stalled")
         summary = detail.get("summary", "")
 
