@@ -2395,3 +2395,214 @@ async def test_two_projects_both_get_dispatched(temp_db, tmp_path):
     # Each worktree was created in the correct project repo
     assert any(str(repo_a) in wt for wt in dispatched_worktrees)
     assert any(str(repo_b) in wt for wt in dispatched_worktrees)
+
+
+# --- _try_escalate_issue helper tests ---
+
+
+def test_try_escalate_issue_success(temp_db, tmp_path):
+    """INV-1: Helper logs event_type with correct detail on successful transition."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    detail = {"reason": "test escalation", "extra": 42}
+    result = orch._try_escalate_issue(
+        issue_id,
+        agent_id,
+        to_status="escalated",
+        event_type="escalated",
+        detail=detail,
+        skip_event_type="escalate_skipped",
+    )
+
+    assert result is True
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "escalated"
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="escalated")
+    assert len(events) == 1
+    logged = json.loads(events[0]["detail"])
+    assert logged["reason"] == "test escalation"
+    assert logged["extra"] == 42
+
+
+def test_try_escalate_issue_skip_when_not_in_progress(temp_db, tmp_path):
+    """INV-2: Helper logs skip_event_type when transition fails."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    # Do NOT claim — issue stays open, transition from in_progress will fail
+
+    result = orch._try_escalate_issue(
+        issue_id,
+        agent_id,
+        to_status="escalated",
+        event_type="escalated",
+        detail={"reason": "should not appear"},
+        skip_event_type="escalate_skipped",
+    )
+
+    assert result is False
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "open"  # unchanged
+
+    # escalated event must NOT be logged
+    assert len(temp_db.get_events(issue_id=issue_id, event_type="escalated")) == 0
+    # skip event MUST be logged
+    skip_events = temp_db.get_events(issue_id=issue_id, event_type="escalate_skipped")
+    assert len(skip_events) == 1
+    skip_detail = json.loads(skip_events[0]["detail"])
+    assert "reason" in skip_detail
+
+
+def test_try_escalate_issue_no_skip_event_when_not_provided(temp_db, tmp_path):
+    """Helper silently returns False (no skip event) when skip_event_type is None."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+
+    result = orch._try_escalate_issue(
+        issue_id,
+        agent_id,
+        to_status="escalated",
+        event_type="escalated",
+        detail={"reason": "x"},
+    )
+
+    assert result is False
+    # escalated event must NOT be logged; only the "created" system event should exist
+    assert len(temp_db.get_events(issue_id=issue_id, event_type="escalated")) == 0
+
+
+def test_try_escalate_issue_open_transition(temp_db, tmp_path):
+    """INV-3: Helper with to_status='open' releases issue (not escalated)."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    result = orch._try_escalate_issue(
+        issue_id,
+        agent_id,
+        to_status="open",
+        event_type="retry",
+        detail={"retry_count": 1, "reason": "test", "previous_agent": "old"},
+        skip_event_type="retry_skipped",
+        skip_reason="issue not releasable",
+    )
+
+    assert result is True
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "open"  # released, not escalated
+
+    events = temp_db.get_events(issue_id=issue_id, event_type="retry")
+    assert len(events) == 1
+
+
+def test_try_escalate_issue_skip_reason_override(temp_db, tmp_path):
+    """Custom skip_reason is logged verbatim instead of auto-generated reason."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    # Not claimed — transition will fail
+
+    orch._try_escalate_issue(
+        issue_id,
+        agent_id,
+        to_status="open",
+        event_type="retry",
+        detail={"retry_count": 1},
+        skip_event_type="retry_skipped",
+        skip_reason="issue not releasable",
+    )
+
+    skip_events = temp_db.get_events(issue_id=issue_id, event_type="retry_skipped")
+    assert len(skip_events) == 1
+    skip_detail = json.loads(skip_events[0]["detail"])
+    assert skip_detail["reason"] == "issue not releasable"
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_failure_retry_skip_logged(temp_db, tmp_path):
+    """INV-2: retry_skipped logged when issue is not in_progress during retry."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    # Claim then cancel — now issue is not in_progress for the failure handler
+    temp_db.claim_issue(issue_id, agent_id)
+    # Directly set status to canceled so the CAS in _try_escalate_issue fails
+    temp_db.conn.execute("UPDATE issues SET status = 'canceled' WHERE id = ?", (issue_id,))
+    temp_db.conn.commit()
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+
+    original_threshold = Config.ANOMALY_FAILURE_THRESHOLD
+    Config.ANOMALY_FAILURE_THRESHOLD = 0  # disable anomaly path
+    try:
+        await orch._handle_agent_failure(agent, CompletionResult(success=False, reason="fail", summary="x"))
+    finally:
+        Config.ANOMALY_FAILURE_THRESHOLD = original_threshold
+
+    skip_events = temp_db.get_events(issue_id=issue_id, event_type="retry_skipped")
+    assert len(skip_events) == 1
+    skip_detail = json.loads(skip_events[0]["detail"])
+    assert skip_detail["reason"] == "issue not releasable"
+
+
+@pytest.mark.asyncio
+async def test_handle_agent_failure_escalate_skip_logged(temp_db, tmp_path):
+    """INV-2: escalate_skipped logged when issue not in_progress during final escalate."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(db=temp_db, backend=mock_backend)
+
+    issue_id = temp_db.create_issue("Task", "Body")
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    # Pre-populate retries and switches to hit the final escalation path
+    for i in range(Config.MAX_RETRIES):
+        temp_db.log_event(issue_id, agent_id, "retry", {"attempt": i + 1})
+    for i in range(Config.MAX_AGENT_SWITCHES):
+        temp_db.log_event(issue_id, agent_id, "agent_switch", {"switch": i + 1})
+
+    # Cancel the issue so the CAS fails
+    temp_db.conn.execute("UPDATE issues SET status = 'canceled' WHERE id = ?", (issue_id,))
+    temp_db.conn.commit()
+
+    agent = AgentIdentity(
+        agent_id=agent_id,
+        name="test-agent",
+        issue_id=issue_id,
+        worktree=str(tmp_path),
+        session_id="session-123",
+    )
+
+    original_threshold = Config.ANOMALY_FAILURE_THRESHOLD
+    Config.ANOMALY_FAILURE_THRESHOLD = 0
+    try:
+        await orch._handle_agent_failure(agent, CompletionResult(success=False, reason="fail", summary="x"))
+    finally:
+        Config.ANOMALY_FAILURE_THRESHOLD = original_threshold
+
+    skip_events = temp_db.get_events(issue_id=issue_id, event_type="escalate_skipped")
+    assert len(skip_events) == 1

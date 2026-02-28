@@ -609,6 +609,37 @@ class OrchestratorCore:
             expected_assignee=expected_assignee,
         )
 
+    def _try_escalate_issue(
+        self,
+        issue_id: str,
+        agent_id: str,
+        *,
+        to_status: str,
+        event_type: str,
+        detail: dict,
+        skip_event_type: str | None = None,
+        skip_reason: str | None = None,
+    ) -> bool:
+        """Attempt issue status transition and log the result.
+
+        Returns True if the transition succeeded, False if skipped.
+        On skip, logs a {skip_event_type} event (if provided).
+        On success, logs an {event_type} event with the given detail.
+        """
+        transitioned = self.db.try_transition_issue_status(
+            issue_id,
+            from_status="in_progress",
+            to_status=to_status,
+            expected_assignee=agent_id,
+        )
+        if not transitioned:
+            if skip_event_type:
+                reason = skip_reason if skip_reason is not None else f"issue not {to_status}able"
+                self.db.log_event(issue_id, agent_id, skip_event_type, {"reason": reason})
+            return False
+        self.db.log_event(issue_id, agent_id, event_type, detail)
+        return True
+
     def _try_claim_agent_for_handling(self, agent: AgentIdentity, *, handler_name: str) -> bool:
         """Claim agent handling ownership via DB CAS fence.
 

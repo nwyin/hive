@@ -356,83 +356,66 @@ class CompletionMixin:
         if decision == EscalationDecision.ANOMALY_ESCALATE:
             recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
             logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
-            escalated = self.db.try_transition_issue_status(
-                issue_id,
-                from_status="in_progress",
-                to_status="escalated",
-                expected_assignee=agent.agent_id,
-            )
-            if not escalated:
-                self.db.log_event(
-                    issue_id,
-                    agent.agent_id,
-                    "anomaly_escalate_skipped",
-                    {"reason": "issue not escalatable"},
-                )
-                return
-            self.db.log_event(
+            self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
-                "escalated",
-                {
+                to_status="escalated",
+                event_type="escalated",
+                detail={
                     "reason": "Anomaly detection: rapid repeated failures",
                     "recent_failures": recent_failures,
                     "window_minutes": Config.ANOMALY_WINDOW_MINUTES,
                     "final_failure_reason": result.reason,
                 },
+                skip_event_type="anomaly_escalate_skipped",
             )
             return
 
         if decision == EscalationDecision.RETRY:
             retry_count = self.db.count_events_by_type(issue_id, "retry")
-            released = self._release_issue(issue_id, expected_assignee=agent.agent_id)
-            if not released:
-                self.db.log_event(issue_id, agent.agent_id, "retry_skipped", {"reason": "issue not releasable"})
-                return
-            self.db.log_event(
+            if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
-                "retry",
-                {"retry_count": retry_count + 1, "reason": result.reason, "previous_agent": agent.name},
-            )
+                to_status="open",
+                event_type="retry",
+                detail={"retry_count": retry_count + 1, "reason": result.reason, "previous_agent": agent.name},
+                skip_event_type="retry_skipped",
+                skip_reason="issue not releasable",
+            ):
+                return
             logger.info(f"Retrying issue {issue_id} (attempt {retry_count + 1}/{Config.MAX_RETRIES})")
             return
 
         if decision == EscalationDecision.AGENT_SWITCH:
             agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
-            released = self._release_issue(issue_id, expected_assignee=agent.agent_id)
-            if not released:
-                self.db.log_event(issue_id, agent.agent_id, "agent_switch_skipped", {"reason": "issue not releasable"})
-                return
-            self.db.log_event(
+            if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
-                "agent_switch",
-                {"switch_count": agent_switch_count + 1, "reason": result.reason, "previous_agent": agent.name, "model": model},
-            )
+                to_status="open",
+                event_type="agent_switch",
+                detail={"switch_count": agent_switch_count + 1, "reason": result.reason, "previous_agent": agent.name, "model": model},
+                skip_event_type="agent_switch_skipped",
+                skip_reason="issue not releasable",
+            ):
+                return
             logger.info(f"Switching agent for issue {issue_id} (switch {agent_switch_count + 1}/{Config.MAX_AGENT_SWITCHES})")
             return
 
         retry_count = self.db.count_events_by_type(issue_id, "retry")
         agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
-        escalated = self.db.try_transition_issue_status(
-            issue_id,
-            from_status="in_progress",
-            to_status="escalated",
-            expected_assignee=agent.agent_id,
-        )
-        if not escalated:
-            self.db.log_event(issue_id, agent.agent_id, "escalate_skipped", {"reason": "issue not escalatable"})
-            return
-        self.db.log_event(
+        if self._try_escalate_issue(
             issue_id,
             agent.agent_id,
-            "escalated",
-            {
+            to_status="escalated",
+            event_type="escalated",
+            detail={
                 "reason": "Exhausted all retry and agent switch attempts",
                 "final_failure_reason": result.reason,
                 "total_retries": retry_count,
                 "total_agent_switches": agent_switch_count,
             },
-        )
-        logger.warning(f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches")
+            skip_event_type="escalate_skipped",
+        ):
+            logger.warning(
+                f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches"
+            )
