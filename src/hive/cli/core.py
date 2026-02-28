@@ -99,6 +99,13 @@ class HiveCLI(QueenMixin):
             issue_dict["tags"] = []
         return issue_dict
 
+    def _require_issue(self, issue_id: str) -> dict:
+        """Fetch issue by ID or raise ValueError if not found."""
+        issue = self.db.get_issue(issue_id)
+        if not issue:
+            raise ValueError(f"Issue not found: {issue_id}")
+        return issue
+
     # Map user-facing sort names to SQL column names
     _SORT_COLUMNS = {
         "priority": "priority",
@@ -196,9 +203,7 @@ class HiveCLI(QueenMixin):
     @cli_command(formatter=_fmt_show)
     def show(self, issue_id: str):
         """Show issue details and events."""
-        issue = self.db.get_issue(issue_id)
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        issue = self._require_issue(issue_id)
 
         # Get dependencies
         cursor = self.db.conn.execute(
@@ -250,9 +255,7 @@ class HiveCLI(QueenMixin):
         tags: Optional[str] = None,
     ):
         """Update an issue."""
-        issue = self.db.get_issue(issue_id)
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        self._require_issue(issue_id)
 
         tag_list = [t.strip() for t in tags.split(",")] if tags is not None else None
 
@@ -313,9 +316,7 @@ class HiveCLI(QueenMixin):
     @cli_command(formatter=_fmt_message)
     def cancel(self, issue_id: str, reason: str = ""):
         """Cancel an issue."""
-        issue = self.db.get_issue(issue_id)
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        self._require_issue(issue_id)
 
         self.db.update_issue_status(issue_id, "canceled")
         self.db.log_event(issue_id, None, "canceled", {"reason": reason})
@@ -330,9 +331,7 @@ class HiveCLI(QueenMixin):
     @cli_command(formatter=_fmt_message)
     def finalize(self, issue_id: str, resolution: str = ""):
         """Finalize/close an issue."""
-        issue = self.db.get_issue(issue_id)
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        self._require_issue(issue_id)
 
         self.db.update_issue_status(issue_id, "finalized")
         # If this issue was sitting in the merge queue (manual review mode),
@@ -447,9 +446,7 @@ class HiveCLI(QueenMixin):
     @cli_command(formatter=_fmt_message)
     def retry(self, issue_id: str, notes: str = ""):
         """Retry an escalated/blocked issue."""
-        issue = self.db.get_issue(issue_id)
-        if not issue:
-            raise ValueError(f"Issue not found: {issue_id}")
+        self._require_issue(issue_id)
 
         # Reset to open and unassign
         self.db.conn.execute(
