@@ -14,17 +14,23 @@ from ..git import GitWorktreeError, get_worktree_dirty_status
 from .formatters import (
     _fmt_add_note,
     _fmt_create,
+    _fmt_debug,
     _fmt_epic,
     _fmt_list_agents,
     _fmt_list_issues,
+    _fmt_logs,
     _fmt_mail_ack,
     _fmt_mail_inbox,
     _fmt_mail_read,
+    _fmt_merges,
     _fmt_message,
+    _fmt_metrics,
     _fmt_note_with_targets,
     _fmt_review,
     _fmt_show,
+    _fmt_start,
     _fmt_status,
+    _fmt_stop,
 )
 from .queen import QueenMixin
 
@@ -562,7 +568,8 @@ class HiveCLI(QueenMixin):
             "message": f"Removed dependency: {issue_id} no longer depends on {depends_on}",
         }
 
-    def merges(self, status: Optional[str] = None, *, json_mode: bool = False):
+    @cli_command(formatter=_fmt_merges)
+    def merges(self, status: Optional[str] = None):
         """List merge queue entries."""
         query = "SELECT mq.*, i.title as issue_title, a.name as agent_name FROM merge_queue mq JOIN issues i ON mq.issue_id = i.id LEFT JOIN agents a ON mq.agent_id = a.id WHERE i.project = ?"
         params = [self.project_name]
@@ -580,20 +587,7 @@ class HiveCLI(QueenMixin):
             s = e.get("status") or "unknown"
             status_counts[s] = status_counts.get(s, 0) + 1
 
-        if json_mode:
-            print(json.dumps({"count": len(entries), "status_counts": status_counts, "merges": entries}, indent=2, default=str))
-        else:
-            if not entries:
-                print("No merge queue entries found.")
-                return
-            print(f"\n{'ID':<6} {'Status':<10} {'Issue':<14} {'Title':<30} {'Branch':<25} {'Enqueued'}")
-            print("-" * 100)
-            for e in entries:
-                title = (e.get("issue_title") or "")[:30]
-                branch = (e.get("branch_name") or "")[:25]
-                print(f"{e['id']:<6} {e['status']:<10} {e['issue_id']:<14} {title:<30} {branch:<25} {e.get('enqueued_at', '')}")
-            summary_parts = [f"{count} {s}" for s, count in status_counts.items() if count > 0]
-            print(f"\n{', '.join(summary_parts)}")
+        return {"count": len(entries), "status_counts": status_counts, "merges": entries}
 
     @cli_command(formatter=_fmt_status)
     def status(self):
@@ -894,6 +888,7 @@ class HiveCLI(QueenMixin):
                 pass  # keep as-is
         return out
 
+    @cli_command(formatter=_fmt_logs)
     def logs(
         self,
         follow: bool = False,
@@ -902,273 +897,119 @@ class HiveCLI(QueenMixin):
         agent_id: Optional[str] = None,
         event_type: Optional[str] = None,
         daemon: bool = False,
-        *,
-        json_mode: bool = False,
     ):
         """Show event log, optionally tailing for new events."""
-        # If --daemon flag is set, show daemon logs instead of event logs
+        # --daemon flag: delegate to daemon log handler (handles output itself)
         if daemon:
             daemon_obj = self._make_daemon()
             daemon_obj.logs(lines=n, follow=follow)
-            return
+            return None
 
         recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
 
-        if json_mode:
-            if follow:
-                # Streaming JSON: one object per line (JSONL) so callers
-                # can consume incrementally.
-                for event in recent:
-                    print(json.dumps(self._event_to_json(event), default=str))
+        # Follow/streaming mode: handle output inline, return None to skip decorator output
+        if follow:
+            for event in recent:
+                print(self._format_event(event))
+            cursor = recent[-1]["id"] if recent else self.db.get_max_event_id()
+            try:
+                while True:
+                    time.sleep(0.5)
+                    new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
+                    for event in new_events:
+                        print(self._format_event(event))
+                        cursor = event["id"]
+            except KeyboardInterrupt:
+                pass
+            return None
 
-                cursor = recent[-1]["id"] if recent else self.db.get_max_event_id()
-                try:
-                    while True:
-                        time.sleep(0.5)
-                        new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
-                        for event in new_events:
-                            print(json.dumps(self._event_to_json(event), default=str))
-                            cursor = event["id"]
-                except KeyboardInterrupt:
-                    pass
-            else:
-                events = [self._event_to_json(e) for e in recent]
-                print(json.dumps(events, default=str))
-            return
+        # Non-follow: return events for decorator to format/serialize
+        return {"events": [dict(e) for e in recent]}
 
-        for event in recent:
-            print(self._format_event(event))
-
-        if not follow:
-            return
-
-        cursor = recent[-1]["id"] if recent else self.db.get_max_event_id()
-
-        try:
-            while True:
-                time.sleep(0.5)
-                new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
-                for event in new_events:
-                    print(self._format_event(event))
-                    cursor = event["id"]
-        except KeyboardInterrupt:
-            pass
-
-    def debug(self, *, json_mode: bool = False):
+    @cli_command(formatter=_fmt_debug)
+    def debug(self):
         """Print a full diagnostic report."""
-        from ..diag import format_report_text, gather_report
+        from ..diag import gather_report
 
-        report = gather_report(self.db, str(self.project_path))
-        if json_mode:
-            print(json.dumps(report, default=str))
-        else:
-            print(format_report_text(report))
+        return gather_report(self.db, str(self.project_path))
 
-    def metrics(self, model=None, tag=None, issue_type=None, group_by=None, show_costs=False, issue_id=None, agent_id=None, json_mode=False):
+    @cli_command(formatter=_fmt_metrics)
+    def metrics(self, model=None, tag=None, issue_type=None, group_by=None, show_costs=False, issue_id=None, agent_id=None):
         """Show aggregated agent run metrics."""
         # If --group-by is specified, use the stats-style output
         if group_by:
             results = self.db.get_model_performance(model=model, tag=tag, group_by=group_by)
-            if json_mode:
-                print(json.dumps(results, default=str))
-                return
-
-            if not results:
-                print("No performance data yet.")
-                return
-
             group_label = "Tag" if group_by == "tag" else "Type"
             group_key = "tag" if group_by == "tag" else "type"
-            print(f"{'Model':<35} {group_label:<15} {'Issues':>6} {'OK':>4} {'Esc':>4} {'Retries':>7} {'Avg Min':>8}")
-            print("-" * 85)
-            for r in results:
-                model_name = (r.get("model") or "unknown")[:34]
-                group_val = str(r.get(group_key, ""))[:14]
-                print(
-                    f"{model_name:<35} {group_val:<15} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('escalations', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
-                )
-            return
+            return {"view": "group_by", "results": results, "group_label": group_label, "group_key": group_key}
 
         # If --costs is specified, show token usage data
         if show_costs:
             usage = self.db.get_token_usage(issue_id=issue_id, agent_id=agent_id, project=self.project_name)
-
-            if json_mode:
-                print(json.dumps(usage, indent=2))
-                return
-
-            print("\n=== Token Usage & Costs ===")
-            if issue_id:
-                print(f"Issue: {issue_id}")
-            elif agent_id:
-                print(f"Agent: {agent_id}")
-            else:
-                print("Project-wide")
-
-            print(f"\nTotal tokens: {usage['total_tokens']:,}")
-            print(f"  Input tokens: {usage['total_input_tokens']:,}")
-            print(f"  Output tokens: {usage['total_output_tokens']:,}")
-            print(f"Estimated cost: ${usage['estimated_cost_usd']:.4f}")
-
-            # Show breakdowns if not filtered
-            if not issue_id and not agent_id:
-                issue_breakdown = usage.get("issue_breakdown", {})
-                if issue_breakdown:
-                    print("\n=== Top Issues by Token Usage ===")
-                    sorted_issues = sorted(
-                        issue_breakdown.items(),
-                        key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
-                        reverse=True,
-                    )
-                    for issue, tokens in sorted_issues[:10]:  # Top 10
-                        total = tokens["input_tokens"] + tokens["output_tokens"]
-                        print(f"{issue}: {total:,} tokens")
-
-                agent_breakdown = usage.get("agent_breakdown", {})
-                if agent_breakdown:
-                    print("\n=== Top Agents by Token Usage ===")
-                    sorted_agents = sorted(
-                        agent_breakdown.items(),
-                        key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"],
-                        reverse=True,
-                    )
-                    for agent, tokens in sorted_agents[:10]:  # Top 10
-                        total = tokens["input_tokens"] + tokens["output_tokens"]
-                        print(f"{agent}: {total:,} tokens")
-
-                model_breakdown = usage.get("model_breakdown", {})
-                if model_breakdown:
-                    print("\n=== Usage by Model ===")
-                    for model, tokens in model_breakdown.items():
-                        total = tokens["input_tokens"] + tokens["output_tokens"]
-                        print(f"{model}: {total:,} tokens")
-            return
+            return {"view": "costs", "issue_id": issue_id, "agent_id": agent_id, **usage}
 
         # Default metrics output
         results = self.db.get_metrics(model=model, tag=tag, issue_type=issue_type, project=self.project_name)
 
-        if json_mode:
-            # Calculate summary stats for JSON output
-            total_runs = sum(r["runs"] for r in results)
-            total_escalations = sum(r["escalated_count"] for r in results)
-            escalation_rate = round(100.0 * total_escalations / total_runs, 1) if total_runs > 0 else 0
-
-            # Calculate mean time to resolution (weighted average by run count)
-            total_duration_weighted = sum(r["avg_duration_s"] * r["runs"] for r in results if r["avg_duration_s"])
-            mean_duration_s = total_duration_weighted / total_runs if total_runs > 0 else 0
-            mean_duration_m = round(mean_duration_s / 60, 1)
-
-            output = {
-                "metrics": results,
-                "summary": {
-                    "escalation_rate": escalation_rate,
-                    "mean_time_to_resolution_minutes": mean_duration_m,
-                    "total_runs": total_runs,
-                },
-            }
-            print(json.dumps(output, default=str))
-            return
-
-        if not results:
-            print("No metrics data yet.")
-            return
-
-        # Format duration in minutes for display
-        for r in results:
-            if r["avg_duration_s"]:
-                r["avg_duration_m"] = round(r["avg_duration_s"] / 60, 1)
-            else:
-                r["avg_duration_m"] = 0
-
-        print(f"{'Model':<35} {'Runs':>5} {'Success%':>9} {'Avg Duration':>12} {'Avg Retries':>12} {'Merge Health':>12}")
-        print("-" * 95)
-        for r in results:
-            model_name = (r.get("model") or "unknown")[:34]
-            success_pct = f"{r.get('success_rate', 0):.1f}%"
-            avg_dur = f"{r.get('avg_duration_m', 0):.1f}m"
-            avg_ret = f"{r.get('avg_retries', 0):.1f}"
-            merge_health = f"{r.get('merge_health', 0):.1f}%" if r.get("merge_health") is not None else "N/A"
-            print(f"{model_name:<35} {r.get('runs', 0):>5} {success_pct:>9} {avg_dur:>12} {avg_ret:>12} {merge_health:>12}")
-
-        # Summary line
         total_runs = sum(r["runs"] for r in results)
         total_escalations = sum(r["escalated_count"] for r in results)
         escalation_rate = round(100.0 * total_escalations / total_runs, 1) if total_runs > 0 else 0
-
-        # Calculate mean time to resolution (weighted average by run count)
         total_duration_weighted = sum(r["avg_duration_s"] * r["runs"] for r in results if r["avg_duration_s"])
         mean_duration_s = total_duration_weighted / total_runs if total_runs > 0 else 0
         mean_duration_m = round(mean_duration_s / 60, 1)
 
-        print()
-        print(f"Escalation rate: {escalation_rate}% | Mean time to resolution: {mean_duration_m}m")
+        return {
+            "view": "default",
+            "metrics": results,
+            "summary": {
+                "escalation_rate": escalation_rate,
+                "mean_time_to_resolution_minutes": mean_duration_m,
+                "total_runs": total_runs,
+            },
+        }
 
     # ── Daemon management ────────────────────────────────────────────
 
     def _make_daemon(self) -> HiveDaemon:
         return HiveDaemon(db_path=self.db.db_path)
 
-    def start(self, foreground: bool = False, *, json_mode: bool = False):
+    @cli_command(formatter=_fmt_start)
+    def start(self, foreground: bool = False):
         """Start the hive daemon."""
         if foreground:
             from ..daemon import run_daemon_foreground
 
             run_daemon_foreground(self.db)
-            return
+            return None
 
         daemon = self._make_daemon()
         status = daemon.status()
         if status["running"]:
-            if json_mode:
-                print(json.dumps({"status": "already_running", "pid": status["pid"]}))
-            else:
-                print(f"Hive daemon already running (PID {status['pid']})")
-            return
+            return {"status": "already_running", "pid": status["pid"]}
 
         started = daemon.start()
         if started:
             ds = daemon.status()
-            if json_mode:
-                print(json.dumps({"status": "started", "pid": ds["pid"], "log_file": ds.get("log_file")}))
-            else:
-                print(f"Hive daemon started (PID {ds['pid']})")
-                print(f"  Log: {ds.get('log_file')}")
-        else:
-            log_tail = ""
-            try:
-                if daemon.log_file.exists():
-                    lines = daemon.log_file.read_text().strip().splitlines()
-                    log_tail = "\n".join(lines[-10:])
-            except OSError:
-                pass
-            if json_mode:
-                print(json.dumps({"error": "Failed to start daemon", "log_file": str(daemon.log_file), "log_tail": log_tail}))
-                sys.exit(1)
-            else:
-                print(f"Failed to start daemon. Log: {daemon.log_file}")
-                if log_tail:
-                    print(f"\nLast output:\n{log_tail}")
+            return {"status": "started", "pid": ds["pid"], "log_file": ds.get("log_file")}
 
-    def stop(self, *, json_mode: bool = False):
+        log_tail = ""
+        try:
+            if daemon.log_file.exists():
+                lines = daemon.log_file.read_text().strip().splitlines()
+                log_tail = "\n".join(lines[-10:])
+        except OSError:
+            pass
+        raise RuntimeError(f"Failed to start daemon. Log: {daemon.log_file}\n{log_tail}".rstrip())
+
+    @cli_command(formatter=_fmt_stop)
+    def stop(self):
         """Stop the hive daemon."""
         daemon = self._make_daemon()
         status = daemon.status()
         if not status["running"]:
-            if json_mode:
-                print(json.dumps({"status": "not_running"}))
-            else:
-                print("Hive daemon is not running.")
-            return
+            return {"status": "not_running"}
         pid = status["pid"]
         stopped = daemon.stop()
         if stopped:
-            if json_mode:
-                print(json.dumps({"status": "stopped"}))
-            else:
-                print(f"Hive daemon stopped (was PID {pid})")
-        else:
-            if json_mode:
-                print(json.dumps({"error": f"Failed to stop daemon (PID {pid})"}))
-                sys.exit(1)
-            else:
-                print(f"Failed to stop daemon (PID {pid})")
+            return {"status": "stopped", "pid": pid}
+        raise RuntimeError(f"Failed to stop daemon (PID {pid})")

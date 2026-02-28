@@ -238,3 +238,137 @@ def _fmt_mail_ack(result):
     if result.get("updated"):
         return f"Delivery #{result['delivery_id']} acked."
     return f"Delivery #{result['delivery_id']} unchanged (not must_read, already acked, or not found)."
+
+
+def _fmt_merges(result):
+    entries = result.get("merges", [])
+    status_counts = result.get("status_counts", {})
+    if not entries:
+        return "No merge queue entries found."
+    lines = [f"\n{'ID':<6} {'Status':<10} {'Issue':<14} {'Title':<30} {'Branch':<25} {'Enqueued'}"]
+    lines.append("-" * 100)
+    for e in entries:
+        title = (e.get("issue_title") or "")[:30]
+        branch = (e.get("branch_name") or "")[:25]
+        lines.append(f"{e['id']:<6} {e['status']:<10} {e['issue_id']:<14} {title:<30} {branch:<25} {e.get('enqueued_at', '')}")
+    summary_parts = [f"{count} {s}" for s, count in status_counts.items() if count > 0]
+    lines.append(f"\n{', '.join(summary_parts)}")
+    return "\n".join(lines)
+
+
+def _fmt_debug(result):
+    from ..diag import format_report_text
+
+    return format_report_text(result)
+
+
+def _fmt_metrics(result):
+    view = result.get("view")
+    if view == "group_by":
+        results = result.get("results", [])
+        if not results:
+            return "No performance data yet."
+        group_label = result.get("group_label", "Group")
+        group_key = result.get("group_key", "group")
+        lines = [f"{'Model':<35} {group_label:<15} {'Issues':>6} {'OK':>4} {'Esc':>4} {'Retries':>7} {'Avg Min':>8}"]
+        lines.append("-" * 85)
+        for r in results:
+            model_name = (r.get("model") or "unknown")[:34]
+            group_val = str(r.get(group_key, ""))[:14]
+            lines.append(
+                f"{model_name:<35} {group_val:<15} {r.get('issue_count', 0):>6} {r.get('successes', 0):>4} {r.get('escalations', 0):>4} {r.get('total_retries', 0):>7} {r.get('avg_duration_minutes', 0):>8}"
+            )
+        return "\n".join(lines)
+    elif view == "costs":
+        lines = ["\n=== Token Usage & Costs ==="]
+        if result.get("issue_id"):
+            lines.append(f"Issue: {result['issue_id']}")
+        elif result.get("agent_id"):
+            lines.append(f"Agent: {result['agent_id']}")
+        else:
+            lines.append("Project-wide")
+        lines.append(f"\nTotal tokens: {result['total_tokens']:,}")
+        lines.append(f"  Input tokens: {result['total_input_tokens']:,}")
+        lines.append(f"  Output tokens: {result['total_output_tokens']:,}")
+        lines.append(f"Estimated cost: ${result['estimated_cost_usd']:.4f}")
+        if not result.get("issue_id") and not result.get("agent_id"):
+            issue_breakdown = result.get("issue_breakdown", {})
+            if issue_breakdown:
+                lines.append("\n=== Top Issues by Token Usage ===")
+                sorted_issues = sorted(issue_breakdown.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True)
+                for issue, tokens in sorted_issues[:10]:
+                    total = tokens["input_tokens"] + tokens["output_tokens"]
+                    lines.append(f"{issue}: {total:,} tokens")
+            agent_breakdown = result.get("agent_breakdown", {})
+            if agent_breakdown:
+                lines.append("\n=== Top Agents by Token Usage ===")
+                sorted_agents = sorted(agent_breakdown.items(), key=lambda x: x[1]["input_tokens"] + x[1]["output_tokens"], reverse=True)
+                for agent, tokens in sorted_agents[:10]:
+                    total = tokens["input_tokens"] + tokens["output_tokens"]
+                    lines.append(f"{agent}: {total:,} tokens")
+            model_breakdown = result.get("model_breakdown", {})
+            if model_breakdown:
+                lines.append("\n=== Usage by Model ===")
+                for model_name, tokens in model_breakdown.items():
+                    total = tokens["input_tokens"] + tokens["output_tokens"]
+                    lines.append(f"{model_name}: {total:,} tokens")
+        return "\n".join(lines)
+    else:  # default view
+        results = result.get("metrics", [])
+        summary = result.get("summary", {})
+        if not results:
+            return "No metrics data yet."
+        for r in results:
+            r["avg_duration_m"] = round(r["avg_duration_s"] / 60, 1) if r["avg_duration_s"] else 0
+        lines = [f"{'Model':<35} {'Runs':>5} {'Success%':>9} {'Avg Duration':>12} {'Avg Retries':>12} {'Merge Health':>12}"]
+        lines.append("-" * 95)
+        for r in results:
+            model_name = (r.get("model") or "unknown")[:34]
+            success_pct = f"{r.get('success_rate', 0):.1f}%"
+            avg_dur = f"{r.get('avg_duration_m', 0):.1f}m"
+            avg_ret = f"{r.get('avg_retries', 0):.1f}"
+            merge_health = f"{r.get('merge_health', 0):.1f}%" if r.get("merge_health") is not None else "N/A"
+            lines.append(f"{model_name:<35} {r.get('runs', 0):>5} {success_pct:>9} {avg_dur:>12} {avg_ret:>12} {merge_health:>12}")
+        lines.append("")
+        lines.append(
+            f"Escalation rate: {summary.get('escalation_rate', 0)}% | Mean time to resolution: {summary.get('mean_time_to_resolution_minutes', 0)}m"
+        )
+        return "\n".join(lines)
+
+
+def _fmt_logs(result):
+    events = result.get("events", [])
+    lines = []
+    for event in events:
+        ts = event["created_at"]
+        etype = event["event_type"]
+        issue = event["issue_id"] or "-"
+        agent = event["agent_id"] or "-"
+        line = f"{ts}  {etype:<24s}  issue={issue:<10s}  agent={agent:<10s}"
+        if event.get("detail"):
+            try:
+                detail = json.loads(event["detail"]) if isinstance(event["detail"], str) else event["detail"]
+                parts = [f"{k}={v}" for k, v in detail.items()]
+                line += "  " + " ".join(parts)
+            except (json.JSONDecodeError, TypeError):
+                line += f"  {event['detail']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _fmt_start(result):
+    status = result.get("status")
+    if status == "already_running":
+        return f"Hive daemon already running (PID {result['pid']})"
+    elif status == "started":
+        return f"Hive daemon started (PID {result['pid']})\n  Log: {result.get('log_file')}"
+    return None
+
+
+def _fmt_stop(result):
+    status = result.get("status")
+    if status == "not_running":
+        return "Hive daemon is not running."
+    elif status == "stopped":
+        return f"Hive daemon stopped (was PID {result['pid']})"
+    return None
