@@ -43,13 +43,15 @@ def cli_command(*, formatter):
     is active) or the provided *formatter* function (for human-readable text).
 
     ``json_mode`` is popped from kwargs by the decorator so the wrapped
-    method never sees it.
+    method never sees it.  Methods that handle output inline (e.g.
+    streaming follow mode) can read ``self._json_mode`` instead.
     """
 
     def decorator(fn):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
             json_mode = kwargs.pop("json_mode", False)
+            self._json_mode = json_mode
             try:
                 result = fn(self, *args, **kwargs)
                 if result is not None:
@@ -904,17 +906,25 @@ class HiveCLI(QueenMixin):
 
         recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
 
-        # Follow/streaming mode: handle output inline, return None to skip decorator output
+        # Follow/streaming mode: handle output inline, return None to skip decorator output.
+        # Uses self._json_mode (set by @cli_command decorator) to choose text vs JSONL.
         if follow:
+            json_mode = self._json_mode
             for event in recent:
-                print(self._format_event(event))
+                if json_mode:
+                    print(json.dumps(self._event_to_json(event), default=str))
+                else:
+                    print(self._format_event(event))
             cursor = recent[-1]["id"] if recent else self.db.get_max_event_id()
             try:
                 while True:
                     time.sleep(0.5)
                     new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
                     for event in new_events:
-                        print(self._format_event(event))
+                        if json_mode:
+                            print(json.dumps(self._event_to_json(event), default=str))
+                        else:
+                            print(self._format_event(event))
                         cursor = event["id"]
             except KeyboardInterrupt:
                 pass
