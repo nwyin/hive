@@ -292,6 +292,43 @@ def test_cli_update(temp_db, tmp_path, capsys):
     assert issue["title"] == "Updated title"
 
 
+def test_cli_update_tags_in_event_log(temp_db, tmp_path):
+    """Updating tags must record 'tags' in the updated event fields list.
+
+    Regression: the event log omitted 'tags' from the fields list even when
+    tags was the only field changed, producing an uninformative {fields: []}.
+    """
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    issue_id = temp_db.create_issue("Tag test issue", project=tmp_path.name)
+    cli.update(issue_id, tags="python,bugfix")
+
+    # Verify the tag was persisted
+    issue = temp_db.get_issue(issue_id)
+    assert json.loads(issue["tags"]) == ["bugfix", "python"]
+
+    # Verify event log records "tags" in fields
+    events = temp_db.get_events(issue_id=issue_id, event_type="updated")
+    assert events, "Expected an 'updated' event"
+    detail = json.loads(events[0]["detail"])
+    assert "tags" in detail["fields"], f"Expected 'tags' in fields, got: {detail['fields']}"
+
+
+def test_cli_list_issues_limit_is_integer(temp_db, tmp_path):
+    """list_issues must respect the integer limit parameter without type coercion bugs.
+
+    Regression: limit was passed as str(limit) to SQLite which, while accepted
+    implicitly, is a type error.
+    """
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    for i in range(10):
+        temp_db.create_issue(f"Issue {i}", project=tmp_path.name)
+
+    result = cli.list_issues(limit=3)
+    assert result["count"] == 3
+
+
 def test_cli_cancel(temp_db, tmp_path, capsys):
     """Test canceling an issue."""
     cli = HiveCLI(temp_db, str(tmp_path))

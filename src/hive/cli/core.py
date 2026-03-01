@@ -190,7 +190,7 @@ class HiveCLI(QueenMixin):
         query += f" ORDER BY {sort_col} {direction}"
 
         query += " LIMIT ?"
-        params.append(str(limit))
+        params.append(limit)
 
         cursor = self.db.conn.execute(query, params)
         issues = []
@@ -306,6 +306,7 @@ class HiveCLI(QueenMixin):
                             ("priority", priority),
                             ("status", status),
                             ("model", model),
+                            ("tags", tags),
                         ]
                         if v is not None
                     ]
