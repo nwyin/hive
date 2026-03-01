@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import sqlite3
 
 # Set CLI context for logging configuration — must happen before hive imports
 os.environ["HIVE_CLI_CONTEXT"] = "1"
@@ -290,9 +291,16 @@ def main():
     db = Database(db_path)
     db.connect()
 
-    # Auto-register the current project so the daemon knows where it lives
+    # Auto-register the current project so the daemon knows where it lives.
+    # Best-effort with zero timeout — never block CLI commands.
     if project_name:
-        db.register_project(project_name, str(project_path))
+        try:
+            db.conn.execute("PRAGMA busy_timeout = 0")
+            db.register_project(project_name, str(project_path))
+        except sqlite3.OperationalError:
+            pass  # daemon has the lock — project already registered
+        finally:
+            db.conn.execute("PRAGMA busy_timeout = 5000")
 
     # Create CLI
     cli = HiveCLI(db, str(project_path))

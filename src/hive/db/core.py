@@ -250,10 +250,36 @@ class DatabaseCore:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        # Drop views before schema so CREATE VIEW IF NOT EXISTS picks up new definitions
-        self.conn.execute("DROP VIEW IF EXISTS agent_runs")
-        self.conn.executescript(SCHEMA)
-        self._migrate_if_needed()
+        self._init_schema()
+
+    def _init_schema(self):
+        """Create tables/views and run migrations.
+
+        When the schema already exists and the write lock is held (e.g. by the
+        daemon), all writes are skipped immediately — no blocking, no timeout.
+        Read-only CLI commands work fine with the existing schema.
+        """
+        cursor = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='issues'")
+        schema_exists = cursor.fetchone() is not None
+
+        if not schema_exists:
+            # First-time init — no daemon can be running yet. Must succeed.
+            self.conn.executescript(SCHEMA)
+            self._migrate_if_needed()
+            self.conn.execute("PRAGMA busy_timeout = 5000")
+            return
+
+        # Schema exists — refresh views + migrations only if we can grab the
+        # write lock instantly.  Zero timeout prevents CLI hangs.
+        self.conn.execute("PRAGMA busy_timeout = 0")
+        try:
+            self.conn.execute("DROP VIEW IF EXISTS agent_runs")
+            self.conn.executescript(SCHEMA)
+            self._migrate_if_needed()
+        except sqlite3.OperationalError:
+            pass  # daemon has the lock — schema is already current
+        finally:
+            self.conn.execute("PRAGMA busy_timeout = 5000")
 
     def close(self):
         """Close database connection."""

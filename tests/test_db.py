@@ -1884,3 +1884,70 @@ def test_get_active_agents(temp_db):
     assert agent1 in active_ids
     assert agent3 in active_ids
     assert agent2 not in active_ids
+
+
+# --- Write-lock contention tests ---
+
+
+def test_connect_nonblocking_when_write_locked(tmp_path):
+    """CLI connect() must not block when another connection holds a write lock."""
+    import time
+
+    from hive.db import Database
+
+    db_path = str(tmp_path / "locked.db")
+
+    # First connection: create schema, then hold a write lock.
+    writer = Database(db_path)
+    writer.connect()
+    writer.conn.execute("BEGIN IMMEDIATE")  # holds RESERVED lock
+
+    # Second connection: simulates a CLI invocation while daemon writes.
+    reader = Database(db_path)
+    t0 = time.monotonic()
+    reader.connect()  # must not block
+    elapsed = time.monotonic() - t0
+
+    # Should complete nearly instantly (< 1s), not wait for the 5s busy_timeout.
+    assert elapsed < 1.0, f"connect() blocked for {elapsed:.1f}s — should be instant"
+
+    # Reads must still work.
+    rows = reader.conn.execute("SELECT COUNT(*) FROM issues").fetchone()
+    assert rows[0] == 0
+
+    writer.conn.rollback()
+    writer.close()
+    reader.close()
+
+
+def test_register_project_nonblocking_when_write_locked(tmp_path):
+    """register_project with busy_timeout=0 must fail immediately, not hang."""
+    import time
+
+    from hive.db import Database
+
+    db_path = str(tmp_path / "locked.db")
+
+    writer = Database(db_path)
+    writer.connect()
+    writer.conn.execute("BEGIN IMMEDIATE")
+
+    reader = Database(db_path)
+    reader.connect()
+
+    # Simulate the parser.py pattern: zero timeout around register_project.
+    t0 = time.monotonic()
+    try:
+        reader.conn.execute("PRAGMA busy_timeout = 0")
+        reader.register_project("test-proj", "/tmp/test-proj")
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        reader.conn.execute("PRAGMA busy_timeout = 5000")
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 1.0, f"register_project blocked for {elapsed:.1f}s"
+
+    writer.conn.rollback()
+    writer.close()
+    reader.close()
