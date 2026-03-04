@@ -253,8 +253,8 @@ class OrchestratorCore:
             # hasn't exhausted its retry budget. Otherwise escalate to
             # prevent an infinite spawn loop across daemon restarts.
             if issue_id:
-                retry_count = self.db.count_events_by_type(issue_id, "retry")
-                agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+                retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
+                agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
 
                 if retry_count < Config.MAX_RETRIES or agent_switch_count < Config.MAX_AGENT_SWITCHES:
                     self.db.try_transition_issue_status(

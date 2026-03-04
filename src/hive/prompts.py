@@ -65,6 +65,8 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
     """
     Build retry context by querying previous failure events for an issue.
 
+    Only includes events after the most recent retry_reset watermark (if any).
+
     Args:
         db: Database instance
         issue_id: Issue ID to query events for
@@ -72,10 +74,23 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
     Returns:
         Formatted retry context as markdown string, or None if no failures found
     """
+    # Find the most recent retry_reset watermark (use id for ordering, not timestamp)
+    cursor = db.conn.execute(
+        "SELECT MAX(id) FROM events WHERE issue_id = ? AND event_type = 'retry_reset'",
+        (issue_id,),
+    )
+    reset_id = cursor.fetchone()[0]
+
     # Query for different types of failure events
     incomplete_events = db.get_events(issue_id=issue_id, event_type="incomplete")
     merge_rejected_events = db.get_events(issue_id=issue_id, event_type="merge_rejected")
     stalled_events = db.get_events(issue_id=issue_id, event_type="stalled")
+
+    # Filter to only events after the reset watermark
+    if reset_id is not None:
+        incomplete_events = [e for e in incomplete_events if e["id"] > reset_id]
+        merge_rejected_events = [e for e in merge_rejected_events if e["id"] > reset_id]
+        stalled_events = [e for e in stalled_events if e["id"] > reset_id]
 
     # Collect failure descriptions
     failures = []

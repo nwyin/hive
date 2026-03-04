@@ -446,7 +446,7 @@ class HiveCLI(QueenMixin):
         return {"count": len(rows), "detail": bool(issue_id), "review": rows}
 
     @cli_command(formatter=_fmt_message)
-    def retry(self, issue_id: str, notes: str = ""):
+    def retry(self, issue_id: str, notes: str = "", reset: bool = False):
         """Retry an escalated/blocked issue."""
         self._require_issue(issue_id)
 
@@ -461,13 +461,21 @@ class HiveCLI(QueenMixin):
         )
         self.db.conn.commit()
 
+        if reset:
+            self.db.log_event(issue_id, None, "retry_reset", {"notes": notes})
+
         self.db.log_event(issue_id, None, "manual_retry", {"notes": notes})
+
+        msg = f"Reset issue {issue_id} to 'open' for retry"
+        if reset:
+            msg += " (counters reset)"
 
         return {
             "issue_id": issue_id,
             "status": "open",
             "notes": notes,
-            "message": f"Reset issue {issue_id} to 'open' for retry",
+            "reset": reset,
+            "message": msg,
         }
 
     @cli_command(formatter=_fmt_message)

@@ -472,6 +472,55 @@ def test_count_events_by_type_nonexistent_issue(temp_db):
     assert temp_db.count_events_by_type("nonexistent", "retry") == 0
 
 
+def test_count_events_by_type_since_reset_no_reset(temp_db):
+    """Without a retry_reset event, behaves same as count_events_by_type."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 1})
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 2})
+
+    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 2
+    assert temp_db.count_events_by_type(issue_id, "retry") == 2
+
+
+def test_count_events_by_type_since_reset_after_reset(temp_db):
+    """After a retry_reset, only counts events after the reset."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Log events before reset
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 1})
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 2})
+    temp_db.log_event(issue_id, agent_id, "agent_switch", {"switch": 1})
+
+    # Log reset event
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed"})
+
+    # Log events after reset
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 3})
+
+    # Since-reset should only count post-reset events
+    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 1
+    assert temp_db.count_events_by_type_since_reset(issue_id, "agent_switch") == 0
+
+    # Total count still includes all events
+    assert temp_db.count_events_by_type(issue_id, "retry") == 3
+    assert temp_db.count_events_by_type(issue_id, "agent_switch") == 1
+
+
+def test_count_events_by_type_since_reset_returns_zero_immediately_after_reset(temp_db):
+    """Immediately after a reset, count should be 0."""
+    issue_id = temp_db.create_issue("Test issue")
+    agent_id = temp_db.create_agent("test-agent")
+
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 1})
+    temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 2})
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "reset"})
+
+    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 0
+
+
 def test_log_system_event(temp_db):
     """Test logging system-level events."""
     temp_db.log_system_event("daemon_started", {"reason": "Connection timeout"})

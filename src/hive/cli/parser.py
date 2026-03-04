@@ -145,6 +145,7 @@ def main():
     retry_parser = subparsers.add_parser("retry", help="Retry an escalated issue")
     retry_parser.add_argument("issue_id", help="Issue ID")
     retry_parser.add_argument("--notes", default="", help="Notes about what to try differently")
+    retry_parser.add_argument("--reset", action="store_true", help="Reset retry/escalation counters (watermark reset)")
 
     # dep command (hidden — advanced)
     dep_parser = subparsers.add_parser("dep", help="Manage issue dependencies")
@@ -357,7 +358,7 @@ def main():
             cli.finalize(args.issue_id, resolution=args.resolution, json_mode=json_mode)
 
         elif args.command == "retry":
-            cli.retry(args.issue_id, notes=args.notes, json_mode=json_mode)
+            cli.retry(args.issue_id, notes=args.notes, reset=args.reset, json_mode=json_mode)
 
         elif args.command == "dep":
             if args.dep_command == "add":
