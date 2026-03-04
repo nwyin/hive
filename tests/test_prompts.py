@@ -367,6 +367,48 @@ def test_build_retry_context_malformed_detail(temp_db):
     assert "**Attempt failed**: Unknown reason" in result
 
 
+def test_build_retry_context_returns_none_after_reset(temp_db):
+    """After a retry_reset, build_retry_context returns None if all failures are before the reset."""
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Add failure events before reset
+    temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "tests failed", "summary": "Unit tests failing"})
+    temp_db.log_event(issue_id, agent_id, "stalled", {"reason": "timeout", "summary": "No progress"})
+
+    # Verify context exists before reset
+    result = build_retry_context(temp_db, issue_id)
+    assert result is not None
+    assert "tests failed" in result
+
+    # Log reset
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed"})
+
+    # After reset, no failures post-watermark → None
+    result = build_retry_context(temp_db, issue_id)
+    assert result is None
+
+
+def test_build_retry_context_includes_post_reset_failures(temp_db):
+    """After a retry_reset, only post-reset failures appear in retry context."""
+    issue_id = temp_db.create_issue("Test issue", "Test description", project="test-project")
+    agent_id = temp_db.create_agent("test-agent")
+
+    # Pre-reset failure
+    temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "old failure", "summary": "Old problem"})
+
+    # Reset
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed"})
+
+    # Post-reset failure
+    temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "new failure", "summary": "New problem"})
+
+    result = build_retry_context(temp_db, issue_id)
+    assert result is not None
+    assert "new failure" in result
+    assert "old failure" not in result
+
+
 def test_build_worker_prompt_with_retry_context():
     """Test that retry context appears in worker prompt."""
     issue = {"title": "Test Issue", "description": "Test description"}

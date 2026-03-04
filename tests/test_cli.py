@@ -454,6 +454,41 @@ def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
     assert retry_count == 0, "Should have 0 retry events (only manual_retry)"
 
 
+def test_cli_retry_reset_logs_retry_reset_event(temp_db, tmp_path):
+    """Test that retry --reset logs a retry_reset event."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
+    temp_db.update_issue_status(issue_id, "escalated")
+
+    result = cli.retry(issue_id, notes="fixed the root cause", reset=True)
+
+    # Issue should be open
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "open"
+    assert result["reset"] is True
+
+    # Should have both retry_reset and manual_retry events
+    reset_count = temp_db.count_events_by_type(issue_id, "retry_reset")
+    manual_retry_count = temp_db.count_events_by_type(issue_id, "manual_retry")
+    assert reset_count == 1
+    assert manual_retry_count == 1
+
+
+def test_cli_retry_without_reset_no_retry_reset_event(temp_db, tmp_path):
+    """Test that retry without --reset does not log a retry_reset event."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
+    temp_db.update_issue_status(issue_id, "escalated")
+
+    result = cli.retry(issue_id, notes="try again")
+
+    assert result["reset"] is False
+    reset_count = temp_db.count_events_by_type(issue_id, "retry_reset")
+    assert reset_count == 0
+
+
 def test_cli_dep_add_remove(temp_db, tmp_path, capsys):
     """Test adding and removing dependencies."""
     cli = HiveCLI(temp_db, str(tmp_path))

@@ -181,6 +181,39 @@ async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_choose_escalation_retry_after_reset(temp_db, tmp_path):
+    """After a retry_reset, _choose_escalation returns RETRY even when old events exceed threshold."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(
+        db=temp_db,
+        backend=mock_backend,
+    )
+
+    issue_id = temp_db.create_issue("Test task", "Do something")
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    # Exhaust retry and agent_switch budgets
+    for i in range(Config.MAX_RETRIES):
+        temp_db.log_event(issue_id, agent_id, "retry", {"attempt": i + 1})
+    for i in range(Config.MAX_AGENT_SWITCHES):
+        temp_db.log_event(issue_id, agent_id, "agent_switch", {"switch": i + 1})
+
+    # Without reset, should escalate
+    from hive.orchestrator.completion import EscalationDecision
+
+    decision = orch._choose_escalation(issue_id)
+    assert decision == EscalationDecision.ESCALATE
+
+    # Now log a retry_reset
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed root cause"})
+
+    # After reset, should retry again
+    decision = orch._choose_escalation(issue_id)
+    assert decision == EscalationDecision.RETRY
+
+
+@pytest.mark.asyncio
 async def test_escalation_chain_full_progression(temp_db, tmp_path):
     """Test full progression through all escalation tiers."""
     from unittest.mock import AsyncMock

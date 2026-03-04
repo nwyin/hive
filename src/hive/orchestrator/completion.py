@@ -323,11 +323,11 @@ class CompletionMixin:
             if recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD:
                 return EscalationDecision.ANOMALY_ESCALATE
 
-        retry_count = self.db.count_events_by_type(issue_id, "retry")
+        retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
         if retry_count < Config.MAX_RETRIES:
             return EscalationDecision.RETRY
 
-        agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+        agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
         if agent_switch_count < Config.MAX_AGENT_SWITCHES:
             return EscalationDecision.AGENT_SWITCH
 
@@ -372,7 +372,7 @@ class CompletionMixin:
             return
 
         if decision == EscalationDecision.RETRY:
-            retry_count = self.db.count_events_by_type(issue_id, "retry")
+            retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
             if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
@@ -387,7 +387,7 @@ class CompletionMixin:
             return
 
         if decision == EscalationDecision.AGENT_SWITCH:
-            agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+            agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
             if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
@@ -401,8 +401,8 @@ class CompletionMixin:
             logger.info(f"Switching agent for issue {issue_id} (switch {agent_switch_count + 1}/{Config.MAX_AGENT_SWITCHES})")
             return
 
-        retry_count = self.db.count_events_by_type(issue_id, "retry")
-        agent_switch_count = self.db.count_events_by_type(issue_id, "agent_switch")
+        retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
+        agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
         if self._try_escalate_issue(
             issue_id,
             agent.agent_id,
