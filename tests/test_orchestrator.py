@@ -214,6 +214,38 @@ async def test_choose_escalation_retry_after_reset(temp_db, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_choose_escalation_anomaly_respects_reset(temp_db, tmp_path):
+    """Anomaly detection ignores incomplete events before a retry_reset."""
+    mock_backend = AsyncMock(spec=HiveBackend)
+    orch = Orchestrator(
+        db=temp_db,
+        backend=mock_backend,
+    )
+
+    issue_id = temp_db.create_issue("Test task", "Do something")
+    agent_id = temp_db.create_agent("test-agent")
+    temp_db.claim_issue(issue_id, agent_id)
+
+    # Log enough incomplete events to trigger anomaly detection
+    for i in range(Config.ANOMALY_FAILURE_THRESHOLD or 5):
+        temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": f"failure {i}"})
+
+    from hive.orchestrator.completion import EscalationDecision
+
+    # Without reset, should anomaly-escalate
+    if Config.ANOMALY_FAILURE_THRESHOLD:
+        decision = orch._choose_escalation(issue_id)
+        assert decision == EscalationDecision.ANOMALY_ESCALATE
+
+    # Log a retry_reset — old incompletes should no longer count
+    temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed"})
+
+    # After reset, should retry (not anomaly-escalate)
+    decision = orch._choose_escalation(issue_id)
+    assert decision == EscalationDecision.RETRY
+
+
+@pytest.mark.asyncio
 async def test_escalation_chain_full_progression(temp_db, tmp_path):
     """Test full progression through all escalation tiers."""
     from unittest.mock import AsyncMock

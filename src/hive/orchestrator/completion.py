@@ -319,7 +319,7 @@ class CompletionMixin:
         Config = _mod.Config
 
         if Config.ANOMALY_FAILURE_THRESHOLD and Config.ANOMALY_WINDOW_MINUTES:
-            recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
+            recent_failures = self.db.count_events_since_minutes_since_reset(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
             if recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD:
                 return EscalationDecision.ANOMALY_ESCALATE
 
@@ -354,7 +354,7 @@ class CompletionMixin:
         decision = self._choose_escalation(issue_id)
 
         if decision == EscalationDecision.ANOMALY_ESCALATE:
-            recent_failures = self.db.count_events_since_minutes(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
+            recent_failures = self.db.count_events_since_minutes_since_reset(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
             logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
             self._try_escalate_issue(
                 issue_id,

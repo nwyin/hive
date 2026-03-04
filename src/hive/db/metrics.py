@@ -370,6 +370,32 @@ class MetricsMixin:
         )
         return cursor.fetchone()[0]
 
+    def count_events_since_minutes_since_reset(self, issue_id: str, event_type: str, minutes: int) -> int:
+        """Count events within the last N minutes, but only after the most recent retry_reset.
+
+        Combines the time-window filter with the reset watermark. If no retry_reset
+        exists, behaves identically to count_events_since_minutes.
+
+        Args:
+            issue_id: Issue ID to count events for
+            event_type: Type of event to count (e.g., 'incomplete')
+            minutes: Look back this many minutes from now
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM events
+            WHERE issue_id = ? AND event_type = ?
+              AND created_at >= datetime('now', ?)
+              AND id > COALESCE(
+                (SELECT MAX(id) FROM events
+                 WHERE issue_id = ? AND event_type = 'retry_reset'),
+                0
+              )
+            """,
+            (issue_id, event_type, f"-{minutes} minutes", issue_id),
+        )
+        return cursor.fetchone()[0]
+
     def count_events_since_minutes(self, issue_id: str, event_type: str, minutes: int) -> int:
         """Count events of a given type for an issue within the last N minutes.
 
