@@ -39,6 +39,7 @@ import os
 import shlex
 import signal
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import Config
@@ -55,6 +56,8 @@ class ThreadState:
     model: Optional[str] = None
     approval_policy: Optional[str] = None
     sandbox_mode: Optional[str] = None
+    sandbox_policy_set: bool = False
+    sandbox_writable_roots: Optional[List[str]] = None
 
     active_turn_id: Optional[str] = None
     developer_instructions_set: bool = False
@@ -123,6 +126,72 @@ class CodexAppServerBackend(HiveBackend):
 
     # ── Session management ────────────────────────────────────────────
 
+    @staticmethod
+    def _compute_git_sandbox_writable_roots(worktree_dir: Optional[str]) -> List[str]:
+        """Compute extra writable roots needed for git to work in a worktree sandbox.
+
+        Codex's `workspace-write` sandbox allows writing to the turn `cwd`, but git
+        worktrees store their real gitdir under the parent repo's `.git/`, e.g.:
+
+          <repo>/.worktrees/<name>/.git  ->  gitdir: <repo>/.git/worktrees/<name>
+
+        Git operations like `git add`/`git commit` need to write lock/index/object
+        files under `<repo>/.git/...`, which is outside the worktree `cwd`. Without
+        adding the parent repo `.git` as a writable root, these operations fail with
+        sandbox permission errors and Hive workers can thrash/retry/escalate.
+        """
+        if not worktree_dir:
+            return []
+
+        wt = Path(worktree_dir)
+        git_marker = wt / ".git"
+
+        # Only apply to worktrees where `.git` is a file pointing elsewhere.
+        try:
+            if not git_marker.is_file():
+                return []
+            first_line = git_marker.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
+        except Exception:
+            return []
+
+        if not first_line.startswith("gitdir:"):
+            return []
+
+        gitdir_raw = first_line.split("gitdir:", 1)[1].strip()
+        if not gitdir_raw:
+            return []
+
+        gitdir_path = Path(gitdir_raw)
+        try:
+            if not gitdir_path.is_absolute():
+                gitdir_path = (wt / gitdir_path).resolve()
+            else:
+                gitdir_path = gitdir_path.resolve()
+        except Exception:
+            # Best-effort: keep the raw path.
+            gitdir_path = (wt / gitdir_path) if not gitdir_path.is_absolute() else gitdir_path
+
+        # Typical shape: <repo>/.git/worktrees/<name> -> common git dir is <repo>/.git
+        if gitdir_path.parent.name == "worktrees":
+            common_git_dir = gitdir_path.parent.parent
+        else:
+            common_git_dir = gitdir_path.parent
+
+        roots: List[str] = []
+        try:
+            roots.append(str(common_git_dir.resolve()))
+        except Exception:
+            roots.append(str(common_git_dir))
+
+        # Stable uniqueness while preserving order.
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for r in roots:
+            if r and r not in seen:
+                seen.add(r)
+                deduped.append(r)
+        return deduped
+
     async def list_sessions(self) -> List[Dict[str, Any]]:
         return [{"id": sid, "title": s.title, "directory": s.directory} for sid, s in self.sessions.items()]
 
@@ -189,6 +258,7 @@ class CodexAppServerBackend(HiveBackend):
 
         approval_policy = getattr(Config, "CODEX_APPROVAL_POLICY", state.approval_policy or "never")
         personality = getattr(Config, "CODEX_PERSONALITY", "pragmatic")
+        sandbox_mode = getattr(Config, "CODEX_SANDBOX", state.sandbox_mode or "workspace-write")
 
         params: Dict[str, Any] = {
             "threadId": session_id,
@@ -198,6 +268,18 @@ class CodexAppServerBackend(HiveBackend):
             "personality": personality,
             "model": model_id,
         }
+
+        # Sandbox gotcha: git worktrees need write access to the parent repo `.git/`.
+        # Without it, `git add`/`git commit` fail under `workspace-write` because
+        # the worktree's real gitdir lives outside the worktree `cwd`.
+        if not state.sandbox_policy_set and sandbox_mode == "workspace-write":
+            if state.sandbox_writable_roots is None:
+                state.sandbox_writable_roots = self._compute_git_sandbox_writable_roots(params.get("cwd"))
+                if state.sandbox_writable_roots:
+                    logger.info(f"Codex workspace-write sandbox: adding writableRoots for git: {state.sandbox_writable_roots}")
+            if state.sandbox_writable_roots:
+                params["sandboxPolicy"] = {"type": "workspaceWrite", "writableRoots": state.sandbox_writable_roots}
+                state.sandbox_policy_set = True
 
         # Inject developer instructions once per thread so the turn runs with
         # Hive's system prompt (agent identity + project rules).
