@@ -404,21 +404,14 @@ class OrchestratorCore:
         model = None
 
         for message in messages:
-            metadata = message.get("metadata", {})
-            if metadata:
-                # Check if this message has token usage metadata
-                input_tokens = metadata.get("input_tokens", 0)
-                output_tokens = metadata.get("output_tokens", 0)
-                msg_model = metadata.get("model")
-
-                if input_tokens > 0 or output_tokens > 0:
-                    total_input_tokens += input_tokens
-                    total_output_tokens += output_tokens
-                    if msg_model and not model:
-                        model = msg_model
+            metadata = message.get("metadata") or {}
+            total_input_tokens += metadata.get("input_tokens", 0)
+            total_output_tokens += metadata.get("output_tokens", 0)
+            if msg_model := metadata.get("model"):
+                model = model or msg_model
 
         # Only log if we found some token usage
-        if total_input_tokens > 0 or total_output_tokens > 0:
+        if total_input_tokens + total_output_tokens > 0:
             detail = {
                 "input_tokens": total_input_tokens,
                 "output_tokens": total_output_tokens,
