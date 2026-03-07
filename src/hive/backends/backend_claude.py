@@ -22,7 +22,6 @@ Hive spawns `claude` CLI processes with
 """
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -30,7 +29,7 @@ import shutil
 import signal
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import aiohttp.web
@@ -69,6 +68,7 @@ class ClaudeWSBackend(HiveBackend):
     """
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        super().__init__()
         self.host = host
         self.port = port
         self.app = aiohttp.web.Application()
@@ -76,9 +76,6 @@ class ClaudeWSBackend(HiveBackend):
 
         # Per-session state
         self.sessions: Dict[str, SessionState] = {}
-
-        # SSE-compatible event handlers
-        self._handlers: Dict[str, Callable] = {}
 
         # Concurrency limiter — MAX_AGENTS + 1 reserves a slot for the refinery
         # session so worker slots aren't reduced.
@@ -323,14 +320,6 @@ class ClaudeWSBackend(HiveBackend):
 
     # ── Event streaming ───────────────────────────────────────────────
 
-    def on(self, event_type: str, handler: Callable):
-        """Register handler for specific event type."""
-        self._handlers[event_type] = handler
-
-    def on_all(self, handler: Callable):
-        """Register catch-all handler for all events."""
-        self._handlers["*"] = handler
-
     async def connect_with_reconnect(self, max_retries: int = -1, retry_delay: int = 5):
         """Start the WebSocket server (runs until stopped)."""
         self.running = True
@@ -478,23 +467,6 @@ class ClaudeWSBackend(HiveBackend):
                 },
             }
         return msg
-
-    async def _emit(self, event_type: str, properties: dict):
-        """Emit an SSE-compatible event to registered handlers."""
-        handler = self._handlers.get(event_type)
-        if handler:
-            if inspect.iscoroutinefunction(handler):
-                await handler(properties)
-            else:
-                handler(properties)
-
-        # Call catch-all handler if registered
-        all_handler = self._handlers.get("*")
-        if all_handler:
-            if inspect.iscoroutinefunction(all_handler):
-                await all_handler(event_type, properties)
-            else:
-                all_handler(event_type, properties)
 
     async def _ws_send(self, session_id: str, msg: dict) -> bool:
         """Send a message to the CLI process via WebSocket."""

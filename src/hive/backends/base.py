@@ -7,12 +7,16 @@ A backend provides two capabilities to the orchestrator:
 Both the Claude and Codex backends combine these into a single class.
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
 
 class HiveBackend(ABC):
     """Interface that all Hive backends must implement."""
+
+    def __init__(self):
+        self._handlers: Dict[str, Callable] = {}
 
     # ── Session management ────────────────────────────────────────────
 
@@ -82,13 +86,29 @@ class HiveBackend(ABC):
 
     # ── Event streaming ───────────────────────────────────────────────
 
-    @abstractmethod
     def on(self, event_type: str, handler: Callable):
         """Register handler for a specific event type (e.g. "session.status")."""
+        self._handlers[event_type] = handler
 
-    @abstractmethod
     def on_all(self, handler: Callable):
         """Register catch-all handler for all events."""
+        self._handlers["*"] = handler
+
+    async def _emit(self, event_type: str, properties: dict):
+        """Emit an event to registered handlers."""
+        handler = self._handlers.get(event_type)
+        if handler:
+            if inspect.iscoroutinefunction(handler):
+                await handler(properties)
+            else:
+                handler(properties)
+
+        all_handler = self._handlers.get("*")
+        if all_handler:
+            if inspect.iscoroutinefunction(all_handler):
+                await all_handler(event_type, properties)
+            else:
+                all_handler(event_type, properties)
 
     @abstractmethod
     async def connect_with_reconnect(self, max_retries: int = -1, retry_delay: int = 5):

@@ -32,7 +32,6 @@ Internal contract details this file relies on:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -40,7 +39,7 @@ import shlex
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..config import Config
 from .base import HiveBackend
@@ -73,6 +72,7 @@ class CodexAppServerBackend(HiveBackend):
     """Hive backend that drives Codex via `codex app-server` (stdio transport)."""
 
     def __init__(self, cmd: Optional[List[str]] = None):
+        super().__init__()
         # Default command can be overridden via `HIVE_CODEX_CMD` / `.hive.toml`.
         #
         # Also support `CODEX_CMD` (used by `hive queen`) as a fallback for the
@@ -119,7 +119,6 @@ class CodexAppServerBackend(HiveBackend):
         self._pending: Dict[str, asyncio.Future] = {}
 
         self.sessions: Dict[str, ThreadState] = {}
-        self._handlers: Dict[str, Callable] = {}
 
         self.running = False
         self.server_ready = asyncio.Event()
@@ -368,12 +367,6 @@ class CodexAppServerBackend(HiveBackend):
         return
 
     # ── Event streaming ───────────────────────────────────────────────
-
-    def on(self, event_type: str, handler: Callable):
-        self._handlers[event_type] = handler
-
-    def on_all(self, handler: Callable):
-        self._handlers["*"] = handler
 
     async def connect_with_reconnect(self, max_retries: int = -1, retry_delay: int = 5):
         self.running = True
@@ -671,21 +664,6 @@ class CodexAppServerBackend(HiveBackend):
         if data is not None:
             err["data"] = data
         await self._write_line({"id": req_id, "error": err})
-
-    async def _emit(self, event_type: str, properties: dict):
-        handler = self._handlers.get(event_type)
-        if handler:
-            if inspect.iscoroutinefunction(handler):
-                await handler(properties)
-            else:
-                handler(properties)
-
-        all_handler = self._handlers.get("*")
-        if all_handler:
-            if inspect.iscoroutinefunction(all_handler):
-                await all_handler(event_type, properties)
-            else:
-                all_handler(event_type, properties)
 
     def _start_heartbeat(self, session_id: str):
         state = self.sessions.get(session_id)
