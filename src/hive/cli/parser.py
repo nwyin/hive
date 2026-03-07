@@ -242,27 +242,6 @@ def main():
         default="discovery",
         help="Note category (default: discovery)",
     )
-    note_parser.add_argument("--to-agent", dest="to_agents", action="append", help="Target agent ID (repeatable)")
-    note_parser.add_argument("--to-issue", dest="to_issues", action="append", help="Target issue ID (repeatable)")
-    note_parser.add_argument("--must-read", dest="must_read", action="store_true", help="Require acknowledgment")
-
-    # mail subcommand group
-    mail_parser = subparsers.add_parser("mail", help="Note delivery inbox and management")
-    mail_subparsers = mail_parser.add_subparsers(dest="mail_command")
-
-    mail_inbox_parser = mail_subparsers.add_parser("inbox", help="Show inbox deliveries")
-    mail_inbox_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
-    mail_inbox_parser.add_argument("--issue", dest="issue_id", default=None, help="Issue ID")
-    mail_inbox_parser.add_argument("--unread", action="store_true", help="Show only unread")
-
-    mail_read_parser = mail_subparsers.add_parser("read", help="Mark delivery as read")
-    mail_read_parser.add_argument("delivery_id", type=int, help="Delivery ID")
-    mail_read_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
-
-    mail_ack_parser = mail_subparsers.add_parser("ack", help="Acknowledge a must_read delivery")
-    mail_ack_parser.add_argument("delivery_id", type=int, help="Delivery ID")
-    mail_ack_parser.add_argument("--agent", dest="agent_id", required=True, help="Agent ID")
-
     # debug command
     subparsers.add_parser("debug", help="Print diagnostic report for debugging")
 
@@ -419,40 +398,12 @@ def main():
             )
 
         elif args.command == "note":
-            to_agents = getattr(args, "to_agents", None)
-            to_issues = getattr(args, "to_issues", None)
-            must_read = getattr(args, "must_read", False)
-            if to_agents or to_issues:
-                cli.note_with_targets(
-                    args.content,
-                    issue_id=args.issue_id,
-                    to_agents=to_agents,
-                    to_issues=to_issues,
-                    must_read=must_read,
-                    json_mode=json_mode,
-                )
-            else:
-                cli.add_note(
-                    args.content,
-                    issue_id=args.issue_id,
-                    category=args.category,
-                    json_mode=json_mode,
-                )
-
-        elif args.command == "mail":
-            if args.mail_command == "inbox":
-                cli.mail_inbox(
-                    args.agent_id,
-                    issue_id=args.issue_id,
-                    unread_only=args.unread,
-                    json_mode=json_mode,
-                )
-            elif args.mail_command == "read":
-                cli.mail_read(args.delivery_id, args.agent_id, json_mode=json_mode)
-            elif args.mail_command == "ack":
-                cli.mail_ack(args.delivery_id, args.agent_id, json_mode=json_mode)
-            else:
-                mail_parser.print_help()
+            cli.add_note(
+                args.content,
+                issue_id=args.issue_id,
+                category=args.category,
+                json_mode=json_mode,
+            )
 
         elif args.command == "debug":
             cli.debug(json_mode=json_mode)

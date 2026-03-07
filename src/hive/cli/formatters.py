@@ -116,10 +116,6 @@ def _fmt_add_note(result):
     return f"Added note #{result['note_id']} [{result.get('category', 'discovery')}]"
 
 
-def _fmt_note_with_targets(result):
-    return f"Sent note #{result['note_id']} with {result['delivery_count']} delivery(ies)"
-
-
 def _fmt_status(result):
     lines = ["\n=== Hive Status ==="]
     lines.append(f"\nProject: {result.get('project', '')}")
@@ -205,32 +201,6 @@ def _fmt_list_agents(result):
         issue_title = agent.get("current_issue_title", agent.get("current_issue", "")) or "-"
         lines.append(f"{agent['id']:<16} {agent['name']:<16} {agent['status']:<10} {str(issue_title)[:30]}")
     return "\n".join(lines)
-
-
-def _fmt_mail_inbox(result):
-    deliveries = result.get("deliveries", [])
-    if not deliveries:
-        return "No deliveries found."
-    header = f"{'ID':<6} {'Note':<6} {'Status':<10} {'Must Read':<10} {'From':<16} Content"
-    lines = [header, "-" * len(header)]
-    for d in deliveries:
-        content_preview = (d.get("content") or "")[:40]
-        must_read_label = "yes" if d.get("must_read") else "no"
-        from_agent = d.get("from_agent_id") or "-"
-        lines.append(f"{d['id']:<6} {d['note_id']:<6} {d['status']:<10} {must_read_label:<10} {from_agent:<16} {content_preview}")
-    return "\n".join(lines)
-
-
-def _fmt_mail_read(result):
-    if result.get("updated"):
-        return f"Delivery #{result['delivery_id']} marked read."
-    return f"Delivery #{result['delivery_id']} unchanged (already read or not found)."
-
-
-def _fmt_mail_ack(result):
-    if result.get("updated"):
-        return f"Delivery #{result['delivery_id']} acked."
-    return f"Delivery #{result['delivery_id']} unchanged (not must_read, already acked, or not found)."
 
 
 def _fmt_merges(result):

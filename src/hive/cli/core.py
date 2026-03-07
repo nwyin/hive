@@ -18,13 +18,9 @@ from .formatters import (
     _fmt_list_agents,
     _fmt_list_issues,
     _fmt_logs,
-    _fmt_mail_ack,
-    _fmt_mail_inbox,
-    _fmt_mail_read,
     _fmt_merges,
     _fmt_message,
     _fmt_metrics,
-    _fmt_note_with_targets,
     _fmt_review,
     _fmt_show,
     _fmt_start,
@@ -721,83 +717,6 @@ class HiveCLI(QueenMixin):
             "issue_id": issue_id,
             "message": f"Added note #{note_id}",
         }
-
-    @cli_command(formatter=_fmt_note_with_targets)
-    def note_with_targets(
-        self,
-        content: str,
-        issue_id: Optional[str] = None,
-        to_agents: Optional[List[str]] = None,
-        to_issues: Optional[List[str]] = None,
-        must_read: bool = False,
-    ):
-        """Add a note with explicit delivery targets (agents/issues)."""
-        note_id = self.db.add_note(
-            agent_id=None,
-            issue_id=issue_id,
-            content=content,
-            project=self.project_name,
-            must_read=must_read,
-        )
-        delivery_count = self.db.create_note_deliveries(note_id, to_agents=to_agents, to_issues=to_issues)
-        self.db.log_event(
-            issue_id,
-            None,
-            "note_sent",
-            {
-                "note_id": note_id,
-                "must_read": must_read,
-                "to_agents": to_agents or [],
-                "to_issues": to_issues or [],
-            },
-        )
-
-        return {
-            "note_id": note_id,
-            "delivery_count": delivery_count,
-            "to_agents": to_agents or [],
-            "to_issues": to_issues or [],
-            "must_read": must_read,
-        }
-
-    # ── Mail (note delivery inbox) ───────────────────────────────────
-
-    @cli_command(formatter=_fmt_mail_inbox)
-    def mail_inbox(
-        self,
-        agent_id: str,
-        issue_id: Optional[str] = None,
-        unread_only: bool = False,
-    ):
-        """Show note delivery inbox for an agent."""
-        deliveries = self.db.get_inbox_deliveries(agent_id, issue_id=issue_id, unread_only=unread_only)
-        return {"count": len(deliveries), "deliveries": deliveries}
-
-    @cli_command(formatter=_fmt_mail_read)
-    def mail_read(
-        self,
-        delivery_id: int,
-        agent_id: str,
-    ):
-        """Mark a delivery as read."""
-        updated = self.db.mark_delivery_read(delivery_id, agent_id)
-        if updated:
-            self.db.log_event(None, agent_id, "note_read", {"delivery_id": delivery_id})
-
-        return {"delivery_id": delivery_id, "updated": updated}
-
-    @cli_command(formatter=_fmt_mail_ack)
-    def mail_ack(
-        self,
-        delivery_id: int,
-        agent_id: str,
-    ):
-        """Acknowledge a must_read delivery."""
-        updated = self.db.mark_delivery_acked(delivery_id, agent_id)
-        if updated:
-            self.db.log_event(None, agent_id, "note_acked", {"delivery_id": delivery_id})
-
-        return {"delivery_id": delivery_id, "updated": updated}
 
     # ── Event log (tail-style, not tool-backed) ─────────────────────
 

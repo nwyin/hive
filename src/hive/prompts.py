@@ -134,62 +134,6 @@ Address these specific failure reasons. Do not repeat the same mistakes."""
     return None
 
 
-def render_inbox_section(deliveries: List[Dict[str, Any]], has_more: bool = False) -> str:
-    """
-    Render a "Notes Inbox Update" block for injection into worker prompts.
-
-    Args:
-        deliveries: List of delivery dicts from db.get_injectable_deliveries(), each with keys:
-            delivery_id, note_id, content, must_read, status, from_agent_id,
-            scope ('agent' or 'issue'), recipient_issue_id
-        has_more: Whether there are additional normal deliveries not included in this list
-
-    Returns:
-        Formatted inbox section string, or empty string if deliveries is empty
-    """
-    if not deliveries:
-        return ""
-
-    count = len(deliveries)
-    lines = [f"### Notes Inbox Update ({count} pending)"]
-
-    has_must_read = False
-    for d in deliveries:
-        delivery_id = d["delivery_id"]
-        note_id = d["note_id"]
-        must_read = d.get("must_read", False)
-        scope = d.get("scope", "agent")
-        recipient_issue_id = d.get("recipient_issue_id")
-        from_agent_id = d.get("from_agent_id")
-        content = d.get("content", "")
-
-        tags = f"[delivery:{delivery_id}][note:{note_id}]"
-        if must_read:
-            tags += "[must_read]"
-            has_must_read = True
-        if scope == "issue":
-            tags += f"[scope:issue issue={recipient_issue_id}]"
-        else:
-            tags += "[scope:agent]"
-
-        from_part = f"from agent={from_agent_id}" if from_agent_id else "from system"
-
-        lines.append(f"- {tags} {from_part}")
-        lines.append(f"  {content}")
-
-    if has_more:
-        lines.append("")
-        lines.append("More notes pending -- run: hive mail inbox")
-
-    if has_must_read:
-        lines.append("")
-        lines.append("Required actions:")
-        lines.append("1. Acknowledge required notes via: hive mail ack <delivery_id>")
-        lines.append("2. Proceed with implementation using the updates above.")
-
-    return "\n".join(lines)
-
-
 def build_worker_prompt(
     agent_name: str,
     issue: Dict[str, Any],
@@ -198,7 +142,6 @@ def build_worker_prompt(
     project: str,
     notes: Optional[List[Dict[str, Any]]] = None,
     retry_context: Optional[str] = None,
-    inbox_section: Optional[str] = None,
 ) -> str:
     """
     Build the worker prompt for an issue.
@@ -211,7 +154,6 @@ def build_worker_prompt(
         project: Project name
         notes: List of note dicts from other workers
         retry_context: Optional retry context from previous failures
-        inbox_section: Optional rendered inbox section from render_inbox_section()
 
     Returns:
         Formatted worker prompt string
@@ -234,9 +176,6 @@ def build_worker_prompt(
             source = note.get("issue_id", "project")
             note_lines.append(f"- [{category}] {content} (from {source})")
         notes_section = "\n\n### Project Notes (from other workers)\n" + "\n".join(note_lines)
-
-    if inbox_section:
-        notes_section += f"\n\n{inbox_section}"
 
     # Build retry section
     retry_section = ""
