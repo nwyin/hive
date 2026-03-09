@@ -65,6 +65,17 @@ def _run_cli_command(
         cli.run_command(command_name, *args, json_mode=use_json, **kwargs)
 
 
+def _run(
+    ctx: typer.Context,
+    command_name: str,
+    *args,
+    json_mode: bool | None = None,
+    **kwargs,
+) -> None:
+    """Run a CLI command using the ``AppState`` stored in the Typer context."""
+    _run_cli_command(ctx.obj, command_name, *args, json_mode=json_mode, **kwargs)
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -79,12 +90,11 @@ def main(
 @app.command()
 def setup(ctx: typer.Context) -> None:
     """Create default .hive.toml config."""
-    state: AppState = ctx.obj
     try:
-        project_path, project_name = resolve_project(state.project)
+        project_path, project_name = resolve_project(ctx.obj.project)
     except Exception as exc:
-        _fail(state, exc)
-    do_setup(project_path, project_name, json_mode=state.json_mode)
+        _fail(ctx.obj, exc)
+    do_setup(project_path, project_name, json_mode=ctx.obj.json_mode)
 
 
 @app.command()
@@ -107,9 +117,8 @@ def create(
     tags: Annotated[str | None, typer.Option(help="Comma-separated tags (e.g. refactor,python,small)")] = None,
 ) -> None:
     """Create a new issue."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "create",
         title,
         description,
@@ -133,9 +142,8 @@ def list_issues(
     limit: Annotated[int, typer.Option(help="Max issues to show")] = 50,
 ) -> None:
     """List all issues."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "list_issues",
         status,
         sort_by=sort_by,
@@ -154,12 +162,11 @@ def show(
     show_format: Annotated[Literal["text", "json"], typer.Option("--format", "-f", help="Output format: text (default) or json")] = "text",
 ) -> None:
     """Show issue details."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "show",
         issue_id,
-        json_mode=state.json_mode or show_format == "json",
+        json_mode=ctx.obj.json_mode or show_format == "json",
     )
 
 
@@ -170,8 +177,7 @@ def review(
     limit: Annotated[int, typer.Option(help="Max issues to show")] = 20,
 ) -> None:
     """Review done issues before finalizing."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "review", issue_id=issue_id, limit=limit)
+    _run(ctx, "review", issue_id=issue_id, limit=limit)
 
 
 @app.command()
@@ -186,9 +192,8 @@ def update(
     tags: Annotated[str | None, typer.Option(help="Comma-separated tags (e.g. refactor,python,small)")] = None,
 ) -> None:
     """Update an issue."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "update",
         issue_id,
         title=title,
@@ -207,8 +212,7 @@ def cancel(
     reason: Annotated[str, typer.Option(help="Reason for cancellation")] = "",
 ) -> None:
     """Cancel an issue."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "cancel", issue_id, reason=reason)
+    _run(ctx, "cancel", issue_id, reason=reason)
 
 
 @app.command()
@@ -218,8 +222,7 @@ def finalize(
     resolution: Annotated[str, typer.Option(help="Resolution description")] = "",
 ) -> None:
     """Finalize a done issue."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "finalize", issue_id, resolution=resolution)
+    _run(ctx, "finalize", issue_id, resolution=resolution)
 
 
 @app.command()
@@ -230,8 +233,7 @@ def retry(
     reset: Annotated[bool, typer.Option(help="Reset retry/escalation counters (watermark reset)")] = False,
 ) -> None:
     """Retry an escalated issue."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "retry", issue_id, notes=notes, reset=reset)
+    _run(ctx, "retry", issue_id, notes=notes, reset=reset)
 
 
 @dep_app.command("add")
@@ -242,8 +244,7 @@ def dep_add(
     dep_type: Annotated[str, typer.Option("--type", help="Dependency type (blocks, related)")] = "blocks",
 ) -> None:
     """Add a dependency."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "dep_add", issue_id, depends_on, dep_type=dep_type)
+    _run(ctx, "dep_add", issue_id, depends_on, dep_type=dep_type)
 
 
 @dep_app.command("remove")
@@ -253,8 +254,7 @@ def dep_remove(
     depends_on: Annotated[str, typer.Argument(help="Dependency to remove")],
 ) -> None:
     """Remove a dependency."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "dep_remove", issue_id, depends_on)
+    _run(ctx, "dep_remove", issue_id, depends_on)
 
 
 @app.command("agents")
@@ -264,8 +264,7 @@ def list_agents(
     status: Annotated[str | None, typer.Option(help="Filter by status (idle, working, stalled, failed)")] = None,
 ) -> None:
     """List agents."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "list_agents", agent_id=agent_id, status=status)
+    _run(ctx, "list_agents", agent_id=agent_id, status=status)
 
 
 @app.command()
@@ -279,9 +278,8 @@ def logs(
     daemon: Annotated[bool, typer.Option(help="Show daemon logs instead of event logs")] = False,
 ) -> None:
     """Show event log."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "logs",
         follow=follow,
         n=lines,
@@ -298,15 +296,13 @@ def merges(
     status: Annotated[str | None, typer.Option(help="Filter by status (queued|running|merged|failed)")] = None,
 ) -> None:
     """Show merge queue."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "merges", status=status)
+    _run(ctx, "merges", status=status)
 
 
 @app.command()
 def status(ctx: typer.Context) -> None:
     """Show orchestrator status."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "status")
+    _run(ctx, "status")
 
 
 @app.command()
@@ -321,9 +317,8 @@ def metrics(
     agent: Annotated[str | None, typer.Option(help="Filter costs by specific agent ID (use with --costs)")] = None,
 ) -> None:
     """Show metrics and analytics."""
-    state: AppState = ctx.obj
-    _run_cli_command(
-        state,
+    _run(
+        ctx,
         "metrics",
         model=model,
         tag=tag,
@@ -341,15 +336,13 @@ def start(
     foreground: Annotated[bool, typer.Option(help="Run in foreground (used by daemon spawner)")] = False,
 ) -> None:
     """Start the hive daemon."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "start", foreground=foreground)
+    _run(ctx, "start", foreground=foreground)
 
 
 @app.command()
 def stop(ctx: typer.Context) -> None:
     """Stop the hive daemon."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "stop")
+    _run(ctx, "stop")
 
 
 @app.command()
@@ -362,16 +355,15 @@ def queen(
     mcp_config: Annotated[list[str] | None, typer.Option(help="Claude MCP config(s); repeat the option for multiple configs")] = None,
 ) -> None:
     """Launch Queen Bee TUI."""
-    state: AppState = ctx.obj
     try:
-        with _cli_session(state) as cli:
+        with _cli_session(ctx.obj) as cli:
             cli.queen(
                 backend=backend,
                 skip_permissions=dangerously_skip_permissions,
                 mcp_configs=mcp_config,
             )
     except Exception as exc:
-        _fail(state, exc)
+        _fail(ctx.obj, exc)
 
 
 @app.command("note")
@@ -385,15 +377,13 @@ def add_note(
     ] = "discovery",
 ) -> None:
     """Add a knowledge note."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "add_note", content, issue_id=issue_id, category=category)
+    _run(ctx, "add_note", content, issue_id=issue_id, category=category)
 
 
 @app.command()
 def debug(ctx: typer.Context) -> None:
     """Print diagnostic report for debugging."""
-    state: AppState = ctx.obj
-    _run_cli_command(state, "debug")
+    _run(ctx, "debug")
 
 
 def run(argv: list[str] | None = None) -> None:

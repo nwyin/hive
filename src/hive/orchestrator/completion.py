@@ -98,7 +98,7 @@ class CompletionMixin:
                     ),
                 )
 
-        result = assess_completion(messages, file_result=file_result)
+        result = assess_completion(file_result=file_result)
         if not result.success:
             return CompletionDecision(
                 transition=CompletionTransition.FAIL_ASSESSMENT,

@@ -1,18 +1,9 @@
-"""Layered configuration for Hive orchestrator.
-
-Resolution order (later wins):
-  1. Built-in defaults
-  2. ~/.hive/config.toml   (global user prefs)
-  3. .hive.toml             (per-project overrides)
-  4. Environment variables   (HIVE_* — backwards compat)
-"""
+"""Layered configuration for Hive orchestrator."""
 
 import os
 import tomllib
 from pathlib import Path
 
-
-# ── Mapping from TOML [hive] keys → (env var, type, default) ────────────
 
 _SENSITIVE_FIELDS: set[str] = set()
 
@@ -49,25 +40,25 @@ _FIELDS: dict[str, tuple[str, type, object]] = {
     "codex_heartbeat_interval": ("HIVE_CODEX_HEARTBEAT_INTERVAL", int, 60),
 }
 
-# Directory that holds global state (DB, pids, logs)
 HIVE_DIR = Path.home() / ".hive"
 _DEFAULT_DB_PATH = str(HIVE_DIR / "hive.db")
 
 
-class _Config:
-    """Singleton configuration object.
+def _read_hive_section(path: Path | None) -> dict:
+    """Read the ``[hive]`` section from *path* if it exists."""
+    if path is None or not path.is_file():
+        return {}
+    with open(path, "rb") as f:
+        return tomllib.load(f).get("hive", {})
 
-    All attributes use UPPER_CASE names so existing ``Config.MAX_AGENTS``
-    style access keeps working.
-    """
+
+class _Config:
+    """Configuration object with uppercase fields for backward compatibility."""
 
     def __init__(self):
-        self._loaded = False
         # Set defaults immediately so import-time access works
         self._apply_defaults()
         self._apply_env()
-
-    # ── internal helpers ─────────────────────────────────────────────
 
     def _apply_defaults(self):
         for key, (_env, _typ, default) in _FIELDS.items():
@@ -79,11 +70,7 @@ class _Config:
 
     def _apply_toml(self, path: Path):
         """Overlay values from a TOML file's [hive] section."""
-        if not path.is_file():
-            return
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-        section = data.get("hive", {})
+        section = _read_hive_section(path)
         for key, (_env, typ, _default) in _FIELDS.items():
             if key in section:
                 setattr(self, key.upper(), _coerce(section[key], typ))
@@ -95,19 +82,13 @@ class _Config:
             if raw is not None:
                 setattr(self, key.upper(), _coerce(raw, typ))
 
-    # ── public API ───────────────────────────────────────────────────
-
     def load(self, project_root: Path | None = None):
-        """(Re-)load config from TOML files + env vars.
-
-        Called once from ``cli.main()`` after project detection.
-        """
+        """(Re-)load config from TOML files plus env vars."""
         self._apply_defaults()
         self._apply_toml(HIVE_DIR / "config.toml")
         if project_root:
             self._apply_toml(project_root / ".hive.toml")
         self._apply_env()
-        self._loaded = True
 
     def get_resolved_config(self, project_root: Path | None = None) -> list[dict]:
         """Return resolved config with per-field source attribution.
@@ -118,16 +99,8 @@ class _Config:
         global_toml = HIVE_DIR / "config.toml"
         project_toml = (project_root / ".hive.toml") if project_root else None
 
-        # Load TOML sections once
-        global_section: dict = {}
-        if global_toml.is_file():
-            with open(global_toml, "rb") as f:
-                global_section = tomllib.load(f).get("hive", {})
-
-        project_section: dict = {}
-        if project_toml and project_toml.is_file():
-            with open(project_toml, "rb") as f:
-                project_section = tomllib.load(f).get("hive", {})
+        global_section = _read_hive_section(global_toml)
+        project_section = _read_hive_section(project_toml)
 
         result = []
         for key, (env_var, typ, default) in _FIELDS.items():
@@ -173,29 +146,27 @@ def _coerce(value: object, typ: type) -> object:
 
 
 class ConfigRegistry:
-    """Registry of per-project _Config instances.
-
-    Replaces the old module-level singleton while preserving backward
-    compatibility: ``Config.MAX_WORKERS`` continues to work via __getattr__
-    delegation to the global/CLI config loaded with load_global().
-    """
+    """Per-project config cache with a global CLI fallback."""
 
     def __init__(self):
         self._configs: dict[str, _Config] = {}  # project_name → _Config
         self._global: _Config | None = None  # fallback for CLI (single-project context)
 
+    @staticmethod
+    def _load_config(project_root: Path | None = None) -> _Config:
+        cfg = _Config()
+        cfg.load(project_root=project_root)
+        return cfg
+
     def get(self, project_name: str, project_root: Path | None = None) -> _Config:
         """Get or lazy-load config for a named project."""
         if project_name not in self._configs:
-            cfg = _Config()
-            cfg.load(project_root=project_root)
-            self._configs[project_name] = cfg
+            self._configs[project_name] = self._load_config(project_root=project_root)
         return self._configs[project_name]
 
     def load_global(self, project_root: Path | None = None) -> _Config:
         """Load config for the current CLI context (backward compat)."""
-        self._global = _Config()
-        self._global.load(project_root=project_root)
+        self._global = self._load_config(project_root=project_root)
         return self._global
 
     @property
@@ -213,8 +184,6 @@ class ConfigRegistry:
         except RuntimeError:
             raise RuntimeError(f"ConfigRegistry: cannot access '{name}' before load_global() is called")
 
-
-# ── Module-level singleton ───────────────────────────────────────────────
 
 Config = ConfigRegistry()
 

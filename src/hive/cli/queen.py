@@ -11,7 +11,6 @@ from ..config import Config
 class QueenMixin:
     """Mixin providing Queen Bee TUI methods for HiveCLI."""
 
-    # Sentinel markers for the Queen identity block in CLAUDE.md
     _QUEEN_SENTINEL_START = "<!-- HIVE-QUEEN-SESSION-START -->"
     _QUEEN_SENTINEL_END = "<!-- HIVE-QUEEN-SESSION-END -->"
 
@@ -25,6 +24,23 @@ class QueenMixin:
             resolved.append(str(path))
         return resolved
 
+    def _ensure_daemon_running(self):
+        """Start the daemon if needed and return its status."""
+        daemon = self._make_daemon()
+        daemon_status = daemon.status()
+        if daemon_status["running"]:
+            return daemon_status
+
+        print("Starting daemon... ", end="", flush=True)
+        daemon.start()
+        daemon_status = daemon.status()
+        if daemon_status["running"]:
+            print(f"done (PID {daemon_status['pid']})")
+            return daemon_status
+
+        print("failed")
+        self._error("Failed to start daemon. Check `hive daemon logs`.")
+
     def queen(self, *, backend: str | None = None, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
         """Launch Queen Bee TUI using the configured backend."""
         # Propagate to daemon and workers via env var (before daemon.start())
@@ -34,17 +50,7 @@ class QueenMixin:
         if resolved_mcp_configs:
             os.environ["HIVE_CLAUDE_MCP_CONFIGS"] = os.pathsep.join(resolved_mcp_configs)
 
-        daemon = self._make_daemon()
-        daemon_status = daemon.status()
-        if not daemon_status["running"]:
-            print("Starting daemon... ", end="", flush=True)
-            daemon.start()
-            daemon_status = daemon.status()
-            if daemon_status["running"]:
-                print(f"done (PID {daemon_status['pid']})")
-            else:
-                print("failed")
-                self._error("Failed to start daemon. Check `hive daemon logs`.")
+        self._ensure_daemon_running()
 
         effective = backend or Config.BACKEND
         if effective == "codex":
@@ -53,21 +59,16 @@ class QueenMixin:
             self._queen_claude(skip_permissions=skip_permissions, mcp_configs=resolved_mcp_configs)
 
     def _queen_write_identity_files(self) -> tuple[Path, Path]:
-        """Write Queen identity files for compaction persistence.
-
-        Returns (claude_md_path, instructions_path) for cleanup.
-        """
+        """Write queen identity files and return their paths."""
         from ..prompts import _load_template
 
         queen_prompt = _load_template("queen")
 
-        # Write full instructions to .hive/ so Queen can re-read after compaction
         hive_dir = self.project_path / ".hive"
         hive_dir.mkdir(exist_ok=True)
         instructions_path = hive_dir / "queen-instructions.md"
         instructions_path.write_text(queen_prompt)
 
-        # Write condensed identity anchor to .claude/CLAUDE.md (re-read every turn)
         claude_dir = self.project_path / ".claude"
         claude_dir.mkdir(exist_ok=True)
         claude_md = claude_dir / "CLAUDE.md"
@@ -90,7 +91,6 @@ class QueenMixin:
 
     def _queen_cleanup_identity_files(self, claude_md: Path, instructions_path: Path):
         """Remove Queen identity files written for the session."""
-        # Strip queen block from CLAUDE.md
         if claude_md.exists():
             content = claude_md.read_text()
             start = content.find(self._QUEEN_SENTINEL_START)
@@ -98,7 +98,6 @@ class QueenMixin:
                 end = content.find(self._QUEEN_SENTINEL_END)
                 if end != -1:
                     end += len(self._QUEEN_SENTINEL_END)
-                    # Consume trailing newline if present
                     if end < len(content) and content[end] == "\n":
                         end += 1
                     cleaned = (content[:start] + content[end:]).rstrip("\n")
@@ -107,23 +106,30 @@ class QueenMixin:
                     else:
                         claude_md.unlink()
 
-        # Remove instructions file
         instructions_path.unlink(missing_ok=True)
-
-        # Remove state file (ephemeral per-session)
         state_file = self.project_path / ".hive" / "queen-state.md"
         state_file.unlink(missing_ok=True)
 
+    def _run_queen_process(self, cmd: list[str], launch_message: str, *, missing_error: str | None = None):
+        """Run a queen subprocess with identity-file setup and cleanup."""
+        claude_md, instructions_path = self._queen_write_identity_files()
+        print(launch_message)
+        try:
+            result = subprocess.run(cmd)
+            sys.exit(result.returncode)
+        except FileNotFoundError:
+            if missing_error:
+                self._error(missing_error)
+            raise
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self._queen_cleanup_identity_files(claude_md, instructions_path)
+
     def _queen_claude(self, *, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
         """Launch Queen Bee as an interactive Claude CLI session."""
-        # Claude CLI refuses to launch inside another Claude Code session.
-        # Since the queen is a top-level interactive session (not nested), clear the guard.
         os.environ.pop("CLAUDECODE", None)
 
-        # Write identity files for compaction persistence
-        claude_md, instructions_path = self._queen_write_identity_files()
-
-        # Short system prompt — full instructions are in the file
         short_prompt = "You are the Hive Queen Bee coordinator. Read .hive/queen-instructions.md for your full instructions now."
 
         claude_cmd = os.environ.get("CLAUDE_CMD", "claude")
@@ -145,27 +151,12 @@ class QueenMixin:
                     "Bash(hive:*) Bash(git:*) Bash(ls:*) Bash(find:*) Bash(rg:*) Read Edit Write",
                 ]
             )
-
-        print("Launching Queen Bee TUI (Claude CLI)...\n")
-
-        # Use subprocess.run (not os.execvp) so we can clean up identity files on exit
-        try:
-            result = subprocess.run(cmd)
-            sys.exit(result.returncode)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self._queen_cleanup_identity_files(claude_md, instructions_path)
+        self._run_queen_process(cmd, "Launching Queen Bee TUI (Claude CLI)...\n")
 
     def _queen_codex(self):
         """Launch Queen Bee as an interactive Codex CLI session."""
-        # Write identity files for compaction persistence (instructions + state files).
-        claude_md, instructions_path = self._queen_write_identity_files()
-
         short_prompt = "Read .hive/queen-instructions.md for your full instructions now."
 
-        # Persistent instructions that survive long chats + compaction.
-        # Keep this short and point at the durable instruction/state files.
         developer_instructions = (
             "You are the Hive Queen Bee coordinator. You do NOT write code; you plan, decompose, and monitor.\\n"
             "Full instructions: .hive/queen-instructions.md (read now; re-read after compaction).\\n"
@@ -174,8 +165,6 @@ class QueenMixin:
             "Always use hive --json for Hive CLI commands."
         )
 
-        # Codex compaction prompt (used when the client compacts long threads).
-        # Ensure summaries keep the queen's durable context pointers.
         compact_prompt = (
             "Summarize the conversation for continuity.\\n"
             "Preserve: user goals, key decisions, current plan/issues, and next steps.\\n"
@@ -199,15 +188,8 @@ class QueenMixin:
             str(self.project_path),
             short_prompt,
         ]
-
-        print("Launching Queen Bee TUI (Codex CLI)...\n")
-
-        try:
-            result = subprocess.run(cmd)
-            sys.exit(result.returncode)
-        except FileNotFoundError:
-            self._error("Codex CLI not found. Install `codex` and ensure it's on PATH, or set CODEX_CMD to the codex executable path.")
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self._queen_cleanup_identity_files(claude_md, instructions_path)
+        self._run_queen_process(
+            cmd,
+            "Launching Queen Bee TUI (Codex CLI)...\n",
+            missing_error="Codex CLI not found. Install `codex` and ensure it's on PATH, or set CODEX_CMD to the codex executable path.",
+        )

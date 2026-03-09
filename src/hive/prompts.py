@@ -1,4 +1,4 @@
-"""Prompt templates for Hive agents."""
+"""Prompt templates and worktree JSONL helpers for Hive agents."""
 
 import hashlib
 import json
@@ -8,32 +8,14 @@ from typing import Any, Dict, List, Optional
 
 from .utils import CompletionResult
 
-# Filename for file-based completion signal
 RESULT_FILE_NAME = ".hive-result.jsonl"
-
-# Filename for notes file
 NOTES_FILE_NAME = ".hive-notes.jsonl"
-
-
-# Template cache: name -> template string
 _template_cache: Dict[str, str] = {}
-
-# Directory containing .md template files
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def _load_template(name: str) -> str:
-    """
-    Load a prompt template from prompts/{name}.md.
-
-    Templates are cached after first load.
-
-    Args:
-        name: Template name (without .md extension)
-
-    Returns:
-        Raw template string
-    """
+    """Load and cache a prompt template."""
     if name not in _template_cache:
         template_path = _PROMPTS_DIR / f"{name}.md"
         _template_cache[name] = template_path.read_text()
@@ -61,41 +43,62 @@ def _parse_event_detail(event: Dict[str, Any]) -> Dict[str, Any]:
     return detail if isinstance(detail, dict) else {}
 
 
+def _artifacts_from_list(artifacts_list: Any) -> Dict[str, Any]:
+    """Convert a result-file artifacts list into a simple dict."""
+    artifacts: Dict[str, Any] = {}
+    if isinstance(artifacts_list, list):
+        for artifact in artifacts_list:
+            if isinstance(artifact, dict):
+                art_type = artifact.get("type")
+                art_value = artifact.get("value")
+                if art_type:
+                    artifacts[art_type] = art_value
+    return artifacts
+
+
+def _read_first_jsonl(path: Path) -> Optional[Dict[str, Any]]:
+    """Read the first non-empty JSON line from *path*."""
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if line:
+                return json.loads(line)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _remove_file(path: Path) -> bool:
+    """Remove *path* if it exists."""
+    try:
+        if path.exists():
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def build_retry_context(db, issue_id: str) -> Optional[str]:
-    """
-    Build retry context by querying previous failure events for an issue.
-
-    Only includes events after the most recent retry_reset watermark (if any).
-
-    Args:
-        db: Database instance
-        issue_id: Issue ID to query events for
-
-    Returns:
-        Formatted retry context as markdown string, or None if no failures found
-    """
-    # Find the most recent retry_reset watermark (use id for ordering, not timestamp)
+    """Build retry context from prior failure events for an issue."""
     cursor = db.conn.execute(
         "SELECT MAX(id) FROM events WHERE issue_id = ? AND event_type = 'retry_reset'",
         (issue_id,),
     )
     reset_id = cursor.fetchone()[0]
 
-    # Query for different types of failure events
     incomplete_events = db.get_events(issue_id=issue_id, event_type="incomplete")
     merge_rejected_events = db.get_events(issue_id=issue_id, event_type="merge_rejected")
     stalled_events = db.get_events(issue_id=issue_id, event_type="stalled")
 
-    # Filter to only events after the reset watermark
     if reset_id is not None:
         incomplete_events = [e for e in incomplete_events if e["id"] > reset_id]
         merge_rejected_events = [e for e in merge_rejected_events if e["id"] > reset_id]
         stalled_events = [e for e in stalled_events if e["id"] > reset_id]
 
-    # Collect failure descriptions
     failures = []
-
-    # Process incomplete events
     for event in incomplete_events:
         detail = _parse_event_detail(event)
         reason = detail.get("reason", "Unknown reason")
@@ -106,13 +109,11 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
         else:
             failures.append(f"**Attempt failed**: {reason}")
 
-    # Process merge_rejected events
     for event in merge_rejected_events:
         detail = _parse_event_detail(event)
         summary = detail.get("summary", "Merge was rejected")
         failures.append(f"**Merge rejected**: {summary}")
 
-    # Process stalled events (similar structure to incomplete)
     for event in stalled_events:
         detail = _parse_event_detail(event)
         reason = detail.get("reason", "Agent stalled")
@@ -123,7 +124,6 @@ def build_retry_context(db, issue_id: str) -> Optional[str]:
         else:
             failures.append(f"**Attempt stalled**: {reason}")
 
-    # Return formatted context if any failures found
     if failures:
         failures_text = "\n".join(f"- {failure}" for failure in failures)
         return f"""## Prior Attempts
@@ -143,22 +143,7 @@ def build_worker_prompt(
     notes: Optional[List[Dict[str, Any]]] = None,
     retry_context: Optional[str] = None,
 ) -> str:
-    """
-    Build the worker prompt for an issue.
-
-    Args:
-        agent_name: Name of the agent
-        issue: Issue dict with title and description
-        worktree_path: Path to the git worktree
-        branch_name: Git branch name
-        project: Project name
-        notes: List of note dicts from other workers
-        retry_context: Optional retry context from previous failures
-
-    Returns:
-        Formatted worker prompt string
-    """
-    # Build context section
+    """Build the worker prompt for an issue."""
     context_parts = [
         f"- You are working in a git worktree at: {worktree_path}",
         f"- Branch: {branch_name}",
@@ -166,7 +151,6 @@ def build_worker_prompt(
 
     context = "\n".join(context_parts)
 
-    # Build notes section (knowledge from other workers)
     notes_section = ""
     if notes:
         note_lines = []
@@ -177,7 +161,6 @@ def build_worker_prompt(
             note_lines.append(f"- [{category}] {content} (from {source})")
         notes_section = "\n\n### Project Notes (from other workers)\n" + "\n".join(note_lines)
 
-    # Build retry section
     retry_section = ""
     if retry_context:
         retry_section = f"\n\n{retry_context}"
@@ -196,17 +179,7 @@ def build_worker_prompt(
 
 
 def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[str] = None) -> str:
-    """
-    Build the system prompt for an agent session.
-
-    Args:
-        project: Project name
-        agent_name: Agent name
-        worktree_path: Path to worktree (if available, checks for CLAUDE.md)
-
-    Returns:
-        System prompt string
-    """
+    """Build the system prompt for an agent session."""
     template_str = _load_template("system")
     base = Template(template_str).safe_substitute(
         agent_name=agent_name,
@@ -215,7 +188,6 @@ def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[s
 
     result = base.rstrip()
 
-    # Inject project-specific CLAUDE.md if it exists
     if worktree_path:
         claude_md = Path(worktree_path) / "CLAUDE.md"
         if claude_md.exists():
@@ -224,37 +196,15 @@ def build_system_prompt(project: str, agent_name: str, worktree_path: Optional[s
     return result
 
 
-def assess_completion(
-    messages: List[Dict[str, Any]],
-    file_result: Optional[Dict[str, Any]] = None,
-) -> CompletionResult:
-    """
-    Assess completion based on file-based result only.
-
-    Args:
-        messages: List of message dicts from backend session (unused, kept for compatibility)
-        file_result: Optional parsed result from .hive-result.jsonl file.
-            If provided, used directly to construct CompletionResult.
-
-    Returns:
-        CompletionResult with success status, reason, and artifacts
-    """
-    # If we have a file-based result, use it directly
+def assess_completion(file_result: Optional[Dict[str, Any]] = None) -> CompletionResult:
+    """Assess completion from the parsed result file."""
     if file_result is not None:
         status = file_result.get("status", "unknown")
         summary = file_result.get("summary", "")
         blockers = file_result.get("blockers", [])
         artifacts_list = file_result.get("artifacts", [])
 
-        # Convert artifacts list to dict
-        artifacts = {}
-        if isinstance(artifacts_list, list):
-            for artifact in artifacts_list:
-                if isinstance(artifact, dict):
-                    art_type = artifact.get("type")
-                    art_value = artifact.get("value")
-                    if art_type:
-                        artifacts[art_type] = art_value
+        artifacts = _artifacts_from_list(artifacts_list)
 
         reason = ""
         if status != "success" and blockers:
@@ -269,7 +219,6 @@ def assess_completion(
             artifacts=artifacts,
         )
 
-    # No file result = worker didn't write completion signal = failure
     return CompletionResult(
         success=False,
         reason="Worker did not write completion signal (.hive-result.jsonl)",
@@ -278,76 +227,35 @@ def assess_completion(
 
 
 def read_result_file(worktree_path: str) -> Optional[Dict[str, Any]]:
-    """
-    Read and parse a .hive-result.jsonl file from a worktree.
-
-    Args:
-        worktree_path: Path to the git worktree
-
-    Returns:
-        Parsed dict from the JSON line, or None if file doesn't exist or is invalid.
-    """
-    result_path = Path(worktree_path) / RESULT_FILE_NAME
-    if not result_path.exists():
-        return None
-
-    try:
-        text = result_path.read_text().strip()
-        if not text:
-            return None
-        # Read the first non-empty line (JSONL format)
-        first_line = text.split("\n")[0].strip()
-        return json.loads(first_line)
-    except (json.JSONDecodeError, OSError, IndexError):
-        return None
+    """Read and parse ``.hive-result.jsonl`` from a worktree."""
+    return _read_first_jsonl(Path(worktree_path) / RESULT_FILE_NAME)
 
 
 def remove_result_file(worktree_path: str) -> bool:
-    """
-    Remove the .hive-result.jsonl file from a worktree.
-
-    Args:
-        worktree_path: Path to the git worktree
-
-    Returns:
-        True if file was removed, False if it didn't exist.
-    """
-    result_path = Path(worktree_path) / RESULT_FILE_NAME
-    try:
-        if result_path.exists():
-            result_path.unlink()
-            return True
-    except OSError:
-        pass
-    return False
+    """Remove ``.hive-result.jsonl`` from a worktree if present."""
+    return _remove_file(Path(worktree_path) / RESULT_FILE_NAME)
 
 
 def read_notes_file(worktree_path: str) -> List[Dict[str, Any]]:
     """Read .hive-notes.jsonl from a worktree. Returns list of note dicts, or empty list."""
-    notes_path = Path(worktree_path) / NOTES_FILE_NAME
-    if not notes_path.exists():
-        return []
     try:
-        text = notes_path.read_text().strip()
-        if not text:
+        notes = _read_first_jsonl(Path(worktree_path) / NOTES_FILE_NAME)
+        if notes is None:
             return []
-        notes = []
-        for line in text.split("\n"):
+        notes_path = Path(worktree_path) / NOTES_FILE_NAME
+        parsed_notes = [notes]
+        for line in notes_path.read_text().splitlines()[1:]:
             line = line.strip()
             if line:
-                notes.append(json.loads(line))
-        return notes
+                parsed_notes.append(json.loads(line))
+        return parsed_notes
     except (json.JSONDecodeError, OSError):
         return []
 
 
 def remove_notes_file(worktree_path: str) -> bool:
     """Remove .hive-notes.jsonl from a worktree. Returns True if file existed."""
-    notes_path = Path(worktree_path) / NOTES_FILE_NAME
-    if notes_path.exists():
-        notes_path.unlink()
-        return True
-    return False
+    return _remove_file(Path(worktree_path) / NOTES_FILE_NAME)
 
 
 def build_refinery_prompt(
@@ -358,20 +266,7 @@ def build_refinery_prompt(
     agent_name: Optional[str] = None,
     test_command: Optional[str] = None,
 ) -> str:
-    """
-    Build the Refinery prompt for processing a merge.
-
-    Args:
-        issue_title: Title of the issue being merged
-        issue_id: Issue ID
-        branch_name: Git branch name
-        worktree_path: Path to the worktree
-        agent_name: Name of the worker agent (optional)
-        test_command: Preferred test command from queue metadata
-
-    Returns:
-        Formatted refinery prompt string
-    """
+    """Build the refinery prompt for merge processing."""
     if test_command:
         problem = (
             "Perform full first-pass merge review and integration. "

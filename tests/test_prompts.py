@@ -14,7 +14,6 @@ from hive.prompts import (
 
 def test_assess_completion_file_result_success():
     """Test assessing completion with file-based result (success)."""
-    messages = []  # Messages are now ignored
     file_result = {
         "status": "success",
         "summary": "Implemented authentication middleware",
@@ -24,7 +23,7 @@ def test_assess_completion_file_result_success():
         "artifacts": [{"type": "git_commit", "value": "abc123def456"}, {"type": "test_result", "value": "pass"}],
     }
 
-    result = assess_completion(messages, file_result=file_result)
+    result = assess_completion(file_result=file_result)
 
     assert result.success is True
     assert result.summary == "Implemented authentication middleware"
@@ -34,7 +33,6 @@ def test_assess_completion_file_result_success():
 
 def test_assess_completion_file_result_blocked():
     """Test assessing completion with file-based result (blocked)."""
-    messages = []  # Messages are now ignored
     file_result = {
         "status": "blocked",
         "summary": "Cannot proceed without database schema",
@@ -44,7 +42,7 @@ def test_assess_completion_file_result_blocked():
         "artifacts": [],
     }
 
-    result = assess_completion(messages, file_result=file_result)
+    result = assess_completion(file_result=file_result)
 
     assert result.success is False
     assert "Missing database schema definition" in result.reason
@@ -88,9 +86,7 @@ def test_build_refinery_prompt_test_failure():
 
 def test_assess_completion_no_file_result():
     """Test behavior when no file result is provided - should fail."""
-    messages = [{"parts": [{"type": "text", "text": "I've completed the task successfully."}]}]
-
-    result = assess_completion(messages)
+    result = assess_completion()
 
     assert result.success is False
     assert "Worker did not write completion signal" in result.reason
@@ -98,7 +94,6 @@ def test_assess_completion_no_file_result():
 
 def test_assess_completion_file_result_failure():
     """Test assessing completion with file-based result (failure)."""
-    messages = []  # Messages are now ignored
     file_result = {
         "status": "failure",
         "summary": "Tests failed after implementation",
@@ -108,7 +103,7 @@ def test_assess_completion_file_result_failure():
         "artifacts": [],
     }
 
-    result = assess_completion(messages, file_result=file_result)
+    result = assess_completion(file_result=file_result)
 
     assert result.success is False
     assert "Unit tests are failing; Integration test timeout" in result.reason
@@ -116,7 +111,6 @@ def test_assess_completion_file_result_failure():
 
 def test_assess_completion_file_result_unknown_status():
     """Test handling unknown status in file result."""
-    messages = []  # Messages are now ignored
     file_result = {
         "status": "unknown",
         "summary": "Something went wrong",
@@ -126,7 +120,7 @@ def test_assess_completion_file_result_unknown_status():
         "artifacts": [],
     }
 
-    result = assess_completion(messages, file_result=file_result)
+    result = assess_completion(file_result=file_result)
 
     assert result.success is False
     assert "Worker reported status: unknown" in result.reason
