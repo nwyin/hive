@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated, Literal, NoReturn
 
+import click
 import typer
 from rich.console import Console
 
@@ -397,4 +398,9 @@ def debug(ctx: typer.Context) -> None:
 
 def run(argv: list[str] | None = None) -> None:
     """Run the Typer app with an explicit argv list."""
-    app(args=argv, prog_name="hive", standalone_mode=False)
+    try:
+        app(args=argv, prog_name="hive", standalone_mode=False)
+    except click.exceptions.NoArgsIsHelpError:
+        # Click/Typer prints help for no-arg invocations before raising this
+        # sentinel when standalone_mode=False. Swallow it so `hive` exits cleanly.
+        return

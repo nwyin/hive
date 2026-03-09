@@ -248,6 +248,19 @@ def test_cli_show_format_json_matches_global_json_flag(temp_db, tmp_path, capsys
     assert "recent_events" in data
 
 
+def test_main_no_args_prints_help_without_raising(capsys):
+    """Running the CLI with no args should show help and exit cleanly."""
+    from hive.cli import main
+
+    main([])
+
+    captured = capsys.readouterr()
+    assert "Usage: hive" in captured.out
+    assert "Hive multi-agent orchestrator." in captured.out
+    assert "NoArgsIsHelpError" not in captured.out
+    assert captured.err == ""
+
+
 def test_cli_show_issue_with_dependencies(temp_db, tmp_path, capsys):
     """Test showing issue with dependencies."""
     cli = HiveCLI(temp_db, str(tmp_path))
