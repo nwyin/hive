@@ -46,23 +46,10 @@ def cli_command(*, formatter):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
             json_mode = kwargs.pop("json_mode", False)
-            self._json_mode = json_mode
-            try:
-                result = fn(self, *args, **kwargs)
-                if result is not None:
-                    if json_mode:
-                        print(json.dumps(result, default=str))
-                    else:
-                        output = formatter(result)
-                        if output:
-                            print(output)
-                return result
-            except Exception as e:
-                if json_mode:
-                    print(json.dumps({"error": str(e)}))
-                else:
-                    print(f"Error: {e}", file=sys.stderr)
-                sys.exit(1)
+            return self.run_command(fn.__name__, *args, json_mode=json_mode, **kwargs)
+
+        wrapper._cli_raw = fn
+        wrapper._cli_formatter = formatter
 
         return wrapper
 
@@ -76,6 +63,56 @@ class HiveCLI(QueenMixin):
         self.db = db
         self.project_path = Path(project_path).resolve()
         self.project_name = self.project_path.name
+
+    def _handle_command_error(self, exc: Exception, *, json_mode: bool = False):
+        """Print a CLI-friendly error and exit."""
+        if json_mode:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    @classmethod
+    def _get_command_handler(cls, command_name: str):
+        """Return the decorated handler method for a command."""
+        method = getattr(cls, command_name, None)
+        if method is None or not callable(method):
+            raise ValueError(f"Unknown CLI command: {command_name}")
+        return method
+
+    def invoke_raw(self, command_name: str, *args, json_mode: bool = False, **kwargs):
+        """Run a command's data-gathering function without formatting or error trapping."""
+        self._json_mode = json_mode
+        method = self._get_command_handler(command_name)
+        raw = getattr(method, "_cli_raw", None)
+        if raw is None:
+            raise ValueError(f"Command does not support raw invocation: {command_name}")
+        return raw(self, *args, **kwargs)
+
+    def render_result(self, command_name: str, result: dict | None, *, json_mode: bool = False, formatter=None):
+        """Emit a command result using JSON or the registered formatter."""
+        if result is None:
+            return None
+        if json_mode:
+            print(json.dumps(result, default=str))
+            return result
+
+        method = self._get_command_handler(command_name)
+        render = formatter or getattr(method, "_cli_formatter", None)
+        if render is None:
+            raise ValueError(f"Command does not define a formatter: {command_name}")
+        output = render(result)
+        if output:
+            print(output)
+        return result
+
+    def run_command(self, command_name: str, *args, json_mode: bool = False, formatter=None, **kwargs):
+        """Run a command through the standard CLI error/formatting pipeline."""
+        try:
+            result = self.invoke_raw(command_name, *args, json_mode=json_mode, **kwargs)
+            return self.render_result(command_name, result, json_mode=json_mode, formatter=formatter)
+        except Exception as exc:
+            self._handle_command_error(exc, json_mode=json_mode)
 
     def _error(self, msg: str, *, json_mode: bool = False):
         """Print error and exit."""

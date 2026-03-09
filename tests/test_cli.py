@@ -200,34 +200,21 @@ def test_cli_status_json_includes_dirty_main_merge_blocker(temp_db, tmp_path, ca
 
 def test_cli_show_format_json(temp_db, tmp_path, capsys):
     """--format json on show should produce same JSON output as json_mode=True."""
-    import argparse
+    from hive.cli import main
 
     cli = HiveCLI(temp_db, str(tmp_path))
     issue_id = temp_db.create_issue("Format test", "desc", priority=3, project=tmp_path.name)
 
-    # Call show with format=json via the method directly to verify the flag routes correctly
+    # Call show with format=json via the method directly to verify the raw payload
     cli.show(issue_id, json_mode=True)
     captured_method = capsys.readouterr()
     expected = json.loads(captured_method.out)
 
-    # Now verify the argparse route: simulate --format json
-    # We patch main() by verifying argparse produces json_mode behavior
-    # Since we can't easily invoke main() without a DB path, we test the
-    # argparse namespace directly to confirm the flag is wired correctly.
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    show_p = subparsers.add_parser("show")
-    show_p.add_argument("issue_id")
-    show_p.add_argument("--format", "-f", choices=["text", "json"], default="text", dest="show_format")
-
-    args_json = parser.parse_args(["show", issue_id, "--format", "json"])
-    assert args_json.show_format == "json"
-
-    args_short = parser.parse_args(["show", issue_id, "-f", "json"])
-    assert args_short.show_format == "json"
-
-    args_default = parser.parse_args(["show", issue_id])
-    assert args_default.show_format == "text"
+    # Verify the real CLI entrypoint accepts --format json
+    main(["--project", str(tmp_path), "--db", str(temp_db.db_path), "show", issue_id, "--format", "json"])
+    captured_main = capsys.readouterr()
+    via_main = json.loads(captured_main.out)
+    assert via_main == expected
 
     # Verify text format produces human-readable output (not JSON)
     cli.show(issue_id, json_mode=False)
@@ -1110,6 +1097,29 @@ def test_cli_command_inv3_human_output_create(temp_db, tmp_path, capsys):
     assert "My Title" in out
     assert "Priority: 3" in out
     assert "Tags: refactor, small" in out
+
+
+def test_cli_invoke_raw_returns_result_without_printing(temp_db, tmp_path, capsys):
+    """Raw invocation should return data without emitting output."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    result = cli.invoke_raw("create", "Raw title", "Raw description", priority=3)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert result["title"] == "Raw title"
+    assert result["priority"] == 3
+
+
+def test_cli_run_command_uses_registered_formatter(temp_db, tmp_path, capsys):
+    """Explicit command runner should use the registered formatter."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    result = cli.run_command("create", "Formatted title", json_mode=False)
+
+    captured = capsys.readouterr()
+    assert "Created issue:" in captured.out
+    assert result["title"] == "Formatted title"
 
 
 def test_cli_command_inv3_human_output_cancel(temp_db, tmp_path, capsys):
