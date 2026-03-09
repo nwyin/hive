@@ -8,8 +8,8 @@ repos:
         args: [--check]
   - repo: local
     hooks:
-      - id: pyright
-        name: pyright
-        entry: uv run pyright
+      - id: ty
+        name: ty
+        entry: uv run ty check src
         language: system
         pass_filenames: false

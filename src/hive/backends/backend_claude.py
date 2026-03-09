@@ -29,6 +29,7 @@ import shutil
 import signal
 import uuid
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -519,7 +520,12 @@ class ClaudeWSBackend(HiveBackend):
     async def __aenter__(self) -> "ClaudeWSBackend":
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.stop()
         # Kill all child processes immediately (SIGKILL to process groups).
         # No graceful abort/WS-close — we're shutting down the whole daemon.
