@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "11945aebd39a",
+  "session_id": "0e644f95-3597-4cab-be5b-3019260f8d86",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-09T09:04:15.254958Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hive/prompts.py",
+    "src/hive/prompts/queen.md",
+    "src/hive/prompts/refinery.md",
+    "src/hive/prompts/system.md",
+    "src/hive/prompts/worker.md",
+    "tests/test_prompts.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "c80cd30a5781",
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 36905,
+    "cache_read_tokens": 218436,
+    "output_tokens": 5206,
+    "api_call_count": 10
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-09T09:04:15.204548Z",
+    "agent_lines": 62,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 62,
+    "agent_percentage": 100
+  }
+}
