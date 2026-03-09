@@ -1,0 +1,328 @@
+Implement the following plan:
+
+# Plan: Retry Counter Reset via Watermark Event
+
+## Context
+
+When an issue repeatedly fails/escalates, the retry counter (computed by counting `retry`, `agent_switch`, and `incomplete` events) prevents it from being retried further. After fixing the underlying cause, there's no CLI way to reset these counters — users must manually delete rows in SQLite. We'll add a "watermark" event (`retry_reset`) that resets the counters without destroying the audit trail.
+
+## Changes
+
+### 1. Add `--reset` flag to `hive retry` CLI command
+
+**`src/hive/cli/parser.py`** (~line 147):
+- Add `--reset` flag to the existing `retry` parser
+
+**`src/hive/cli/parser.py`** (~line 360, dispatch):
+- Pass `args.reset` through to `cli.retry()`
+
+**`src/hive/cli/core.py`** (~line 449, `retry()` method):
+- Accept `reset: bool = False` parameter
+- When `reset=True`, log a `retry_reset` event (instead of / in addition to the `manual_retry` event)
+- Include notes in the event detail
+
+### 2. Add `count_events_by_type_since_reset()` to DB layer
+
+**`src/hive/db/metrics.py`** (after `count_events_by_type`):
+- New method `count_events_by_type_since_reset(issue_id, event_type)` that counts events only after the most recent `retry_reset` event:
+```sql
+SELECT COUNT(*) FROM events
+WHERE issue_id = ? AND event_type = ?
+  AND created_at > COALESCE(
+    (SELECT MAX(created_at) FROM events
+     WHERE issue_id = ? AND event_type = 'retry_reset'),
+    '1970-01-01'
+  )
+```
+
+### 3. Replace `count_events_by_type` calls with reset-aware version
+
+All call sites that feed into escalation decisions need the new method:
+
+**`src/hive/orchestrator/completion.py`** (lines 326, 330, 375, 390, 404-405):
+- `_choose_escalation()` — 2 calls (retry + agent_switch)
+- `_handle_agent_failure()` — 4 calls (retry count for detail, agent_switch count for detail, and 2 for the final escalation detail)
+
+**`src/hive/orchestrator/core.py`** (lines 256-257):
+- `_reconcile_stale_agents()` — 2 calls (retry + agent_switch budget check)
+
+### 4. Filter `build_retry_context()` to respect the watermark
+
+**`src/hive/prompts.py`** (~line 64):
+- Query for the most recent `retry_reset` event's `created_at`
+- Filter `incomplete`, `merge_rejected`, and `stalled` events to only include those after the reset timestamp
+- This way agents don't see stale failure context from before the reset
+
+### 5. `agent_runs` view — leave as-is
+
+The `agent_runs` view (line 216 of `core.py`) uses a raw subquery for `retry_count`. This is a **historical metrics view** — it should reflect total lifetime retries, not just post-reset ones. No change needed.
+
+### 6. Tests
+
+**`tests/test_cli.py`**:
+- Test `hive retry --reset <id>` logs `retry_reset` event
+- Test that after reset, the issue status is `open`
+
+**`tests/test_db.py`** (or `tests/test_metrics.py` if it exists):
+- Test `count_events_by_type_since_reset()` returns 0 after a reset event
+- Test it counts correctly when there are events both before and after reset
+- Test it works the same as `count_events_by_type()` when no reset event exists
+
+**`tests/test_orchestrator.py`**:
+- Test that `_choose_escalation()` returns `RETRY` after a `retry_reset` even when old events exceed the threshold
+
+**`tests/test_prompts.py`**:
+- Test that `build_retry_context()` returns `None` when all failures are before a `retry_reset`
+
+## Files to modify
+- `src/hive/cli/parser.py` — add `--reset` flag + dispatch
+- `src/hive/cli/core.py` — accept `reset` param, log `retry_reset` event
+- `src/hive/db/metrics.py` — add `count_events_by_type_since_reset()`
+- `src/hive/orchestrator/completion.py` — swap to reset-aware counting
+- `src/hive/orchestrator/core.py` — swap to reset-aware counting
+- `src/hive/prompts.py` — filter retry context by watermark
+- `tests/test_cli.py` — CLI reset tests
+- `tests/test_orchestrator.py` — escalation decision test
+- `tests/test_prompts.py` — retry context filtering test
+
+## Verification
+1. `uvx ruff check && uvx ruff format --check`
+2. `python -m pytest tests/ -v --timeout=30`
+3. Manual test: create issue, simulate escalation events, verify `hive retry` without `--reset` still hits the threshold, then `hive retry --reset` clears counters
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/9aeb087e-14f3-46ee-9bbf-bd8ac89ad93b.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+can we do a hard re-install of hive on the system; seems like i can't pull in this update. issues still being esclated and reseting
+
+---
+
+[Request interrupted by user]
+
+---
+
+not reseting
+
+---
+
+Needs attention (2):
+  w-9640ff3de673   [escalated] Wire briefing generation into game flow
+  w-09ccf79f8172   [escalated] Instrument game.ts with structured loggi
+
+poke at these two issues; they're still not being opened and in-progress properly
+
+---
+
+poke again because they issues are still being instantly esclated
+
+---
+
+[Request interrupted by user]
+
+---
+
+2026-03-04 02:20:44  incomplete                issue=w-09ccf79f8172  agent=agent-e066a2850f29  reason=Worker did not write completion signal (.hive-result.jsonl) summary= model=claude-sonnet-4-6
+
+why are we so neurotic about checking their completion signal? we should give them time to cook no? or is this not related
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+ok we got this; let's merge this into main
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze this conversation:
+
+1. **Initial Request**: User asked to implement a plan for "Retry Counter Reset via Watermark Event" - adding a `--reset` flag to `hive retry` CLI that logs a `retry_reset` event as a watermark, and making all escalation/retry counting logic respect this watermark.
+
+2. **Plan Implementation**: I read all relevant files, created branch `feat/retry-reset-watermark`, and implemented:
+   - `count_events_by_type_since_reset()` in metrics.py (using id-based ordering)
+   - `count_events_since_minutes_since_reset()` in metrics.py
+   - `--reset` flag in parser.py
+   - `reset` param in `retry()` method in core.py
+   - Replaced `count_events_by_type` with `_since_reset` variants in completion.py and core.py
+   - Filtered `build_retry_context()` by watermark in prompts.py
+   - Tests in test_cli.py, test_db.py, test_orchestrator.py, test_prompts.py
+
+3. **Bug Fix 1**: Initial implementation used `created_at` timestamp for ordering, but events logged in the same second had equal timestamps. Fixed by using autoincrement `id` field instead.
+
+4. **Hard reinstall**: User asked for hard reinstall (`uv tool install --force --reinstall -e .`) and daemon restart. Done.
+
+5. **Issues still escalating**: User noted issues w-9640ff3de673 and w-09ccf79f8172 weren't being opened properly. Investigated and found anomaly detection (`count_events_since_minutes`) wasn't respecting the reset watermark - this was a separate bug. Fixed by adding `count_events_since_minutes_since_reset` and using it in `_choose_escalation`.
+
+6. **Still escalating**: User said issues still being instantly escalated. After reinstall+retry, added diagnostic logging to `backend_claude.py` to capture assistant message content and token counts on session idle, plus stderr capture on delete.
+
+7. **"Credit balance is too low"**: The diagnostic logs revealed the actual root cause - "Credit balance is too low" from the Anthropic API. Workers weren't crashing due to code bugs; the API balance was depleted. This was the message from the model going busy→idle in <1 second.
+
+8. **User asked about neurotic completion checking**: User noted "why are we so neurotic about checking their completion signal?" - I explained it's NOT about checking too aggressively; the workers complete (fail) instantly because the API returns "Credit balance is too low" immediately. The monitor correctly waits for the session to go idle.
+
+9. **Merge request**: User said "ok we got this; let's merge this into main". I checked the branch status:
+   - 2 commits ahead of main: `bddafee` (anomaly fix) and `e93add0` (main feature)
+   - `backend_claude.py` has unstaged diagnostic logging changes (from the credit balance investigation)
+   - Need to decide whether to include the diagnostic logging in the merge or discard it
+
+Key technical details:
+- The diagnostic logging in backend_claude.py was useful but the commit was rejected by user (tool use interrupted)
+- Current state: on branch `feat/retry-reset-watermark`, 2 commits to merge, one unstaged change in backend_claude.py
+- The merge should be to `main` branch
+
+Summary:
+1. Primary Request and Intent:
+   - Implement a "retry counter reset via watermark event" feature: add `--reset` flag to `hive retry` CLI that logs a `retry_reset` event, making all escalation/retry counting logic respect this watermark so counters can be cleared without destroying audit history.
+   - After implementation, perform a hard reinstall of the hive tool so changes take effect.
+   - Diagnose why two specific issues (w-9640ff3de673, w-09ccf79f8172) kept getting instantly escalated even after resets.
+   - Merge the feature branch `feat/retry-reset-watermark` into `main`.
+
+2. Key Technical Concepts:
+   - **Watermark event pattern**: `retry_reset` event logged to DB; all post-reset counting queries use `id > MAX(id WHERE event_type='retry_reset')` to only count events after the watermark.
+   - **Autoincrement id vs timestamp ordering**: Initial implementation used `created_at` timestamp, but events in the same second have equal timestamps. Fixed to use autoincrement `id` for strict ordering.
+   - **Anomaly detection**: `count_events_since_minutes` (time-window based) also needed a reset-aware variant; without it, old `incomplete` events within the 10-minute anomaly window would re-trigger escalation immediately after a reset.
+   - **hive daemon**: Python asyncio orchestrator managing Claude CLI worker sessions via WebSocket.
+   - **uv tool install --force --reinstall**: Required to hot-swap installed hive binary from source editable install.
+   - **"Credit balance is too low"**: Root cause of instant worker failure — Anthropic API balance depleted, model returns this message in <1 second with 0 input/output tokens.
+
+3. Files and Code Sections:
+   - **`src/hive/db/metrics.py`**
+     - Added `count_events_by_type_since_reset()`: counts events of a given type only after the most recent `retry_reset` event, using `id`-based ordering.
+     - Added `count_events_since_minutes_since_reset()`: combines time-window filter with reset watermark.
+     ```python
+     def count_events_by_type_since_reset(self, issue_id: str, event_type: str) -> int:
+         cursor = self.conn.execute(
+             """
+             SELECT COUNT(*) FROM events
+             WHERE issue_id = ? AND event_type = ?
+               AND id > COALESCE(
+                 (SELECT MAX(id) FROM events
+                  WHERE issue_id = ? AND event_type = 'retry_reset'),
+                 0
+               )
+             """,
+             (issue_id, event_type, issue_id),
+         )
+         return cursor.fetchone()[0]
+
+     def count_events_since_minutes_since_reset(self, issue_id: str, event_type: str, minutes: int) -> int:
+         cursor = self.conn.execute(
+             """
+             SELECT COUNT(*) FROM events
+             WHERE issue_id = ? AND event_type = ?
+               AND created_at >= datetime('now', ?)
+               AND id > COALESCE(
+                 (SELECT MAX(id) FROM events
+                  WHERE issue_id = ? AND event_type = 'retry_reset'),
+                 0
+               )
+             """,
+             (issue_id, event_type, f"-{minutes} minutes", issue_id),
+         )
+         return cursor.fetchone()[0]
+     ```
+
+   - **`src/hive/cli/parser.py`**
+     - Added `--reset` flag to `retry` subparser.
+     - Passed `reset=args.reset` in dispatch to `cli.retry()`.
+     ```python
+     retry_parser.add_argument("--reset", action="store_true", help="Reset retry/escalation counters (watermark reset)")
+     # dispatch:
+     cli.retry(args.issue_id, notes=args.notes, reset=args.reset, json_mode=json_mode)
+     ```
+
+   - **`src/hive/cli/core.py`**
+     - `retry()` method now accepts `reset: bool = False`; when True, logs a `retry_reset` event before `manual_retry`, appends "(counters reset)" to message, includes `reset` key in return dict.
+     ```python
+     def retry(self, issue_id: str, notes: str = "", reset: bool = False):
+         ...
+         if reset:
+             self.db.log_event(issue_id, None, "retry_reset", {"notes": notes})
+         self.db.log_event(issue_id, None, "manual_retry", {"notes": notes})
+         msg = f"Reset issue {issue_id} to 'open' for retry"
+         if reset:
+             msg += " (counters reset)"
+         return {"issue_id": issue_id, "status": "open", "notes": notes, "reset": reset, "message": msg}
+     ```
+
+   - **`src/hive/orchestrator/completion.py`**
+     - All `count_events_by_type(issue_id, "retry")` → `count_events_by_type_since_reset(issue_id, "retry")` (4 occurrences).
+     - All `count_events_by_type(issue_id, "agent_switch")` → `count_events_by_type_since_reset(issue_id, "agent_switch")` (4 occurrences).
+     - Anomaly check: `count_events_since_minutes(...)` → `count_events_since_minutes_since_reset(...)` (2 occurrences in `_choose_escalation` and `_handle_agent_failure`).
+
+   - **`src/hive/orchestrator/core.py`**
+     - `_reconcile_stale_agents()`: 2 `count_events_by_type` calls replaced with `count_events_by_type_since_reset`.
+
+   - **`src/hive/prompts.py`**
+     - `build_retry_context()` now queries `MAX(id) WHERE event_type='retry_reset'` and filters `incomplete`, `merge_rejected`, `stalled` events to only those with `id > reset_id`.
+     ```python
+     cursor = db.conn.execute(
+         "SELECT MAX(id) FROM events WHERE issue_id = ? AND event_type = 'retry_reset'",
+         (issue_id,),
+     )
+     reset_id = cursor.fetchone()[0]
+     ...
+     if reset_id is not None:
+         incomplete_events = [e for e in incomplete_events if e["id"] > reset_id]
+         merge_rejected_events = [e for e in merge_rejected_events if e["id"] > reset_id]
+         stalled_events = [e for e in stalled_events if e["id"] > reset_id]
+     ```
+
+   - **`src/hive/backends/backend_claude.py`** (unstaged, not yet committed)
+     - Added diagnostic logging: logs assistant message content preview on each `assistant` message.
+     - Changed `result` handler to log `in=`, `out=`, `iterations=`, `num_messages=` counts.
+     - Added stderr capture in `delete_session()` before killing the process.
+     - These changes were added to diagnose the instant-worker-exit problem and revealed "Credit balance is too low".
+
+   - **`tests/test_cli.py`**: Added `test_cli_retry_reset_logs_retry_reset_event` and `test_cli_retry_without_reset_no_retry_reset_event`.
+   - **`tests/test_db.py`**: Added 3 tests for `count_events_by_type_since_reset`: no-reset parity, post-reset counting, zero immediately after reset.
+   - **`tests/test_orchestrator.py`**: Added `test_choose_escalation_retry_after_reset` and `test_choose_escalation_anomaly_respects_reset`.
+   - **`tests/test_prompts.py`**: Added `test_build_retry_context_returns_none_after_reset` and `test_build_retry_context_includes_post_reset_failures`.
+
+4. Errors and fixes:
+   - **Timestamp granularity bug**: Initial `count_events_by_type_since_reset` used `created_at > MAX(created_at WHERE retry_reset)`, but events logged in rapid succession share the same SQLite second-level timestamp. 2 tests failed (`test_count_events_by_type_since_reset_after_reset`, `test_build_retry_context_includes_post_reset_failures`). Fixed by switching to `id > MAX(id WHERE retry_reset)` using the autoincrement primary key for strict ordering.
+   - **Anomaly detection not respecting reset**: After the main feature was deployed, issues were still being immediately escalated after a reset. The anomaly check in `_choose_escalation` used `count_events_since_minutes` (not reset-aware), so old `incomplete` events within the 10-minute window still triggered anomaly escalation. Fixed by adding `count_events_since_minutes_since_reset` and using it in both anomaly check call sites.
+   - **"Credit balance is too low"**: Workers going busy→idle in <1 second was misdiagnosed as a code problem. Diagnostic logging added to `backend_claude.py` revealed the actual cause: Anthropic API credits exhausted. Not a code bug.
+
+5. Problem Solving:
+   - Implemented full watermark-based reset feature across DB, CLI, orchestrator, and prompts layers.
+   - Identified and fixed timestamp granularity issue by using autoincrement id ordering.
+   - Identified and fixed anomaly detection not respecting reset watermark.
+   - Diagnosed instant worker failures as API credit exhaustion via new diagnostic logging.
+   - All 465 tests pass.
+
+6. All user messages:
+   - "Implement the following plan: [full plan text for Retry Counter Reset via Watermark Event]"
+   - "can we do a hard re-install of hive on the system; seems like i can't pull in this update. issues still being esclated and reseting [Request interrupted by user] not reseting"
+   - "poke at these two issues; they're still not being opened and in-progress properly" (about w-9640ff3de673 and w-09ccf79f8172)
+   - "poke again because they issues are still being instantly esclated"
+   - "[Request interrupted by user] 2026-03-04 02:20:44 incomplete issue=w-09ccf79f8172 ... why are we so neurotic about checking their completion signal? we should give them time to cook no? or is this not related"
+   - "ok we got this; let's merge this into main"
+
+7. Pending Tasks:
+   - Merge branch `feat/retry-reset-watermark` into `main`.
+   - Decide what to do with the unstaged diagnostic changes in `backend_claude.py` (commit them or discard before merging).
+
+8. Current Work:
+   The user just said "ok we got this; let's merge this into main." The current state is:
+   - On branch `feat/retry-reset-watermark`
+   - 2 commits ahead of main:
+     - `e93add0` — "Add retry counter reset via watermark event"
+     - `bddafee` — "Make anomaly detection respect retry_reset watermark"
+   - `src/hive/backends/backend_claude.py` has unstaged diagnostic logging changes (not committed) that were added during debugging.
+   - All 465 tests pass on the committed code.
+
+9. Optional Next Step:
+   The user's most recent message was: "ok we got this; let's merge this into main"
+   
+   Next step: Handle the unstaged `backend_claude.py` changes (either commit them as useful diagnostics or restore the file), then merge `feat/retry-reset-watermark` into `main` with `git checkout main && git merge feat/retry-reset-watermark`.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/8ab3626c-4b69-43b6-8747-beb602dff535.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.

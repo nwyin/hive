@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "3b02b5bdc537",
+  "session_id": "8ab3626c-4b69-43b6-8747-beb602dff535",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-09T08:20:44.012256Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hive/cli/parser.py",
+    "src/hive/cli/core.py",
+    "tests/test_cli.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "c3452ec91861",
+  "token_usage": {
+    "input_tokens": 12994,
+    "cache_creation_tokens": 396139,
+    "cache_read_tokens": 10982345,
+    "output_tokens": 27477,
+    "api_call_count": 108
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-09T08:20:43.489798Z",
+    "agent_lines": 0,
+    "human_added": 509,
+    "human_modified": 846,
+    "human_removed": 0,
+    "total_committed": 509,
+    "agent_percentage": 0
+  }
+}
