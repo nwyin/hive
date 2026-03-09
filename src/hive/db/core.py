@@ -233,7 +233,7 @@ WHERE e_start.event_type = 'worker_started';
 class DatabaseCore:
     """SQLite database wrapper for Hive orchestrator."""
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str | None = None):
         """
         Initialize database connection.
 

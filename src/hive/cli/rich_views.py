@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from rich import box
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -87,7 +87,7 @@ def render_issue_show(result: dict):
     if result.get("model"):
         rows.append(("Model", str(result["model"])))
 
-    renderables = [_kv_panel("Issue", rows)]
+    renderables: list[RenderableType] = [_kv_panel("Issue", rows)]
 
     if result.get("description"):
         renderables.append(Panel(result["description"], title="Description", border_style="white"))
@@ -134,7 +134,7 @@ def render_review(result: dict):
             ("Merge", item.get("merge_status") or "-"),
             ("Updated", item.get("updated_at", "-")),
         ]
-        renderables = [_kv_panel("Review", summary, border_style="yellow")]
+        renderables: list[RenderableType] = [_kv_panel("Review", summary, border_style="yellow")]
         if item.get("description"):
             renderables.append(Panel(item["description"], title="Description", border_style="white"))
         commands = []
@@ -181,7 +181,7 @@ def render_add_note(result: dict):
 
 
 def render_status(result: dict):
-    renderables = [
+    renderables: list[RenderableType] = [
         _kv_panel(
             "Hive Status",
             [
@@ -263,7 +263,7 @@ def render_list_agents(result: dict):
         ]
         if result.get("current_issue"):
             rows.append(("Current issue", result["current_issue"]))
-        renderables = [_kv_panel("Agent", rows)]
+        renderables: list[RenderableType] = [_kv_panel("Agent", rows)]
         events = result.get("recent_events", [])
         if events:
             event_table = Table(box=box.SIMPLE)
@@ -356,7 +356,7 @@ def render_metrics(result: dict):
             ("Output tokens", f"{result['total_output_tokens']:,}"),
             ("Estimated cost", f"${result['estimated_cost_usd']:.4f}"),
         ]
-        renderables = [_kv_panel("Token Usage & Costs", rows, border_style="green")]
+        renderables: list[RenderableType] = [_kv_panel("Token Usage & Costs", rows, border_style="green")]
         for title, key in [
             ("Top Issues by Token Usage", "issue_breakdown"),
             ("Top Agents by Token Usage", "agent_breakdown"),

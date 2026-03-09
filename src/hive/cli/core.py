@@ -52,8 +52,8 @@ def cli_command(*, formatter):
             json_mode = kwargs.pop("json_mode", False)
             return self.run_command(fn.__name__, *args, json_mode=json_mode, **kwargs)
 
-        wrapper._cli_raw = fn
-        wrapper._cli_formatter = formatter
+        setattr(wrapper, "_cli_raw", fn)
+        setattr(wrapper, "_cli_formatter", formatter)
 
         return wrapper
 

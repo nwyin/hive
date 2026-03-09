@@ -516,10 +516,10 @@ class ClaudeWSBackend(HiveBackend):
 
     # ── Context manager ───────────────────────────────────────────────
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> "ClaudeWSBackend":
         return self
 
-    async def __aexit__(self, *args):
+    async def __aexit__(self, *args) -> None:
         self.stop()
         # Kill all child processes immediately (SIGKILL to process groups).
         # No graceful abort/WS-close — we're shutting down the whole daemon.

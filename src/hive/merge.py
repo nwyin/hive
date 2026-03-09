@@ -415,14 +415,13 @@ class MergeProcessor:
         Returns:
             Parsed merge result dict
         """
-        if timeout is None:
-            timeout = Config.LEASE_DURATION
+        timeout_seconds = Config.LEASE_DURATION if timeout is None else timeout
 
         poll_interval = 5
         elapsed = 0
         consecutive_errors = 0
 
-        while elapsed < timeout:
+        while elapsed < timeout_seconds:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 

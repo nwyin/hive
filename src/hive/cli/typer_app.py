@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 import typer
 from rich.console import Console
@@ -32,7 +32,7 @@ class AppState:
     db_override: str | None = None
 
 
-def _fail(state: AppState, exc: Exception) -> None:
+def _fail(state: AppState, exc: Exception) -> NoReturn:
     """Render a CLI error for commands that don't go through ``HiveCLI``."""
     if state.json_mode:
         state.console.print_json(json=json.dumps({"error": str(exc)}))

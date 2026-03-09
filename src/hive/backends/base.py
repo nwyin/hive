@@ -8,8 +8,9 @@ Both the Claude and Codex backends combine these into a single class.
 """
 
 import inspect
+from types import TracebackType
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Self
 
 
 class HiveBackend(ABC):
@@ -121,7 +122,12 @@ class HiveBackend(ABC):
     # ── Context manager ───────────────────────────────────────────────
 
     @abstractmethod
-    async def __aenter__(self): ...
+    async def __aenter__(self) -> Self: ...
 
     @abstractmethod
-    async def __aexit__(self, exc_type, exc_val, exc_tb): ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...

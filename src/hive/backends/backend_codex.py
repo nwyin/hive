@@ -383,10 +383,10 @@ class CodexAppServerBackend(HiveBackend):
 
     # ── Context manager ───────────────────────────────────────────────
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> CodexAppServerBackend:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         self.stop()
         await self._stop_process()
 
