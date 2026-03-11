@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "9b9575d1397e",
+  "strategy": "manual-commit",
+  "branch": "project-context-init",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/cli/queen.py",
+    "src/hive/cli/runtime.py",
+    "src/hive/cli/typer_app.py",
+    "src/hive/prompts.py",
+    "src/hive/prompts/init.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9b/9575d1397e/0/metadata.json",
+      "transcript": "/9b/9575d1397e/0/full.jsonl",
+      "context": "/9b/9575d1397e/0/context.md",
+      "content_hash": "/9b/9575d1397e/0/content_hash.txt",
+      "prompt": "/9b/9575d1397e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 33,
+    "cache_creation_tokens": 102618,
+    "cache_read_tokens": 2567924,
+    "output_tokens": 12342,
+    "api_call_count": 27
+  }
+}
