@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "2c122422c0da",
+  "strategy": "manual-commit",
+  "branch": "feat/headless-queen",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "README.md",
+    "docs/TECHNICAL_DESIGN_DOC.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2c/122422c0da/0/metadata.json",
+      "transcript": "/2c/122422c0da/0/full.jsonl",
+      "context": "/2c/122422c0da/0/context.md",
+      "content_hash": "/2c/122422c0da/0/content_hash.txt",
+      "prompt": "/2c/122422c0da/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 44043,
+    "cache_read_tokens": 780284,
+    "output_tokens": 7973,
+    "api_call_count": 22
+  }
+}

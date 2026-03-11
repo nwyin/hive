@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "2c122422c0da",
+  "session_id": "02cf04c6-d8bf-4daf-b54c-83949d413fd7",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-11T12:37:19.836717Z",
+  "branch": "feat/headless-queen",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "README.md",
+    "docs/TECHNICAL_DESIGN_DOC.md"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "4c7497557e1f",
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 44043,
+    "cache_read_tokens": 780284,
+    "output_tokens": 7973,
+    "api_call_count": 22
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-11T12:37:19.736809Z",
+    "agent_lines": 0,
+    "human_added": 22,
+    "human_modified": 3,
+    "human_removed": 0,
+    "total_committed": 22,
+    "agent_percentage": 0
+  }
+}

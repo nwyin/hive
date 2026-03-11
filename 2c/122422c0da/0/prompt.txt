@@ -1,0 +1,79 @@
+Implement the following plan:
+
+# Plan: Headless Queen Mode
+
+## Context
+
+We want autonomous dispatch of tasks without a new CLI command. The queen already
+has project context, filesystem exploration, and knows `hive create`. A headless
+mode lets external systems (MC cron, scripts, or the user) pass a task prompt and
+have the queen create issues directly — reusing the existing infrastructure.
+
+This replaces the previously discussed `hive dispatch` command.
+
+## Changes
+
+### 1. CLI flags (`src/hive/cli/typer_app.py`)
+
+Add to the `queen` command:
+- `--headless` — run non-interactively
+- `-p` / `--prompt` — task prompt (required when `--headless`)
+
+Validation: error if `--headless` without `--prompt`.
+
+### 2. Queen command construction (`src/hive/cli/queen.py`)
+
+In `_queen_claude()`, when headless:
+- Add `--print` flag (non-interactive output)
+- Add `-p <prompt>` (the task)
+- Always use `--dangerously-skip-permissions` (no human to approve tool calls)
+- Append a headless-mode system prompt override that tells the queen to skip
+  the plan approval workflow and create issues directly
+
+In `_run_queen_process()`:
+- When headless, don't `sys.exit(result.returncode)` — return instead, so the
+  CLI process continues normally
+- Stream output to stdout (don't capture) so user sees progress
+
+### 3. Headless system prompt override
+
+Append via `--append-system-prompt` (alongside the existing short prompt):
+```
+You are running in HEADLESS MODE. There is no interactive user.
+- Skip the plan proposal step — create issues directly.
+- Do NOT ask questions or wait for approval.
+- Read .hive/project-context.md and .hive/queen-context.md for project knowledge.
+- Explore the codebase as needed to write good issue descriptions.
+- After creating issues, update .hive/queen-context.md with any new learnings.
+- Output a summary of created issues before exiting.
+```
+
+No changes to queen.md itself — the override is additive.
+
+### 4. Codex backend (`_queen_codex()`)
+
+Add equivalent headless support: pass the prompt directly and set approval
+policy to `"never"`.
+
+## Files to modify
+
+- `src/hive/cli/typer_app.py` — add `--headless` and `-p` flags to queen command
+- `src/hive/cli/queen.py` — headless command construction in `_queen_claude()`,
+  `_queen_codex()`, and `_run_queen_process()`
+
+## Verification
+
+1. `hive queen --headless -p "Bump all Python dependencies"` — should create
+   issue(s) and exit without interaction
+2. `hive queen --headless` (no -p) — should error with usage message
+3. `hive queen` (no --headless) — existing interactive behavior unchanged
+4. Run existing tests: `python -m pytest tests/ -v --timeout=30`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/54d544f0-be2d-4b7d-8b9c-3aaa9164877b.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+update docs about htis feature as well
