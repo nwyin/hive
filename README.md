@@ -152,11 +152,14 @@ Workers also write notes during execution (discoveries, gotchas, dependency obse
 The Queen can run non-interactively with `--headless`. Instead of proposing a plan and waiting for approval, headless mode creates issues directly from your prompt and exits.
 
 ```bash
-# Dispatch a task without interaction
+# Dispatch a task without interaction (run from inside the project directory)
 hive queen --headless -p "Bump all Python dependencies and update the lockfile"
 
+# Target a specific project from anywhere (useful for cron, scripts, PM agents)
+hive --project /path/to/myrepo queen --headless -p "Add rate limiting to all API endpoints"
+
 # Combine with backend override
-hive queen --headless -p "Add rate limiting to all API endpoints" --backend codex
+hive --project ~/projects/myapp queen --headless -p "Fix flaky test suite" --backend codex
 ```
 
 Headless mode:
@@ -166,7 +169,7 @@ Headless mode:
 - Updates `.hive/queen-context.md` with any new learnings
 - Prints a summary of created issues before exiting
 
-This is useful for scripting, cron jobs, or piping tasks from external systems. The `--prompt` / `-p` flag is required when `--headless` is set.
+This is useful for scripting, cron jobs, or piping tasks from external systems. The `--prompt` / `-p` flag is required when `--headless` is set. Use the global `--project` flag to target a specific project directory when running from outside it (e.g. `hive --project /path/to/repo queen --headless -p "..."`). Without `--project`, hive auto-detects the project from the current directory's git root.
 
 ## Cost and Performance
 
