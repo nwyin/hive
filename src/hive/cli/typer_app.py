@@ -364,14 +364,21 @@ def queen(
         bool, typer.Option(help="Pass --dangerously-skip-permissions to Claude CLI (queen and workers)")
     ] = False,
     mcp_config: Annotated[list[str] | None, typer.Option(help="Claude MCP config(s); repeat the option for multiple configs")] = None,
+    headless: Annotated[bool, typer.Option(help="Run non-interactively (requires --prompt)")] = False,
+    prompt: Annotated[str | None, typer.Option("-p", "--prompt", help="Task prompt for headless mode")] = None,
 ) -> None:
     """Launch Queen Bee TUI."""
+    if headless and not prompt:
+        print_error(ctx.obj.console, "--headless requires --prompt / -p")
+        raise typer.Exit(1)
     try:
         with _cli_session(ctx.obj) as cli:
             cli.queen(
                 backend=backend,
                 skip_permissions=dangerously_skip_permissions,
                 mcp_configs=mcp_config,
+                headless=headless,
+                prompt=prompt,
             )
     except Exception as exc:
         _fail(ctx.obj, exc)

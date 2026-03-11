@@ -41,10 +41,18 @@ class QueenMixin:
         print("failed")
         self._error("Failed to start daemon. Check `hive daemon logs`.")
 
-    def queen(self, *, backend: str | None = None, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
+    def queen(
+        self,
+        *,
+        backend: str | None = None,
+        skip_permissions: bool = False,
+        mcp_configs: list[str] | None = None,
+        headless: bool = False,
+        prompt: str | None = None,
+    ):
         """Launch Queen Bee TUI using the configured backend."""
         # Propagate to daemon and workers via env var (before daemon.start())
-        if skip_permissions:
+        if skip_permissions or headless:
             os.environ["HIVE_CLAUDE_SKIP_PERMISSIONS"] = "1"
         resolved_mcp_configs = self._resolve_mcp_configs(mcp_configs)
         if resolved_mcp_configs:
@@ -54,9 +62,14 @@ class QueenMixin:
 
         effective = backend or Config.BACKEND
         if effective == "codex":
-            self._queen_codex()
+            self._queen_codex(headless=headless, prompt=prompt)
         else:
-            self._queen_claude(skip_permissions=skip_permissions, mcp_configs=resolved_mcp_configs)
+            self._queen_claude(
+                skip_permissions=skip_permissions or headless,
+                mcp_configs=resolved_mcp_configs,
+                headless=headless,
+                prompt=prompt,
+            )
 
     def _queen_write_identity_files(self) -> tuple[Path, Path]:
         """Write queen identity files and return their paths."""
@@ -121,13 +134,16 @@ class QueenMixin:
         state_file = self.project_path / ".hive" / "queen-state.md"
         state_file.unlink(missing_ok=True)
 
-    def _run_queen_process(self, cmd: list[str], launch_message: str, *, missing_error: str | None = None):
+    def _run_queen_process(self, cmd: list[str], launch_message: str, *, missing_error: str | None = None, headless: bool = False):
         """Run a queen subprocess with identity-file setup and cleanup."""
         claude_md, instructions_path = self._queen_write_identity_files()
         print(launch_message)
         try:
             result = subprocess.run(cmd)
-            sys.exit(result.returncode)
+            if not headless:
+                sys.exit(result.returncode)
+            elif result.returncode != 0:
+                self._error(f"Queen process exited with code {result.returncode}")
         except FileNotFoundError:
             if missing_error:
                 self._error(missing_error)
@@ -137,7 +153,24 @@ class QueenMixin:
         finally:
             self._queen_cleanup_identity_files(claude_md, instructions_path)
 
-    def _queen_claude(self, *, skip_permissions: bool = False, mcp_configs: list[str] | None = None):
+    _HEADLESS_SYSTEM_PROMPT = (
+        "You are running in HEADLESS MODE. There is no interactive user.\n"
+        "- Skip the plan proposal step — create issues directly.\n"
+        "- Do NOT ask questions or wait for approval.\n"
+        "- Read .hive/project-context.md and .hive/queen-context.md for project knowledge.\n"
+        "- Explore the codebase as needed to write good issue descriptions.\n"
+        "- After creating issues, update .hive/queen-context.md with any new learnings.\n"
+        "- Output a summary of created issues before exiting."
+    )
+
+    def _queen_claude(
+        self,
+        *,
+        skip_permissions: bool = False,
+        mcp_configs: list[str] | None = None,
+        headless: bool = False,
+        prompt: str | None = None,
+    ):
         """Launch Queen Bee as an interactive Claude CLI session."""
         os.environ.pop("CLAUDECODE", None)
 
@@ -151,31 +184,48 @@ class QueenMixin:
             "--append-system-prompt",
             short_prompt,
         ]
-        for config in mcp_configs or []:
-            cmd.extend(["--mcp-config", config])
-        if skip_permissions:
+
+        if headless:
+            cmd.extend(["--append-system-prompt", self._HEADLESS_SYSTEM_PROMPT])
+            cmd.extend(["--print", "-p", prompt])
             cmd.append("--dangerously-skip-permissions")
         else:
-            cmd.extend(
-                [
-                    "--allowedTools",
-                    "Bash(hive:*) Bash(git:*) Bash(ls:*) Bash(find:*) Bash(rg:*) Read Edit Write",
-                ]
-            )
-        self._run_queen_process(cmd, "Launching Queen Bee TUI (Claude CLI)...\n")
+            if skip_permissions:
+                cmd.append("--dangerously-skip-permissions")
+            else:
+                cmd.extend(
+                    [
+                        "--allowedTools",
+                        "Bash(hive:*) Bash(git:*) Bash(ls:*) Bash(find:*) Bash(rg:*) Read Edit Write",
+                    ]
+                )
 
-    def _queen_codex(self):
+        for config in mcp_configs or []:
+            cmd.extend(["--mcp-config", config])
+
+        label = "Launching Queen Bee headless...\n" if headless else "Launching Queen Bee TUI (Claude CLI)...\n"
+        self._run_queen_process(cmd, label, headless=headless)
+
+    def _queen_codex(self, *, headless: bool = False, prompt: str | None = None):
         """Launch Queen Bee as an interactive Codex CLI session."""
-        short_prompt = "Read .hive/queen-instructions.md for your full instructions now."
+        if headless:
+            short_prompt = f"{self._HEADLESS_SYSTEM_PROMPT}\n\nTask: {prompt}"
+        else:
+            short_prompt = "Read .hive/queen-instructions.md for your full instructions now."
 
         developer_instructions = (
             "You are the Hive Queen Bee coordinator. You do NOT write code; you plan, decompose, and monitor.\\n"
             "Full instructions: .hive/queen-instructions.md (read now; re-read after compaction).\\n"
             "Persistent context: .hive/queen-context.md (accumulated project knowledge across sessions).\\n"
             "Operational state: .hive/queen-state.md (re-read after compaction; update after significant actions).\\n"
-            "Before creating issues/epics, output a human-readable plan for user review and wait for explicit approval.\\n"
-            "Always use hive --json for Hive CLI commands."
         )
+        if headless:
+            developer_instructions += "HEADLESS MODE: Skip plan approval — create issues directly. Do NOT ask questions.\\n"
+        else:
+            developer_instructions += (
+                "Before creating issues/epics, output a human-readable plan for user review and wait for explicit approval.\\n"
+            )
+        developer_instructions += "Always use hive --json for Hive CLI commands."
 
         compact_prompt = (
             "Summarize the conversation for continuity.\\n"
@@ -185,7 +235,9 @@ class QueenMixin:
 
         codex_cmd = os.environ.get("CODEX_CMD", "codex")
         sandbox = os.environ.get("HIVE_CODEX_QUEEN_SANDBOX") or getattr(Config, "CODEX_SANDBOX", "workspace-write")
-        approval = os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never")
+        approval = (
+            "never" if headless else (os.environ.get("HIVE_CODEX_QUEEN_APPROVAL_POLICY") or getattr(Config, "CODEX_APPROVAL_POLICY", "never"))
+        )
         cmd = [
             codex_cmd,
             "--sandbox",
@@ -200,8 +252,11 @@ class QueenMixin:
             str(self.project_path),
             short_prompt,
         ]
+
+        label = "Launching Queen Bee headless (Codex)...\n" if headless else "Launching Queen Bee TUI (Codex CLI)...\n"
         self._run_queen_process(
             cmd,
-            "Launching Queen Bee TUI (Codex CLI)...\n",
+            label,
             missing_error="Codex CLI not found. Install `codex` and ensure it's on PATH, or set CODEX_CMD to the codex executable path.",
+            headless=headless,
         )
