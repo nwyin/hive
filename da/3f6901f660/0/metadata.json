@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "da3f6901f660",
+  "session_id": "02cf04c6-d8bf-4daf-b54c-83949d413fd7",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-11T14:59:23.984729Z",
+  "branch": "fix/queen-ephemeral-files",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/TECHNICAL_DESIGN_DOC.md",
+    "src/hive/cli/queen.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "8e65c154f598",
+  "token_usage": {
+    "input_tokens": 136,
+    "cache_creation_tokens": 194146,
+    "cache_read_tokens": 4339382,
+    "output_tokens": 21944,
+    "api_call_count": 76
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-11T14:59:23.75157Z",
+    "agent_lines": 0,
+    "human_added": 21,
+    "human_modified": 39,
+    "human_removed": 0,
+    "total_committed": 21,
+    "agent_percentage": 0
+  }
+}
