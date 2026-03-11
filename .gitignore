@@ -33,8 +33,6 @@ env/
 *.db-shm
 .DS_Store
 .worktrees
-.hive/
-.hive.toml
 .opencode/agents/queen.md
 .claude/
 .vscode/
