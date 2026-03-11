@@ -72,6 +72,8 @@ def do_analyze(project_path: Path, project_name: str, *, json_mode: bool = False
     """Launch a Claude CLI session to analyze the project and generate .hive/project-context.md."""
     from ..prompts import _load_template
 
+    Config.load_global(project_root=project_path)
+
     hive_dir = project_path / ".hive"
     hive_dir.mkdir(exist_ok=True)
 
