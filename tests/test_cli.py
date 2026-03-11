@@ -778,7 +778,7 @@ def test_queen_headless_claude_command_flags(temp_db, tmp_path):
     with (
         unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
         unittest.mock.patch("hive.cli.queen.subprocess.run", return_value=unittest.mock.Mock(returncode=0)) as mock_run,
-        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")),
+        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=tmp_path / "q.md"),
         unittest.mock.patch.object(cli, "_queen_cleanup_identity_files"),
     ):
         cli.queen(backend="claude", headless=True, prompt="Bump deps")
@@ -788,10 +788,10 @@ def test_queen_headless_claude_command_flags(temp_db, tmp_path):
     assert "-p" in cmd
     assert cmd[cmd.index("-p") + 1] == "Bump deps"
     assert "--dangerously-skip-permissions" in cmd
-    # Should have two --append-system-prompt entries (short + headless)
+    # Should have three --append-system-prompt entries (short + queen identity + headless)
     asp_indices = [i for i, x in enumerate(cmd) if x == "--append-system-prompt"]
-    assert len(asp_indices) == 2
-    headless_prompt = cmd[asp_indices[1] + 1]
+    assert len(asp_indices) == 3
+    headless_prompt = cmd[asp_indices[2] + 1]
     assert "HEADLESS MODE" in headless_prompt
 
 
@@ -802,7 +802,7 @@ def test_queen_headless_codex_approval_never(temp_db, tmp_path):
     with (
         unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
         unittest.mock.patch("hive.cli.queen.subprocess.run", return_value=unittest.mock.Mock(returncode=0)) as mock_run,
-        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")),
+        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=tmp_path / "q.md"),
         unittest.mock.patch.object(cli, "_queen_cleanup_identity_files"),
     ):
         cli.queen(backend="codex", headless=True, prompt="Add tests")
@@ -822,7 +822,7 @@ def test_queen_headless_does_not_sys_exit(temp_db, tmp_path):
     with (
         unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
         unittest.mock.patch("hive.cli.queen.subprocess.run", return_value=unittest.mock.Mock(returncode=0)),
-        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")),
+        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=tmp_path / "q.md"),
         unittest.mock.patch.object(cli, "_queen_cleanup_identity_files"),
     ):
         # Should NOT raise SystemExit
@@ -836,7 +836,7 @@ def test_queen_headless_nonzero_exit_raises(temp_db, tmp_path):
     with (
         unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
         unittest.mock.patch("hive.cli.queen.subprocess.run", return_value=unittest.mock.Mock(returncode=1)),
-        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")),
+        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=tmp_path / "q.md"),
         unittest.mock.patch.object(cli, "_queen_cleanup_identity_files"),
         pytest.raises(SystemExit),
     ):
@@ -850,7 +850,7 @@ def test_queen_headless_sets_skip_permissions_env(temp_db, tmp_path):
     with (
         unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
         unittest.mock.patch("hive.cli.queen.subprocess.run", return_value=unittest.mock.Mock(returncode=0)),
-        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")),
+        unittest.mock.patch.object(cli, "_queen_write_identity_files", return_value=tmp_path / "q.md"),
         unittest.mock.patch.object(cli, "_queen_cleanup_identity_files"),
         unittest.mock.patch.dict("os.environ", {}, clear=False),
     ):

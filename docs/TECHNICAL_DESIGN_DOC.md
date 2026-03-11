@@ -549,6 +549,7 @@ Current implementation trade-offs to keep in mind:
 2. Automated model routing is not implemented; routing is config/per-issue override.
 3. Merge processor is single-threaded by design (one queue entry at a time).
 4. Several user-facing docs/prompts outside this file may still reference legacy commands; this document reflects actual CLI/parser behavior in `cli.py`.
+5. **Queen ephemeral files and git cleanliness.** The queen writes ephemeral session files (`queen-state.md`, `queen-instructions.md`) into `.hive/` and relies on `--append-system-prompt` for identity context (previously injected into `.claude/CLAUDE.md` via sentinel blocks). Ephemeral files are gitignored via `.hive/.gitignore` and cleaned up in a `finally` block on exit. If the process is killed hard (SIGKILL, terminal crash), stale files may remain — they are harmless (overwritten next session) but noisy in `git status`. A more robust approach might store ephemeral state outside the project tree entirely (e.g. `~/.hive/state/<project>/`), but this complicates the queen's ability to read its own state files via Claude Code's file tools. Worth revisiting if the git-noise problem recurs.
 
 ---
 

@@ -11,8 +11,18 @@ from ..config import Config
 class QueenMixin:
     """Mixin providing Queen Bee TUI methods for HiveCLI."""
 
+    # Legacy sentinels — used only for cleaning up CLAUDE.md from older sessions
     _QUEEN_SENTINEL_START = "<!-- HIVE-QUEEN-SESSION-START -->"
     _QUEEN_SENTINEL_END = "<!-- HIVE-QUEEN-SESSION-END -->"
+
+    _QUEEN_SYSTEM_PROMPT = (
+        "You are the Queen Bee coordinator. You do NOT write code — you plan, decompose, and monitor.\n"
+        "Full instructions: `.hive/queen-instructions.md` — re-read if your context feels incomplete.\n"
+        "Project context: `.hive/project-context.md` — architecture, build, conventions, key files.\n"
+        "Persistent context: `.hive/queen-context.md` — accumulated project knowledge across sessions.\n"
+        "Operational state: `.hive/queen-state.md` — re-read to recall what you were working on.\n"
+        "Always use `hive --json` for CLI commands. The daemon runs in background."
+    )
 
     def _resolve_mcp_configs(self, configs: list[str] | None) -> list[str]:
         """Resolve bare MCP config names against ~/.claude."""
@@ -71,8 +81,10 @@ class QueenMixin:
                 prompt=prompt,
             )
 
-    def _queen_write_identity_files(self) -> tuple[Path, Path]:
-        """Write queen identity files and return their paths."""
+    _HIVE_GITIGNORE = "# Ephemeral queen session files (regenerated each session)\nqueen-state.md\nqueen-instructions.md\n"
+
+    def _queen_write_identity_files(self) -> Path:
+        """Write queen identity files and return the instructions path."""
         from ..prompts import _load_template
 
         queen_prompt = _load_template("queen")
@@ -81,10 +93,6 @@ class QueenMixin:
         hive_dir.mkdir(exist_ok=True)
         instructions_path = hive_dir / "queen-instructions.md"
         instructions_path.write_text(queen_prompt)
-
-        claude_dir = self.project_path / ".claude"
-        claude_dir.mkdir(exist_ok=True)
-        claude_md = claude_dir / "CLAUDE.md"
 
         # Seed persistent queen context if it doesn't exist yet
         context_path = hive_dir / "queen-context.md"
@@ -95,48 +103,50 @@ class QueenMixin:
                 "Update this file with architectural decisions, gotchas, and patterns.\n"
             )
 
-        queen_block = (
-            f"\n{self._QUEEN_SENTINEL_START}\n"
-            "# HIVE QUEEN BEE — ACTIVE SESSION\n"
-            "You are the Queen Bee coordinator. You do NOT write code — you plan, decompose, and monitor.\n"
-            "Full instructions: `.hive/queen-instructions.md` — re-read if your context feels incomplete.\n"
-            "Project context: `.hive/project-context.md` — architecture, build, conventions, key files.\n"
-            "Persistent context: `.hive/queen-context.md` — accumulated project knowledge across sessions.\n"
-            "Operational state: `.hive/queen-state.md` — re-read to recall what you were working on.\n"
-            "Always use `hive --json` for CLI commands. The daemon runs in background.\n"
-            f"{self._QUEEN_SENTINEL_END}\n"
-        )
+        # Ensure .hive/.gitignore covers ephemeral files
+        gitignore_path = hive_dir / ".gitignore"
+        if not gitignore_path.exists():
+            gitignore_path.write_text(self._HIVE_GITIGNORE)
+        else:
+            existing = gitignore_path.read_text()
+            if "queen-state.md" not in existing:
+                gitignore_path.write_text(existing.rstrip("\n") + "\n" + self._HIVE_GITIGNORE)
 
-        existing = claude_md.read_text() if claude_md.exists() else ""
-        if self._QUEEN_SENTINEL_START not in existing:
-            claude_md.write_text(existing + queen_block)
-
-        return claude_md, instructions_path
-
-    def _queen_cleanup_identity_files(self, claude_md: Path, instructions_path: Path):
-        """Remove Queen identity files written for the session."""
+        # Clean up legacy sentinel block from CLAUDE.md if present
+        claude_md = self.project_path / ".claude" / "CLAUDE.md"
         if claude_md.exists():
             content = claude_md.read_text()
-            start = content.find(self._QUEEN_SENTINEL_START)
-            if start != -1:
-                end = content.find(self._QUEEN_SENTINEL_END)
-                if end != -1:
-                    end += len(self._QUEEN_SENTINEL_END)
-                    if end < len(content) and content[end] == "\n":
-                        end += 1
-                    cleaned = (content[:start] + content[end:]).rstrip("\n")
-                    if cleaned.strip():
-                        claude_md.write_text(cleaned + "\n")
-                    else:
-                        claude_md.unlink()
+            if self._QUEEN_SENTINEL_START in content:
+                self._remove_legacy_sentinel(claude_md, content)
 
+        return instructions_path
+
+    def _remove_legacy_sentinel(self, claude_md: Path, content: str):
+        """Remove legacy sentinel block from CLAUDE.md (one-time migration)."""
+        start = content.find(self._QUEEN_SENTINEL_START)
+        if start == -1:
+            return
+        end = content.find(self._QUEEN_SENTINEL_END)
+        if end == -1:
+            return
+        end += len(self._QUEEN_SENTINEL_END)
+        if end < len(content) and content[end] == "\n":
+            end += 1
+        cleaned = (content[:start] + content[end:]).rstrip("\n")
+        if cleaned.strip():
+            claude_md.write_text(cleaned + "\n")
+        else:
+            claude_md.unlink()
+
+    def _queen_cleanup_identity_files(self, instructions_path: Path):
+        """Remove ephemeral queen files written for the session."""
         instructions_path.unlink(missing_ok=True)
         state_file = self.project_path / ".hive" / "queen-state.md"
         state_file.unlink(missing_ok=True)
 
     def _run_queen_process(self, cmd: list[str], launch_message: str, *, missing_error: str | None = None, headless: bool = False):
         """Run a queen subprocess with identity-file setup and cleanup."""
-        claude_md, instructions_path = self._queen_write_identity_files()
+        instructions_path = self._queen_write_identity_files()
         print(launch_message)
         try:
             result = subprocess.run(cmd)
@@ -151,7 +161,7 @@ class QueenMixin:
         except KeyboardInterrupt:
             pass
         finally:
-            self._queen_cleanup_identity_files(claude_md, instructions_path)
+            self._queen_cleanup_identity_files(instructions_path)
 
     _HEADLESS_SYSTEM_PROMPT = (
         "You are running in HEADLESS MODE. There is no interactive user.\n"
@@ -183,6 +193,8 @@ class QueenMixin:
             Config.DEFAULT_MODEL,
             "--append-system-prompt",
             short_prompt,
+            "--append-system-prompt",
+            self._QUEEN_SYSTEM_PROMPT,
         ]
 
         if headless:
