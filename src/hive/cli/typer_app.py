@@ -313,7 +313,28 @@ def merges(
 @app.command()
 def status(ctx: typer.Context) -> None:
     """Show orchestrator status."""
-    _run(ctx, "status")
+    try:
+        resolve_project(ctx.obj.project)
+        # Project detected — use existing single-project path
+        _run(ctx, "status")
+        return
+    except (SystemExit, Exception):
+        pass
+
+    # No project context — show global multi-project view
+    db = initialize_global(db_override=ctx.obj.db_override)
+    try:
+        from .global_status import get_global_status
+
+        result = get_global_status(db)
+        if ctx.obj.json_mode:
+            ctx.obj.console.print_json(json.dumps(result))
+        else:
+            from .rich_views import render_global_status
+
+            ctx.obj.console.print(render_global_status(result))
+    finally:
+        db.close()
 
 
 @app.command()

@@ -659,20 +659,23 @@ class DatabaseCore:
         cursor = self.conn.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
-    def get_merge_queue_stats(self) -> Dict[str, int]:
+    def get_merge_queue_stats(self, project: Optional[str] = None) -> Dict[str, int]:
         """
         Get merge queue statistics by status.
+
+        Args:
+            project: Filter by project (optional)
 
         Returns:
             Dict mapping status to count, e.g. {"queued": 3, "merged": 10, ...}
         """
-        cursor = self.conn.execute(
-            """
-            SELECT status, COUNT(*) as count
-            FROM merge_queue
-            GROUP BY status
-            """
-        )
+        if project:
+            cursor = self.conn.execute(
+                "SELECT status, COUNT(*) as count FROM merge_queue WHERE project = ? GROUP BY status",
+                (project,),
+            )
+        else:
+            cursor = self.conn.execute("SELECT status, COUNT(*) as count FROM merge_queue GROUP BY status")
         stats = {"queued": 0, "running": 0, "merged": 0, "failed": 0}
         for row in cursor.fetchall():
             stats[row["status"]] = row["count"]

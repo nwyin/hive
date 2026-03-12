@@ -434,6 +434,94 @@ def render_logs(result: dict):
     return table
 
 
+def render_global_status(result: dict):
+    """Render the global multi-project status dashboard."""
+    daemon_info = result.get("daemon", {})
+    totals = result.get("totals", {})
+    projects = result.get("projects", [])
+
+    # Header panel
+    header_rows = [
+        ("Daemon", _render_daemon(daemon_info)),
+        ("Projects", str(len(projects))),
+        ("Workers", str(totals.get("workers", 0))),
+        ("Open", str(totals.get("open", 0))),
+        ("In progress", str(totals.get("in_progress", 0))),
+        ("Done", str(totals.get("done", 0))),
+        ("Escalated", str(totals.get("escalated", 0))),
+    ]
+    renderables: list[RenderableType] = [_kv_panel("Hive Global Status", header_rows, border_style="cyan")]
+
+    if not projects:
+        renderables.append(Text("No projects registered. Run 'hive status' from inside a project first.", style="dim"))
+        return Group(*renderables)
+
+    # Per-project panels
+    for proj in projects:
+        name = proj["name"]
+
+        if proj.get("path_missing"):
+            renderables.append(
+                Panel(
+                    Text(f"Path not found: {proj['path']}", style="yellow"),
+                    title=name,
+                    border_style="yellow",
+                )
+            )
+            continue
+
+        parts: list[RenderableType] = []
+
+        # Issue counts (non-zero only)
+        issues = proj.get("issues", {})
+        if issues:
+            issues_table = _simple_table(("Status", {"style": "magenta"}), ("Count", {"justify": "right"}))
+            for status in ["open", "in_progress", "done", "finalized", "escalated", "blocked", "canceled"]:
+                count = issues.get(status, 0)
+                if count > 0:
+                    issues_table.add_row(status, str(count))
+            parts.append(issues_table)
+
+        # Workers
+        workers = proj.get("workers", [])
+        if workers:
+            workers_table = _simple_table(("Name", {}), ("Issue", {"style": "cyan"}), ("Title", {"overflow": "fold"}))
+            for w in workers:
+                workers_table.add_row(w.get("name", ""), w.get("issue_id", ""), (w.get("issue_title") or "")[:40])
+            parts.append(workers_table)
+
+        # Refinery
+        parts.append(Text(f"Refinery: {_render_refinery(proj)}", style="dim"))
+
+        # Merge queue
+        mq = proj.get("merge_queue", {})
+        parts.append(Text(f"Merge queue: {_render_merge_queue(mq)}", style="dim"))
+
+        # Escalated issues
+        attention = proj.get("attention_issues", [])
+        if attention:
+            attn_table = _simple_table(("Issue", {"style": "cyan"}), ("Title", {"overflow": "fold"}))
+            for item in attention[:10]:
+                attn_table.add_row(item["id"], item["title"])
+            parts.append(Panel(attn_table, title="Needs Attention", border_style="yellow"))
+
+        # Merge blockers
+        blockers = proj.get("merge_blockers", [])
+        if blockers:
+            blocker_lines = []
+            for b in blockers:
+                blocker_lines.append(b.get("message", b.get("type", "unknown blocker")))
+                for change in (b.get("changes") or [])[:5]:
+                    blocker_lines.append(f"  {change}")
+            parts.append(Panel(Text("\n".join(blocker_lines)), title="Merge Blockers", border_style="red"))
+
+        total = proj.get("total_issues", 0)
+        subtitle = f"{total} issues, {proj.get('active_agents', 0)} workers"
+        renderables.append(Panel(Group(*parts), title=name, subtitle=subtitle, border_style="blue"))
+
+    return Group(*renderables)
+
+
 def render_start(result: dict):
     if result.get("status") == "already_running":
         return Text(f"Hive daemon already running (PID {result['pid']})")
