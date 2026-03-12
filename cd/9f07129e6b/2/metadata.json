@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "cd9f07129e6b",
+  "session_id": "eed9cf14-3049-4f8e-8228-913a9634c337",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T07:30:25.958121Z",
+  "branch": "feat/global-status",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/hive/cli/rich_views.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "37fdca17012d",
+  "token_usage": {
+    "input_tokens": 6707,
+    "cache_creation_tokens": 117115,
+    "cache_read_tokens": 2142622,
+    "output_tokens": 13405,
+    "api_call_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T07:30:25.801502Z",
+    "agent_lines": 0,
+    "human_added": 31,
+    "human_modified": 63,
+    "human_removed": 0,
+    "total_committed": 31,
+    "agent_percentage": 0
+  }
+}

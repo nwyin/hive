@@ -3,7 +3,7 @@
   "checkpoint_id": "cd9f07129e6b",
   "strategy": "manual-commit",
   "branch": "feat/global-status",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "src/hive/cli/rich_views.py"
   ],
@@ -21,13 +21,20 @@
       "context": "/cd/9f07129e6b/1/context.md",
       "content_hash": "/cd/9f07129e6b/1/content_hash.txt",
       "prompt": "/cd/9f07129e6b/1/prompt.txt"
+    },
+    {
+      "metadata": "/cd/9f07129e6b/2/metadata.json",
+      "transcript": "/cd/9f07129e6b/2/full.jsonl",
+      "context": "/cd/9f07129e6b/2/context.md",
+      "content_hash": "/cd/9f07129e6b/2/content_hash.txt",
+      "prompt": "/cd/9f07129e6b/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 0,
-    "cache_creation_tokens": 0,
-    "cache_read_tokens": 0,
-    "output_tokens": 0,
-    "api_call_count": 0
+    "input_tokens": 6707,
+    "cache_creation_tokens": 117115,
+    "cache_read_tokens": 2142622,
+    "output_tokens": 13405,
+    "api_call_count": 39
   }
 }
