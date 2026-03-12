@@ -12,7 +12,7 @@ import click
 import typer
 from rich.console import Console
 
-from .runtime import do_setup, initialize_cli, resolve_project
+from .runtime import do_setup, initialize_cli, initialize_global, resolve_project
 from .rich_views import print_error
 
 app = typer.Typer(
@@ -347,13 +347,76 @@ def start(
     foreground: Annotated[bool, typer.Option(help="Run in foreground (used by daemon spawner)")] = False,
 ) -> None:
     """Start the hive daemon."""
-    _run(ctx, "start", foreground=foreground)
+    from ..daemon import HiveDaemon
+
+    db = initialize_global(db_override=ctx.obj.db_override)
+    try:
+        if foreground:
+            from ..daemon import run_daemon_foreground
+
+            run_daemon_foreground(db)
+            return
+
+        daemon = HiveDaemon(db_path=db.db_path)
+        status = daemon.status()
+        if status["running"]:
+            result = {"status": "already_running", "pid": status["pid"]}
+        else:
+            started = daemon.start()
+            if started:
+                ds = daemon.status()
+                result = {"status": "started", "pid": ds["pid"], "log_file": ds.get("log_file")}
+            else:
+                log_tail = ""
+                try:
+                    if daemon.log_file.exists():
+                        lines = daemon.log_file.read_text().strip().splitlines()
+                        log_tail = "\n".join(lines[-10:])
+                except OSError:
+                    pass
+                _fail(ctx.obj, RuntimeError(f"Failed to start daemon. Log: {daemon.log_file}\n{log_tail}".rstrip()))
+
+        if ctx.obj.json_mode:
+            ctx.obj.console.print_json(json.dumps(result))
+        else:
+            from .rich_views import render_start
+
+            rendered = render_start(result)
+            if rendered:
+                ctx.obj.console.print(rendered)
+    finally:
+        db.close()
 
 
 @app.command()
 def stop(ctx: typer.Context) -> None:
     """Stop the hive daemon."""
-    _run(ctx, "stop")
+    from ..daemon import HiveDaemon
+
+    db = initialize_global(db_override=ctx.obj.db_override)
+    try:
+        daemon = HiveDaemon(db_path=db.db_path)
+        status = daemon.status()
+        if not status["running"]:
+            result = {"status": "not_running"}
+        else:
+            pid = status["pid"]
+            stopped = daemon.stop()
+            if stopped:
+                result = {"status": "stopped", "pid": pid}
+            else:
+                _fail(ctx.obj, RuntimeError(f"Failed to stop daemon (PID {pid})"))
+
+        if ctx.obj.json_mode:
+            ctx.obj.console.print_json(json.dumps(result))
+        else:
+            from .rich_views import render_stop
+
+            rendered = render_stop(result)
+            if rendered:
+                ctx.obj.console.print(rendered)
+    finally:
+        db.close()
 
 
 @app.command()

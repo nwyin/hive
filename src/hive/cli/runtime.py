@@ -41,6 +41,19 @@ def resolve_project(project: str | None) -> tuple[Path, str]:
     return project_path, project_name
 
 
+def initialize_global(*, db_override: str | None = None) -> Database:
+    """Load config and connect the DB without requiring project context.
+
+    Use for global commands (start, stop) that don't need a project.
+    """
+    Config.load_global(project_root=None)
+    Config.HIVE_DIR.mkdir(parents=True, exist_ok=True)
+    db_path = db_override or Config.DB_PATH
+    db = Database(db_path)
+    db.connect()
+    return db
+
+
 def initialize_cli(*, db_override: str | None, project: str | None) -> tuple[Database, HiveCLI, Path, str]:
     """Load config, connect the DB, and create a ``HiveCLI`` instance."""
     project_path, project_name = resolve_project(project)
