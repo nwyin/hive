@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "9d6552f0a06a",
+  "session_id": "02cf04c6-d8bf-4daf-b54c-83949d413fd7",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T03:35:47.144854Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/cli/queen.py",
+    "src/hive/daemon.py",
+    "src/hive/cli/core.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "738824332399",
+  "token_usage": {
+    "input_tokens": 205,
+    "cache_creation_tokens": 300560,
+    "cache_read_tokens": 9926577,
+    "output_tokens": 33150,
+    "api_call_count": 132
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T03:35:46.852077Z",
+    "agent_lines": 4,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 4,
+    "agent_percentage": 100
+  }
+}

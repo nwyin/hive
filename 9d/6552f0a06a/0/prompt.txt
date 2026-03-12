@@ -1,0 +1,221 @@
+Implement the following plan:
+
+# Plan: Headless Queen Mode
+
+## Context
+
+We want autonomous dispatch of tasks without a new CLI command. The queen already
+has project context, filesystem exploration, and knows `hive create`. A headless
+mode lets external systems (MC cron, scripts, or the user) pass a task prompt and
+have the queen create issues directly — reusing the existing infrastructure.
+
+This replaces the previously discussed `hive dispatch` command.
+
+## Changes
+
+### 1. CLI flags (`src/hive/cli/typer_app.py`)
+
+Add to the `queen` command:
+- `--headless` — run non-interactively
+- `-p` / `--prompt` — task prompt (required when `--headless`)
+
+Validation: error if `--headless` without `--prompt`.
+
+### 2. Queen command construction (`src/hive/cli/queen.py`)
+
+In `_queen_claude()`, when headless:
+- Add `--print` flag (non-interactive output)
+- Add `-p <prompt>` (the task)
+- Always use `--dangerously-skip-permissions` (no human to approve tool calls)
+- Append a headless-mode system prompt override that tells the queen to skip
+  the plan approval workflow and create issues directly
+
+In `_run_queen_process()`:
+- When headless, don't `sys.exit(result.returncode)` — return instead, so the
+  CLI process continues normally
+- Stream output to stdout (don't capture) so user sees progress
+
+### 3. Headless system prompt override
+
+Append via `--append-system-prompt` (alongside the existing short prompt):
+```
+You are running in HEADLESS MODE. There is no interactive user.
+- Skip the plan proposal step — create issues directly.
+- Do NOT ask questions or wait for approval.
+- Read .hive/project-context.md and .hive/queen-context.md for project knowledge.
+- Explore the codebase as needed to write good issue descriptions.
+- After creating issues, update .hive/queen-context.md with any new learnings.
+- Output a summary of created issues before exiting.
+```
+
+No changes to queen.md itself — the override is additive.
+
+### 4. Codex backend (`_queen_codex()`)
+
+Add equivalent headless support: pass the prompt directly and set approval
+policy to `"never"`.
+
+## Files to modify
+
+- `src/hive/cli/typer_app.py` — add `--headless` and `-p` flags to queen command
+- `src/hive/cli/queen.py` — headless command construction in `_queen_claude()`,
+  `_queen_codex()`, and `_run_queen_process()`
+
+## Verification
+
+1. `hive queen --headless -p "Bump all Python dependencies"` — should create
+   issue(s) and exit without interaction
+2. `hive queen --headless` (no -p) — should error with usage message
+3. `hive queen` (no --headless) — existing interactive behavior unchanged
+4. Run existing tests: `python -m pytest tests/ -v --timeout=30`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/54d544f0-be2d-4b7d-8b9c-3aaa9164877b.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+update docs about htis feature as well
+
+---
+
+alright anything else we might be forgetting? we got tests? doc updates? the feature itself? anything else
+
+---
+
+okay this seems reasonable, commit into main
+
+---
+
+wait so for the headless command, is it project specific. or how can we make it directed towards a project?
+
+---
+
+documnt the --project flag explicitly in the readme when using headless create mode. this will be useful for the PM agent to know
+
+---
+
+❯ what is local hive. what is .hive/local-hive.db -- like these shouldn't be created? we should always use the systems' ~/hive.db?
+
+---
+
+may be a manual db override becuase it exists in ~/projects/pycg-rs and ~/projects/pycfg-rs
+
+---
+
+please do
+
+---
+
+wait so does the queen-state and queen-instruction get cleaned up when we end the hive queen process?
+
+---
+
+interesting...so this gets noisy, yeah? within the project is a git tree, and as the queen is update .claude/CLAUDE.md and the queen state, the merges need to keep in mind these dirty files OR make a chocie of commiting them as well.
+
+I suppose you could specifically ignore .hive/queen-state.md but like hive init doesn't do that for you
+
+what are better solutions here? we have these state files that i've been accidentally committing/uncommitting -- there's certianly a better way to do this
+
+---
+
+[Request interrupted by user]
+
+---
+
+keep going
+
+---
+
+what about the .claude/CLAUDE.md file?
+
+---
+
+yeah these seem like reasonable ish solutions. let's go with this for now, and maybe make a note in docs/*.md -- one of those files -- on revisiting this design choice
+
+---
+
+what happened to the `hive daemon` command? we should also be able to start up the hive daemon from anywhere, not just within a hive project, now that we have theheadless mode and coordination multiple projects
+
+---
+
+[Request interrupted by user]
+
+---
+
+⏺ It's hive start, not hive daemon. The queen's headless mode is trying to start a daemon via a daemon subcommand that doesn't exist — it should be using start. This is a bug in hive
+  itself.
+
+  Looks like queen headless mode has a broken daemon launch path. Two options:
+
+  1. Fix the bug in hive (the headless code is calling daemon start instead of start)
+  2. Start the daemon manually first, then run queen headless
+
+---
+
+All three show the same error:
+
+  Starting daemon... Error: Failed to start daemon. Check `hive daemon logs`.
+  failed
+
+this was the logs
+
+---
+
+reinstall the tool on the system
+
+---
+
+~/projects/hive (main)
+$ uv tool install --force --reinstall -e .
+Resolved 19 packages in 262ms
+      Built hive @ file:///Users/tau/projects/hive
+Prepared 19 packages in 315ms
+Uninstalled 19 packages in 40ms
+Installed 19 packages in 10ms
+ ~ aiohappyeyeballs==2.6.1
+ ~ aiohttp==3.13.3
+ ~ aiosignal==1.4.0
+ ~ annotated-doc==0.0.4
+ ~ attrs==25.4.0
+ ~ click==8.3.1
+ ~ frozenlist==1.8.0
+ ~ hive==0.1.0 (from file:///Users/tau/projects/hive)
+ ~ idna==3.11
+ ~ markdown-it-py==4.0.0
+ ~ mdurl==0.1.2
+ ~ multidict==6.7.1
+ ~ propcache==0.4.1
+ ~ pygments==2.19.2
+ ~ pyyaml==6.0.3
+ ~ rich==14.3.3
+ ~ shellingham==1.5.4
+ ~ typer==0.24.1
+ ~ yarl==1.23.0
+Installed 1 executable: hive
+~/projects/hive (main)
+$ cd ..
+~/projects
+$ hive start
+fatal: not a git repository (searched up from /Users/tau/projects)
+~/projects
+$
+
+still getting this error
+
+---
+
+[Request interrupted by user]
+
+---
+
+keep going
+
+---
+
+[Request interrupted by user]
+
+---
+
+revert all the changes, this is starting to get silly. we'll rethink our approach then implement
