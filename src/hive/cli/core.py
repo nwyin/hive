@@ -890,7 +890,7 @@ class HiveCLI(QueenMixin):
     # ── Daemon management ────────────────────────────────────────────
 
     def _make_daemon(self) -> HiveDaemon:
-        return HiveDaemon(db_path=self.db.db_path)
+        return HiveDaemon(db_path=self.db.db_path, project_path=str(self.project_path))
 
     @cli_command(formatter=_fmt_start)
     def start(self, foreground: bool = False):

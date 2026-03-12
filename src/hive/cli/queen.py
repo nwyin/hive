@@ -49,7 +49,7 @@ class QueenMixin:
             return daemon_status
 
         print("failed")
-        self._error("Failed to start daemon. Check `hive daemon logs`.")
+        self._error("Failed to start daemon. Check `hive logs --daemon`.")
 
     def queen(
         self,
