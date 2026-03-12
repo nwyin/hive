@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "db8b370cb143",
+  "session_id": "eed9cf14-3049-4f8e-8228-913a9634c337",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-12T08:07:49.31583Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/cli/typer_app.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "0685f0ef4152",
+  "checkpoint_transcript_start": 192,
+  "transcript_lines_at_start": 192,
+  "token_usage": {
+    "input_tokens": 17,
+    "cache_creation_tokens": 75535,
+    "cache_read_tokens": 819787,
+    "output_tokens": 1538,
+    "api_call_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-12T08:07:49.118854Z",
+    "agent_lines": 8,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 8,
+    "agent_percentage": 100
+  }
+}
