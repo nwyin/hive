@@ -28,16 +28,14 @@ class HiveDaemon:
     projects from the DB and dispatches workers across all of them.
     """
 
-    def __init__(self, db_path: str = "", project_path: str = ""):
+    def __init__(self, db_path: str = ""):
         """
         Initialize daemon manager.
 
         Args:
             db_path: Path to the SQLite database file (for spawn command)
-            project_path: Path to the project directory (passed as --project to spawned daemon)
         """
         self.db_path = db_path
-        self.project_path = project_path
 
         # Global PID file: ~/.hive/pids/daemon.pid (not per-project)
         self.pid_dir = Path.home() / ".hive" / "pids"
@@ -174,10 +172,7 @@ class HiveDaemon:
             cmd = [hive_bin]
         else:
             cmd = [sys.executable, "-m", "hive.cli"]
-        cmd += ["--db", str(self.db_path)]
-        if self.project_path:
-            cmd += ["--project", self.project_path]
-        cmd += ["start", "--foreground"]
+        cmd += ["--db", str(self.db_path), "start", "--foreground"]
 
         # Strip CLAUDECODE so the daemon (and its workers) don't think they're nested
         spawn_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
