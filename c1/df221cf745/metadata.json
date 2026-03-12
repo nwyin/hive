@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "c1df221cf745",
+  "strategy": "manual-commit",
+  "branch": "fix/daemon-project-passthrough",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/cli/core.py",
+    "src/hive/cli/queen.py",
+    "src/hive/daemon.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c1/df221cf745/0/metadata.json",
+      "transcript": "/c1/df221cf745/0/full.jsonl",
+      "context": "/c1/df221cf745/0/context.md",
+      "content_hash": "/c1/df221cf745/0/content_hash.txt",
+      "prompt": "/c1/df221cf745/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
