@@ -14,6 +14,13 @@
       "context": "/db/8b370cb143/0/context.md",
       "content_hash": "/db/8b370cb143/0/content_hash.txt",
       "prompt": "/db/8b370cb143/0/prompt.txt"
+    },
+    {
+      "metadata": "/db/8b370cb143/1/metadata.json",
+      "transcript": "/db/8b370cb143/1/full.jsonl",
+      "context": "/db/8b370cb143/1/context.md",
+      "content_hash": "/db/8b370cb143/1/content_hash.txt",
+      "prompt": "/db/8b370cb143/1/prompt.txt"
     }
   ],
   "token_usage": {
