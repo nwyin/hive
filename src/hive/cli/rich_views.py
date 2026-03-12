@@ -435,91 +435,122 @@ def render_logs(result: dict):
 
 
 def render_global_status(result: dict):
-    """Render the global multi-project status dashboard."""
+    """Render the global multi-project status dashboard as a compact table."""
     daemon_info = result.get("daemon", {})
     totals = result.get("totals", {})
     projects = result.get("projects", [])
 
-    # Header panel
-    header_rows = [
-        ("Daemon", _render_daemon(daemon_info)),
-        ("Projects", str(len(projects))),
-        ("Workers", str(totals.get("workers", 0))),
-        ("Open", str(totals.get("open", 0))),
-        ("In progress", str(totals.get("in_progress", 0))),
-        ("Done", str(totals.get("done", 0))),
-        ("Escalated", str(totals.get("escalated", 0))),
-    ]
-    renderables: list[RenderableType] = [_kv_panel("Hive Global Status", header_rows, border_style="cyan")]
+    # One-line header
+    daemon_str = _render_daemon(daemon_info)
+    t = totals
+    header = Text.assemble(
+        ("Hive", "bold cyan"),
+        ("  daemon: ", "dim"),
+        (daemon_str, "green" if daemon_info.get("running") else "red"),
+        ("  |  ", "dim"),
+        (f"{len(projects)} projects", ""),
+        ("  ", ""),
+        (f"{t.get('workers', 0)} workers", "bold" if t.get("workers", 0) else "dim"),
+        ("  ", ""),
+        (f"{t.get('open', 0)} open", "bold" if t.get("open", 0) else "dim"),
+        ("  ", ""),
+        (f"{t.get('in_progress', 0)} active", "bold green" if t.get("in_progress", 0) else "dim"),
+        ("  ", ""),
+        (f"{t.get('done', 0)} done", "dim"),
+        ("  ", ""),
+        (f"{t.get('escalated', 0)} escalated", "bold yellow" if t.get("escalated", 0) else "dim"),
+    )
 
     if not projects:
-        renderables.append(Text("No projects registered. Run 'hive status' from inside a project first.", style="dim"))
-        return Group(*renderables)
+        return Group(header, Text("No projects registered. Run 'hive status' from inside a project first.", style="dim"))
 
-    # Per-project panels
+    # Compact project table
+    table = Table(box=box.SIMPLE_HEAVY, header_style="bold", pad_edge=False, padding=(0, 1))
+    table.add_column("Project", style="cyan", no_wrap=True)
+    table.add_column("Open", justify="right")
+    table.add_column("WIP", justify="right")
+    table.add_column("Done", justify="right")
+    table.add_column("Esc", justify="right")
+    table.add_column("Wkrs", justify="right")
+    table.add_column("Refinery", no_wrap=True)
+    table.add_column("Merges", no_wrap=True)
+    table.add_column("Alerts", overflow="fold")
+
     for proj in projects:
         name = proj["name"]
 
         if proj.get("path_missing"):
-            renderables.append(
-                Panel(
-                    Text(f"Path not found: {proj['path']}", style="yellow"),
-                    title=name,
-                    border_style="yellow",
-                )
-            )
+            table.add_row(name, "", "", "", "", "", "", "", Text("path missing", style="yellow"))
             continue
 
-        parts: list[RenderableType] = []
-
-        # Issue counts (non-zero only)
         issues = proj.get("issues", {})
-        if issues:
-            issues_table = _simple_table(("Status", {"style": "magenta"}), ("Count", {"justify": "right"}))
-            for status in ["open", "in_progress", "done", "finalized", "escalated", "blocked", "canceled"]:
-                count = issues.get(status, 0)
-                if count > 0:
-                    issues_table.add_row(status, str(count))
-            parts.append(issues_table)
+        n_open = issues.get("open", 0)
+        n_wip = issues.get("in_progress", 0)
+        n_done = issues.get("done", 0) + issues.get("finalized", 0)
+        n_esc = issues.get("escalated", 0)
+        n_workers = proj.get("active_agents", 0)
 
-        # Workers
-        workers = proj.get("workers", [])
-        if workers:
-            workers_table = _simple_table(("Name", {}), ("Issue", {"style": "cyan"}), ("Title", {"overflow": "fold"}))
-            for w in workers:
-                workers_table.add_row(w.get("name", ""), w.get("issue_id", ""), (w.get("issue_title") or "")[:40])
-            parts.append(workers_table)
+        # Refinery cell
+        refinery = proj.get("refinery", {})
+        if refinery.get("active"):
+            ref_text = Text(refinery.get("issue_id", "")[:16], style="green")
+        else:
+            ref_text = Text("-", style="dim")
 
-        # Refinery
-        parts.append(Text(f"Refinery: {_render_refinery(proj)}", style="dim"))
-
-        # Merge queue
+        # Merge queue cell
         mq = proj.get("merge_queue", {})
-        parts.append(Text(f"Merge queue: {_render_merge_queue(mq)}", style="dim"))
+        mq_parts = []
+        for key in ["queued", "running", "merged", "failed"]:
+            val = mq.get(key, 0)
+            if val > 0:
+                mq_parts.append(f"{val}{key[0]}")
+        mq_text = Text(" ".join(mq_parts) if mq_parts else "-", style="dim" if not mq_parts else "")
 
-        # Escalated issues
-        attention = proj.get("attention_issues", [])
-        if attention:
-            attn_table = _simple_table(("Issue", {"style": "cyan"}), ("Title", {"overflow": "fold"}))
-            for item in attention[:10]:
-                attn_table.add_row(item["id"], item["title"])
-            parts.append(Panel(attn_table, title="Needs Attention", border_style="yellow"))
+        # Alerts cell: escalated issues + merge blockers
+        alerts: list[str] = []
+        for item in proj.get("attention_issues", [])[:3]:
+            alerts.append(item["id"])
+        if proj.get("merge_blockers"):
+            alerts.append("dirty-worktree")
+        alert_text = Text(", ".join(alerts), style="yellow") if alerts else Text("-", style="dim")
 
-        # Merge blockers
-        blockers = proj.get("merge_blockers", [])
-        if blockers:
-            blocker_lines = []
-            for b in blockers:
-                blocker_lines.append(b.get("message", b.get("type", "unknown blocker")))
-                for change in (b.get("changes") or [])[:5]:
-                    blocker_lines.append(f"  {change}")
-            parts.append(Panel(Text("\n".join(blocker_lines)), title="Merge Blockers", border_style="red"))
+        table.add_row(
+            name,
+            _count_cell(n_open),
+            _count_cell(n_wip, style="green"),
+            _count_cell(n_done),
+            _count_cell(n_esc, style="yellow"),
+            _count_cell(n_workers, style="bold"),
+            ref_text,
+            mq_text,
+            alert_text,
+        )
 
-        total = proj.get("total_issues", 0)
-        subtitle = f"{total} issues, {proj.get('active_agents', 0)} workers"
-        renderables.append(Panel(Group(*parts), title=name, subtitle=subtitle, border_style="blue"))
+    renderables: list[RenderableType] = [header, table]
+
+    # Show active workers detail below the table (only if any exist)
+    all_workers = []
+    for proj in projects:
+        for w in proj.get("workers", []):
+            all_workers.append((proj["name"], w))
+    if all_workers:
+        worker_table = Table(box=box.SIMPLE, header_style="bold dim", pad_edge=False, padding=(0, 1))
+        worker_table.add_column("Project", style="cyan", no_wrap=True)
+        worker_table.add_column("Worker", no_wrap=True)
+        worker_table.add_column("Issue", style="cyan", no_wrap=True)
+        worker_table.add_column("Title", overflow="fold")
+        for proj_name, w in all_workers:
+            worker_table.add_row(proj_name, w.get("name", ""), w.get("issue_id", ""), (w.get("issue_title") or "")[:50])
+        renderables.append(worker_table)
 
     return Group(*renderables)
+
+
+def _count_cell(n: int, style: str = "") -> Text:
+    """Render a count as dim dash when zero, styled number otherwise."""
+    if n == 0:
+        return Text("-", style="dim")
+    return Text(str(n), style=style)
 
 
 def render_start(result: dict):
