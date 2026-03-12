@@ -1,0 +1,404 @@
+Implement the following plan:
+
+# Plan: Headless Queen Mode
+
+## Context
+
+We want autonomous dispatch of tasks without a new CLI command. The queen already
+has project context, filesystem exploration, and knows `hive create`. A headless
+mode lets external systems (MC cron, scripts, or the user) pass a task prompt and
+have the queen create issues directly — reusing the existing infrastructure.
+
+This replaces the previously discussed `hive dispatch` command.
+
+## Changes
+
+### 1. CLI flags (`src/hive/cli/typer_app.py`)
+
+Add to the `queen` command:
+- `--headless` — run non-interactively
+- `-p` / `--prompt` — task prompt (required when `--headless`)
+
+Validation: error if `--headless` without `--prompt`.
+
+### 2. Queen command construction (`src/hive/cli/queen.py`)
+
+In `_queen_claude()`, when headless:
+- Add `--print` flag (non-interactive output)
+- Add `-p <prompt>` (the task)
+- Always use `--dangerously-skip-permissions` (no human to approve tool calls)
+- Append a headless-mode system prompt override that tells the queen to skip
+  the plan approval workflow and create issues directly
+
+In `_run_queen_process()`:
+- When headless, don't `sys.exit(result.returncode)` — return instead, so the
+  CLI process continues normally
+- Stream output to stdout (don't capture) so user sees progress
+
+### 3. Headless system prompt override
+
+Append via `--append-system-prompt` (alongside the existing short prompt):
+```
+You are running in HEADLESS MODE. There is no interactive user.
+- Skip the plan proposal step — create issues directly.
+- Do NOT ask questions or wait for approval.
+- Read .hive/project-context.md and .hive/queen-context.md for project knowledge.
+- Explore the codebase as needed to write good issue descriptions.
+- After creating issues, update .hive/queen-context.md with any new learnings.
+- Output a summary of created issues before exiting.
+```
+
+No changes to queen.md itself — the override is additive.
+
+### 4. Codex backend (`_queen_codex()`)
+
+Add equivalent headless support: pass the prompt directly and set approval
+policy to `"never"`.
+
+## Files to modify
+
+- `src/hive/cli/typer_app.py` — add `--headless` and `-p` flags to queen command
+- `src/hive/cli/queen.py` — headless command construction in `_queen_claude()`,
+  `_queen_codex()`, and `_run_queen_process()`
+
+## Verification
+
+1. `hive queen --headless -p "Bump all Python dependencies"` — should create
+   issue(s) and exit without interaction
+2. `hive queen --headless` (no -p) — should error with usage message
+3. `hive queen` (no --headless) — existing interactive behavior unchanged
+4. Run existing tests: `python -m pytest tests/ -v --timeout=30`
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/54d544f0-be2d-4b7d-8b9c-3aaa9164877b.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+update docs about htis feature as well
+
+---
+
+alright anything else we might be forgetting? we got tests? doc updates? the feature itself? anything else
+
+---
+
+okay this seems reasonable, commit into main
+
+---
+
+wait so for the headless command, is it project specific. or how can we make it directed towards a project?
+
+---
+
+documnt the --project flag explicitly in the readme when using headless create mode. this will be useful for the PM agent to know
+
+---
+
+❯ what is local hive. what is .hive/local-hive.db -- like these shouldn't be created? we should always use the systems' ~/hive.db?
+
+---
+
+may be a manual db override becuase it exists in ~/projects/pycg-rs and ~/projects/pycfg-rs
+
+---
+
+please do
+
+---
+
+wait so does the queen-state and queen-instruction get cleaned up when we end the hive queen process?
+
+---
+
+interesting...so this gets noisy, yeah? within the project is a git tree, and as the queen is update .claude/CLAUDE.md and the queen state, the merges need to keep in mind these dirty files OR make a chocie of commiting them as well.
+
+I suppose you could specifically ignore .hive/queen-state.md but like hive init doesn't do that for you
+
+what are better solutions here? we have these state files that i've been accidentally committing/uncommitting -- there's certianly a better way to do this
+
+---
+
+[Request interrupted by user]
+
+---
+
+keep going
+
+---
+
+what about the .claude/CLAUDE.md file?
+
+---
+
+yeah these seem like reasonable ish solutions. let's go with this for now, and maybe make a note in docs/*.md -- one of those files -- on revisiting this design choice
+
+---
+
+what happened to the `hive daemon` command? we should also be able to start up the hive daemon from anywhere, not just within a hive project, now that we have theheadless mode and coordination multiple projects
+
+---
+
+[Request interrupted by user]
+
+---
+
+⏺ It's hive start, not hive daemon. The queen's headless mode is trying to start a daemon via a daemon subcommand that doesn't exist — it should be using start. This is a bug in hive
+  itself.
+
+  Looks like queen headless mode has a broken daemon launch path. Two options:
+
+  1. Fix the bug in hive (the headless code is calling daemon start instead of start)
+  2. Start the daemon manually first, then run queen headless
+
+---
+
+All three show the same error:
+
+  Starting daemon... Error: Failed to start daemon. Check `hive daemon logs`.
+  failed
+
+this was the logs
+
+---
+
+reinstall the tool on the system
+
+---
+
+~/projects/hive (main)
+$ uv tool install --force --reinstall -e .
+Resolved 19 packages in 262ms
+      Built hive @ file:///Users/tau/projects/hive
+Prepared 19 packages in 315ms
+Uninstalled 19 packages in 40ms
+Installed 19 packages in 10ms
+ ~ aiohappyeyeballs==2.6.1
+ ~ aiohttp==3.13.3
+ ~ aiosignal==1.4.0
+ ~ annotated-doc==0.0.4
+ ~ attrs==25.4.0
+ ~ click==8.3.1
+ ~ frozenlist==1.8.0
+ ~ hive==0.1.0 (from file:///Users/tau/projects/hive)
+ ~ idna==3.11
+ ~ markdown-it-py==4.0.0
+ ~ mdurl==0.1.2
+ ~ multidict==6.7.1
+ ~ propcache==0.4.1
+ ~ pygments==2.19.2
+ ~ pyyaml==6.0.3
+ ~ rich==14.3.3
+ ~ shellingham==1.5.4
+ ~ typer==0.24.1
+ ~ yarl==1.23.0
+Installed 1 executable: hive
+~/projects/hive (main)
+$ cd ..
+~/projects
+$ hive start
+fatal: not a git repository (searched up from /Users/tau/projects)
+~/projects
+$
+
+still getting this error
+
+---
+
+[Request interrupted by user]
+
+---
+
+keep going
+
+---
+
+[Request interrupted by user]
+
+---
+
+revert all the changes, this is starting to get silly. we'll rethink our approach then implement
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   - Implement headless queen mode (`--headless -p <prompt>`) for non-interactive task dispatch in the Hive multi-agent orchestrator
+   - Document the feature in README.md and TECHNICAL_DESIGN_DOC.md
+   - Add tests for the new feature
+   - Fix queen session files polluting git state (ephemeral `.hive/queen-state.md`, `.hive/queen-instructions.md`, and sentinel injection into `.claude/CLAUDE.md`)
+   - Fix daemon startup failing when CWD is not inside a git repo (this was attempted, reverted, and needs rethinking)
+
+2. Key Technical Concepts:
+   - Hive CLI uses Typer for command parsing, with a global `--project` flag and `--json` mode
+   - `HiveCLI` is composed of mixins (`QueenMixin` in `queen.py`, core in `core.py`)
+   - All CLI commands go through `initialize_cli()` → `resolve_project()` → `detect_project()`, which hard-fails outside a git repo via `sys.exit(128)`
+   - `HiveDaemon` is a global daemon (serves all projects), spawns `hive start --foreground` as detached subprocess
+   - Queen writes ephemeral session files into `.hive/` and uses `--append-system-prompt` for Claude CLI identity
+   - The `cli_command` decorator pattern separates data-gathering from output formatting
+   - Tests use `HiveCLI` directly (no typer `CliRunner` tests exist)
+   - Pre-commit hooks run `ruff`, `ruff-format`, and `ty`
+
+3. Files and Code Sections:
+   - **`src/hive/cli/typer_app.py`**
+     - Entry point for all CLI commands via Typer
+     - Added `--headless` and `-p`/`--prompt` flags to queen command with validation
+     - `start` and `stop` commands go through `_run()` → `_cli_session()` → `initialize_cli()` which requires project detection — this is the root cause of the daemon-outside-git-repo issue
+     ```python
+     @app.command()
+     def queen(
+         ctx: typer.Context,
+         backend: Annotated[Literal["claude", "codex"] | None, typer.Option(help="Override backend (default: from config/HIVE_BACKEND)")] = None,
+         dangerously_skip_permissions: Annotated[
+             bool, typer.Option(help="Pass --dangerously-skip-permissions to Claude CLI (queen and workers)")
+         ] = False,
+         mcp_config: Annotated[list[str] | None, typer.Option(help="Claude MCP config(s); repeat the option for multiple configs")] = None,
+         headless: Annotated[bool, typer.Option(help="Run non-interactively (requires --prompt)")] = False,
+         prompt: Annotated[str | None, typer.Option("-p", "--prompt", help="Task prompt for headless mode")] = None,
+     ) -> None:
+         """Launch Queen Bee TUI."""
+         if headless and not prompt:
+             print_error(ctx.obj.console, "--headless requires --prompt / -p")
+             raise typer.Exit(1)
+     ```
+
+   - **`src/hive/cli/queen.py`** (current state on main after revert)
+     - `QueenMixin` with headless support and ephemeral file cleanup
+     - `_QUEEN_SYSTEM_PROMPT` — queen identity block, passed via `--append-system-prompt` instead of injecting into CLAUDE.md
+     - `_HEADLESS_SYSTEM_PROMPT` — headless override appended as additional system prompt
+     - `_HIVE_GITIGNORE` — content for `.hive/.gitignore` covering ephemeral files
+     - `_queen_write_identity_files()` returns `Path` (just instructions_path), creates `.hive/.gitignore`, cleans up legacy sentinels from CLAUDE.md
+     - `_queen_cleanup_identity_files(instructions_path)` — only deletes ephemeral files, no CLAUDE.md handling
+     - `_run_queen_process()` — in headless mode returns normally instead of `sys.exit()`
+     - Error message on line 52 still incorrectly says `hive daemon logs` (was fixed in reverted commit)
+     ```python
+     _QUEEN_SYSTEM_PROMPT = (
+         "You are the Queen Bee coordinator. You do NOT write code — you plan, decompose, and monitor.\n"
+         "Full instructions: `.hive/queen-instructions.md` — re-read if your context feels incomplete.\n"
+         "Project context: `.hive/project-context.md` — architecture, build, conventions, key files.\n"
+         "Persistent context: `.hive/queen-context.md` — accumulated project knowledge across sessions.\n"
+         "Operational state: `.hive/queen-state.md` — re-read to recall what you were working on.\n"
+         "Always use `hive --json` for CLI commands. The daemon runs in background."
+     )
+     
+     _HEADLESS_SYSTEM_PROMPT = (
+         "You are running in HEADLESS MODE. There is no interactive user.\n"
+         "- Skip the plan proposal step — create issues directly.\n"
+         "- Do NOT ask questions or wait for approval.\n"
+         "- Read .hive/project-context.md and .hive/queen-context.md for project knowledge.\n"
+         "- Explore the codebase as needed to write good issue descriptions.\n"
+         "- After creating issues, update .hive/queen-context.md with any new learnings.\n"
+         "- Output a summary of created issues before exiting."
+     )
+     ```
+
+   - **`src/hive/daemon.py`**
+     - `HiveDaemon` class — global daemon manager
+     - `start()` spawns `hive --db <path> start --foreground` as detached subprocess
+     - Currently does NOT pass `--project` (reverted fix)
+     - The child process inherits CWD and fails if CWD is not in a git repo
+     ```python
+     cmd += ["--db", str(self.db_path), "start", "--foreground"]
+     ```
+
+   - **`src/hive/cli/runtime.py`**
+     - `initialize_cli()` calls `resolve_project()` which calls `detect_project()` — this chain hard-fails outside git repos
+     - `detect_project()` in `utils.py` prints `fatal: not a git repository` to stderr and calls `sys.exit(128)`
+
+   - **`src/hive/utils.py`** (line 158-178)
+     - `detect_project()` walks up from CWD looking for `.git/`, exits with code 128 if not found
+     - Prints error to stderr directly before exiting
+
+   - **`tests/test_cli.py`**
+     - Added 6 headless queen tests after existing `test_queen_auto_starts_daemon`
+     - Tests mock `_make_daemon`, `subprocess.run`, `_queen_write_identity_files` (returns `tmp_path / "q.md"`), and `_queen_cleanup_identity_files`
+     ```python
+     def _make_running_daemon():
+         daemon = unittest.mock.Mock()
+         daemon.status.return_value = {"running": True, "pid": 1234}
+         return daemon
+     ```
+     - Test names: `test_queen_headless_claude_command_flags`, `test_queen_headless_codex_approval_never`, `test_queen_headless_does_not_sys_exit`, `test_queen_headless_nonzero_exit_raises`, `test_queen_headless_sets_skip_permissions_env`, `test_queen_interactive_unchanged`
+
+   - **`README.md`**
+     - Added "Headless Queen Mode" section with usage examples showing `--project` flag
+     - Added `hive queen --headless -p` to essential commands table
+     - Mentioned headless mode in The Queen description
+
+   - **`docs/TECHNICAL_DESIGN_DOC.md`**
+     - Updated CLI surface: `hive queen [--backend claude|codex] [--headless -p <prompt>]`
+     - Added item 5 to §14 (Known Limitations) about queen ephemeral files and git cleanliness
+
+4. Errors and fixes:
+   - **ruff-format pre-commit hook failure**: `queen.py` needed reformatting after initial edit. Fixed by running `uvx ruff format` before recommitting.
+   - **`--append-system-prompt` count assertion**: After moving queen identity to `--append-system-prompt`, tests expected 2 entries but there were now 3 (short + queen identity + headless). Fixed by updating assertion from `len(asp_indices) == 2` to `len(asp_indices) == 3` and index from `asp_indices[1]` to `asp_indices[2]`.
+   - **Test mock return value mismatch**: After changing `_queen_write_identity_files` to return `Path` instead of `tuple[Path, Path]`, tests needed updating from `return_value=(tmp_path / "CLAUDE.md", tmp_path / "q.md")` to `return_value=tmp_path / "q.md"`.
+   - **Daemon failing outside git repo**: `hive start` from `~/projects/` (not a git repo) fails because `detect_project()` calls `sys.exit(128)`. Attempted fix by passing `project_path` through `HiveDaemon` and making `start`/`stop` bypass `initialize_cli`. The fix became increasingly messy — user asked to revert.
+   - **User feedback**: "revert all the changes, this is starting to get silly. we'll rethink our approach then implement" — reverted commit `eb47bbe` and all uncommitted typer_app.py changes.
+
+5. Problem Solving:
+   - **Solved**: Headless queen mode implementation (CLI flags, command construction for both Claude and Codex backends, non-interactive exit behavior)
+   - **Solved**: Queen ephemeral files polluting git (moved sentinel from CLAUDE.md to --append-system-prompt, added .hive/.gitignore)
+   - **Unsolved**: Daemon startup from outside git repo. The fundamental issue is that `initialize_cli()` → `detect_project()` is required by all commands including `start`/`stop`/`start --foreground`, but the daemon is conceptually global and doesn't need a project. The attempted fix (passing project_path through HiveDaemon, making start/stop bypass initialize_cli) got messy and was reverted. Needs architectural rethinking of how project-independent commands bypass the project detection requirement.
+
+6. All user messages:
+   - "Implement the following plan: # Plan: Headless Queen Mode [detailed plan]"
+   - "update docs about this feature as well"
+   - "alright anything else we might be forgetting? we got tests? doc updates? the feature itself? anything else"
+   - "okay this seems reasonable, commit into main"
+   - "wait so for the headless command, is it project specific. or how can we make it directed towards a project?"
+   - "documnt the --project flag explicitly in the readme when using headless create mode. this will be useful for the PM agent to know"
+   - "what is local hive. what is .hive/local-hive.db -- like these shouldn't be created? we should always use the systems' ~/hive.db?"
+   - "may be a manual db override becuase it exists in ~/projects/pycg-rs and ~/projects/pycfg-rs"
+   - "please do" (delete the leftover db files)
+   - "wait so does the queen-state and queen-instruction get cleaned up when we end the hive queen process?"
+   - "interesting...so this gets noisy, yeah? within the project is a git tree, and as the queen is update .claude/CLAUDE.md and the queen state, the merges need to keep in mind these dirty files OR make a chocie of commiting them as well. I suppose you could specifically ignore .hive/queen-state.md but like hive init doesn't do that for you. what are better solutions here? we have these state files that i've been accidentally committing/uncommitting -- there's certianly a better way to do this"
+   - "what about the .claude/CLAUDE.md file?"
+   - "yeah these seem like reasonable ish solutions. let's go with this for now, and maybe make a note in docs/*.md -- one of those files -- on revisiting this design choice"
+   - "what happened to the `hive daemon` command? we should also be able to start up the hive daemon from anywhere, not just within a hive project, now that we have the headless mode and coordination multiple projects"
+   - [Interrupted] "It's hive start, not hive daemon. The queen's headless mode is trying to start a daemon via a daemon subcommand that doesn't exist — it should be using start. This is a bug in hive itself. Looks like queen headless mode has a broken daemon launch path..."
+   - "reinstall the tool on the system"
+   - User pasted error output: "Starting daemon... Error: Failed to start daemon. Check `hive daemon logs`. failed" with "still getting this error"
+   - [Interrupted] "keep going"
+   - "revert all the changes, this is starting to get silly. we'll rethink our approach then implement"
+
+7. Pending Tasks:
+   - **Rethink and implement daemon startup from outside git repo**: The core problem is that `initialize_cli()` → `detect_project()` hard-requires a git repo, but `start`, `stop`, and the daemon's foreground subprocess don't actually need a project. Need a clean architectural approach to separate project-dependent commands from project-independent ones.
+   - **Fix error message**: `queen.py` line 52 still says `hive daemon logs` instead of `hive logs --daemon` (fix was part of reverted commit).
+
+8. Current Work:
+   The user asked to revert all changes related to the daemon-outside-git-repo fix after the approach became unwieldy. The revert was completed:
+   - `git checkout -- src/hive/cli/typer_app.py` (reverted uncommitted changes)
+   - `git revert --no-edit eb47bbe` (reverted the "Fix daemon failing to start when CWD is not a git repo" commit)
+   - Deleted the `fix/daemon-project-passthrough` branch
+   
+   Current git state is clean on `main` with these commits since the original HEAD:
+   - `ea81a06` Add headless queen mode
+   - `1303827` Document headless queen mode in README and design doc  
+   - `d4e3f5f` Add tests for headless queen mode
+   - `1e4041d` Document --project flag for headless queen in README
+   - `7977ee1` Stop modifying .claude/CLAUDE.md during queen sessions
+   - `e5553f0` Revert "Fix daemon failing to start when CWD is not a git repo"
+
+9. Optional Next Step:
+   The user said "we'll rethink our approach then implement" regarding making the daemon startable from outside a git repo. The next step would be to propose a cleaner architectural approach. The core issue: `initialize_cli()` in `runtime.py` calls `resolve_project()` → `detect_project()` for ALL commands, but `start`, `stop`, and `start --foreground` don't need a project since the daemon is global. A clean solution would likely involve either:
+   - Making `detect_project()` return `None` instead of `sys.exit(128)` and handling the None case in `initialize_cli()`
+   - Or creating a separate lightweight init path for project-independent commands
+   
+   However, the user explicitly said to rethink first, so this should wait for the user to re-engage on the topic.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/tau/.claude/projects/-Users-tau-projects-hive/02cf04c6-d8bf-4daf-b54c-83949d413fd7.jsonl
+
+---
+
+⏺ Clean. The daemon project-passthrough commit is reverted, uncommitted typer_app.py changes are gone.
+  We're back to main with just the headless queen feature + ephemeral file cleanup commits.
+
+  The core problem to rethink: start, stop, and the daemon subprocess all go through initialize_cli →
+  detect_project(), which hard-fails outside a git repo. The daemon is conceptually global but the CLI
+  bootstrap assumes a project. Needs a cleaner separation.
+
+so yeah, should figure out what the right way to organize these commands are given that we've made the hive daemon a global abstraction vs one per project.
