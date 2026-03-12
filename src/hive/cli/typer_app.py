@@ -108,6 +108,14 @@ def init(
     except Exception as exc:
         _fail(ctx.obj, exc)
     do_setup(project_path, project_name, json_mode=ctx.obj.json_mode)
+
+    # Register project so global status can see it
+    db = initialize_global(db_override=ctx.obj.db_override)
+    try:
+        db.register_project(project_name, str(project_path))
+    finally:
+        db.close()
+
     if analyze:
         from .runtime import do_analyze
 
