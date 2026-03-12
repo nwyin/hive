@@ -6,6 +6,7 @@
   "checkpoints_count": 1,
   "files_touched": [
     "src/hive/cli/queen.py",
+    "src/hive/cli/runtime.py",
     "src/hive/cli/typer_app.py"
   ],
   "sessions": [
@@ -15,6 +16,13 @@
       "context": "/96/0ad2ec550b/0/context.md",
       "content_hash": "/96/0ad2ec550b/0/content_hash.txt",
       "prompt": "/96/0ad2ec550b/0/prompt.txt"
+    },
+    {
+      "metadata": "/96/0ad2ec550b/1/metadata.json",
+      "transcript": "/96/0ad2ec550b/1/full.jsonl",
+      "context": "/96/0ad2ec550b/1/context.md",
+      "content_hash": "/96/0ad2ec550b/1/content_hash.txt",
+      "prompt": "/96/0ad2ec550b/1/prompt.txt"
     }
   ],
   "token_usage": {
