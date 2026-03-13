@@ -2,11 +2,16 @@
 
 _Living document tracking implementation status, delivered features, post-mortems, and open questions._
 
-**Last Updated**: 2026-02-14
+**Last Updated**: 2026-03-14
 
 ---
 
 ## Implementation Status
+
+### Current Design Follow-Up
+
+- A concrete orchestration simplification plan now lives in `docs/ORCHESTRATOR_REFACTOR_PLAN.md`.
+- The focus is reducing orchestration complexity around monitor/completion/teardown logic without weakening the existing race-safety and reconciliation guarantees.
 
 ### Completed (Phases 1-8)
 

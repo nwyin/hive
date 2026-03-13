@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,25 @@ class StalledSessionCheckResult(str, Enum):
 
     CONTINUE_MONITORING = "continue_monitoring"
     STOP_MONITORING = "stop_monitoring"
+
+
+class MonitorSignal(str, Enum):
+    """Normalized monitor loop outcomes."""
+
+    FILE_RESULT = "file_result"
+    IDLE_HINT = "idle_hint"
+    CANCELED = "canceled"
+    CONTINUE_MONITORING = "continue_monitoring"
+    STOP_MONITORING = "stop_monitoring"
+
+
+@dataclass
+class MonitorStep:
+    """A single monitor loop outcome."""
+
+    signal: MonitorSignal
+    detection_via: Optional[str] = None
+    file_result: Optional[Dict[str, Any]] = None
 
 
 class LifecycleMixin:
@@ -307,7 +327,6 @@ class LifecycleMixin:
         import hive.orchestrator as _mod
 
         Config = _mod.Config
-        read_result_file = _mod.read_result_file
 
         # Snapshot the session_id we're monitoring and always clean up that key.
         # This keeps monitor cleanup stable even if the agent object is mutated.
@@ -334,12 +353,13 @@ class LifecycleMixin:
                 f"(agent={agent.agent_id}, issue={agent.issue_id}, check_interval={check_interval}s)"
             )
             while True:
-                # Completion truth: parsed result file.
-                file_result = read_result_file(agent.worktree)
-                if file_result is not None:
+                step = self._read_monitor_completion_truth(agent)
+                if step is not None:
+                    file_result = step.file_result
                     if completion_detected_via == "unknown":
-                        completion_detected_via = "file"
+                        completion_detected_via = step.detection_via or "file"
                     break
+
                 # If the session has gone idle (via SSE or polling) but the
                 # worker didn't write a result file, treat that as completion
                 # and let handle_agent_complete record the failure instead of
@@ -349,53 +369,20 @@ class LifecycleMixin:
                         completion_detected_via = "idle_hint_no_file"
                     break
 
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=check_interval)
-                    # Event was set — could be idle (hint) or canceled.
-                    # Check if canceled before assessing completion
-                    if self._is_issue_canceled(agent.issue_id):
-                        # Issue was canceled while agent was working.
-                        # cancel_agent_for_issue already handled cleanup + set the event.
-                        logger.info(
-                            f"Monitor exiting due to cancellation for session {my_session_id} (agent={agent.agent_id}, issue={agent.issue_id})"
-                        )
-                        return
-                    completion_detected_via = "event_hint"
+                step = await self._wait_for_monitor_signal(
+                    agent,
+                    session_id=my_session_id,
+                    event=event,
+                    check_interval=check_interval,
+                    lease_duration=Config.LEASE_DURATION,
+                )
+                if step.signal == MonitorSignal.CANCELED:
+                    return
+                if step.signal == MonitorSignal.STOP_MONITORING:
+                    return
+                if step.signal == MonitorSignal.IDLE_HINT:
+                    completion_detected_via = step.detection_via or completion_detected_via
                     idle_hint_seen = True
-                    event.clear()
-                except asyncio.TimeoutError:
-                    logger.debug(
-                        f"Monitor timeout waiting for idle event for session {my_session_id}; "
-                        f"polling fallback (event_set={event.is_set()}, current_agent_session={agent.session_id})"
-                    )
-                    # Check if the issue was canceled
-                    if self._is_issue_canceled(agent.issue_id):
-                        await self.cancel_agent_for_issue(agent.issue_id)
-                        return
-
-                    # Polling fallback: directly check if the session went idle.
-                    # This catches cases where the SSE event was missed.
-                    if await self._poll_session_idle(
-                        my_session_id,
-                        agent.worktree,
-                        agent_id=agent.agent_id,
-                        issue_id=agent.issue_id,
-                    ):
-                        completion_detected_via = "poll_hint"
-                        idle_hint_seen = True
-
-                    # Check if there's been recent activity
-                    last_activity = self._session_last_activity.get(my_session_id, datetime.now())
-                    elapsed = (datetime.now() - last_activity).total_seconds()
-
-                    if elapsed > Config.LEASE_DURATION:
-                        # Heartbeat appears stale. Re-check file/session once.
-                        check_result = await self._handle_stalled_with_session_check(agent)
-                        if check_result == StalledSessionCheckResult.CONTINUE_MONITORING:
-                            # Status is still busy; keep monitor alive.
-                            self._session_last_activity[my_session_id] = datetime.now()
-                            continue
-                        return
 
             logger.info(
                 f"Completion result detected for session {my_session_id} "
@@ -423,6 +410,98 @@ class LifecycleMixin:
             if my_session_id in self.session_status_events:
                 del self.session_status_events[my_session_id]
             self._session_last_activity.pop(my_session_id, None)
+
+    def _read_monitor_completion_truth(self, agent: AgentIdentity) -> Optional[MonitorStep]:
+        """Return structured completion truth when the result file is present."""
+        import hive.orchestrator as _mod
+
+        file_result = _mod.read_result_file(agent.worktree)
+        if file_result is None:
+            return None
+        return MonitorStep(
+            signal=MonitorSignal.FILE_RESULT,
+            detection_via="file",
+            file_result=file_result,
+        )
+
+    async def _wait_for_monitor_signal(
+        self,
+        agent: AgentIdentity,
+        *,
+        session_id: str,
+        event: asyncio.Event,
+        check_interval: int,
+        lease_duration: int,
+    ) -> MonitorStep:
+        """Wait for the next monitor signal or timeout-driven fallback."""
+        try:
+            await asyncio.wait_for(event.wait(), timeout=check_interval)
+        except asyncio.TimeoutError:
+            return await self._handle_monitor_timeout(
+                agent,
+                session_id=session_id,
+                event=event,
+                lease_duration=lease_duration,
+            )
+
+        if self._is_issue_canceled(agent.issue_id):
+            # Issue was canceled while agent was working.
+            # cancel_agent_for_issue already handled cleanup + set the event.
+            logger.info(f"Monitor exiting due to cancellation for session {session_id} (agent={agent.agent_id}, issue={agent.issue_id})")
+            return MonitorStep(signal=MonitorSignal.CANCELED)
+
+        event.clear()
+        return MonitorStep(
+            signal=MonitorSignal.IDLE_HINT,
+            detection_via="event_hint",
+        )
+
+    async def _handle_monitor_timeout(
+        self,
+        agent: AgentIdentity,
+        *,
+        session_id: str,
+        event: asyncio.Event,
+        lease_duration: int,
+    ) -> MonitorStep:
+        """Handle one monitor timeout tick."""
+        logger.debug(
+            f"Monitor timeout waiting for idle event for session {session_id}; "
+            f"polling fallback (event_set={event.is_set()}, current_agent_session={agent.session_id})"
+        )
+
+        if self._is_issue_canceled(agent.issue_id):
+            await self.cancel_agent_for_issue(agent.issue_id)
+            return MonitorStep(signal=MonitorSignal.CANCELED)
+
+        if await self._poll_session_idle(
+            session_id,
+            agent.worktree,
+            agent_id=agent.agent_id,
+            issue_id=agent.issue_id,
+        ):
+            return MonitorStep(
+                signal=MonitorSignal.IDLE_HINT,
+                detection_via="poll_hint",
+            )
+
+        if not self._monitor_lease_expired(session_id, lease_duration):
+            return MonitorStep(signal=MonitorSignal.CONTINUE_MONITORING)
+
+        # Heartbeat appears stale. Re-check file/session once.
+        check_result = await self._handle_stalled_with_session_check(agent)
+        if check_result == StalledSessionCheckResult.CONTINUE_MONITORING:
+            # Status is still busy; keep monitor alive.
+            self._session_last_activity[session_id] = datetime.now()
+            return MonitorStep(signal=MonitorSignal.CONTINUE_MONITORING)
+
+        return MonitorStep(signal=MonitorSignal.STOP_MONITORING)
+
+    def _monitor_lease_expired(self, session_id: str, lease_duration: int) -> bool:
+        """Return whether the monitor's last observed activity exceeds the lease."""
+        last_activity = self._session_last_activity.get(session_id, datetime.now())
+        elapsed = (datetime.now() - last_activity).total_seconds()
+        return elapsed > lease_duration
 
     async def cancel_agent_for_issue(self, issue_id: str):
         """Cancel the active agent working on an issue.
