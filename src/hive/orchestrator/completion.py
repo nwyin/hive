@@ -45,6 +45,16 @@ class EscalationDecision(str, Enum):
 
 
 @dataclass
+class EscalationContext:
+    """Escalation decision with pre-fetched counts (avoids redundant DB queries)."""
+
+    decision: EscalationDecision
+    retry_count: int = 0
+    agent_switch_count: int = 0
+    recent_failures: int = 0
+
+
+@dataclass
 class CompletionDecision:
     """Decision payload from completion transition analysis."""
 
@@ -53,6 +63,15 @@ class CompletionDecision:
     terminal_status: Optional[str] = None
     budget_tokens: Optional[int] = None
     validation_original_summary: Optional[str] = None
+
+
+_FAILURE_TRANSITIONS = frozenset(
+    {
+        CompletionTransition.FAIL_BUDGET,
+        CompletionTransition.FAIL_ASSESSMENT,
+        CompletionTransition.FAIL_VALIDATION_NO_DIFF,
+    }
+)
 
 
 class CompletionMixin:
@@ -194,18 +213,14 @@ class CompletionMixin:
                     )
 
                 case CompletionTransition.FAIL_BUDGET:
-                    remove_worktree_on_teardown = True
                     self.db.log_event(
                         agent.issue_id,
                         agent.agent_id,
                         "budget_exceeded",
                         {"issue_tokens": decision.budget_tokens, "limit": _mod.Config.MAX_TOKENS_PER_ISSUE},
                     )
-                    if decision.result is not None:
-                        await self._handle_agent_failure(agent, decision.result)
 
                 case CompletionTransition.FAIL_VALIDATION_NO_DIFF:
-                    remove_worktree_on_teardown = True
                     self.db.log_event(
                         agent.issue_id,
                         agent.agent_id,
@@ -215,13 +230,9 @@ class CompletionMixin:
                             "original_summary": decision.validation_original_summary,
                         },
                     )
-                    if decision.result is not None:
-                        await self._handle_agent_failure(agent, decision.result)
 
                 case CompletionTransition.FAIL_ASSESSMENT:
-                    remove_worktree_on_teardown = True
-                    if decision.result is not None:
-                        await self._handle_agent_failure(agent, decision.result)
+                    pass
 
                 case CompletionTransition.SUCCESS_DONE:
                     if decision.result is None:
@@ -280,6 +291,12 @@ class CompletionMixin:
                 case _:
                     raise RuntimeError(f"Unhandled completion transition: {decision.transition}")
 
+            # Common handler for all failure transitions
+            if decision.transition in _FAILURE_TRANSITIONS:
+                remove_worktree_on_teardown = True
+                assert decision.result is not None, f"Missing result for failure transition {decision.transition}"
+                await self._handle_agent_failure(agent, decision.result)
+
         except Exception as e:
             transition = decision.transition.value if decision else CompletionTransition.ERROR_COMPLETION_HANDLER.value
             self.db.log_event(
@@ -291,26 +308,48 @@ class CompletionMixin:
         finally:
             await self._teardown_agent(agent, remove_worktree=remove_worktree_on_teardown)
 
-    def _choose_escalation(self, issue_id: str) -> EscalationDecision:
-        """Decide escalation tier based on anomaly/retry/switch counts."""
+    def _choose_escalation(self, issue_id: str) -> EscalationContext:
+        """Decide escalation tier based on anomaly/retry/switch counts.
+
+        Returns an EscalationContext carrying the decision and pre-fetched
+        counts so callers don't need to re-query the DB.
+        """
         import hive.orchestrator as _mod
 
         Config = _mod.Config
 
+        recent_failures = 0
         if Config.ANOMALY_FAILURE_THRESHOLD and Config.ANOMALY_WINDOW_MINUTES:
             recent_failures = self.db.count_events_since_minutes_since_reset(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
             if recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD:
-                return EscalationDecision.ANOMALY_ESCALATE
+                return EscalationContext(
+                    decision=EscalationDecision.ANOMALY_ESCALATE,
+                    recent_failures=recent_failures,
+                )
 
         retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
         if retry_count < Config.MAX_RETRIES:
-            return EscalationDecision.RETRY
+            return EscalationContext(
+                decision=EscalationDecision.RETRY,
+                retry_count=retry_count,
+                recent_failures=recent_failures,
+            )
 
         agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
         if agent_switch_count < Config.MAX_AGENT_SWITCHES:
-            return EscalationDecision.AGENT_SWITCH
+            return EscalationContext(
+                decision=EscalationDecision.AGENT_SWITCH,
+                retry_count=retry_count,
+                agent_switch_count=agent_switch_count,
+                recent_failures=recent_failures,
+            )
 
-        return EscalationDecision.ESCALATE
+        return EscalationContext(
+            decision=EscalationDecision.ESCALATE,
+            retry_count=retry_count,
+            agent_switch_count=agent_switch_count,
+            recent_failures=recent_failures,
+        )
 
     async def _handle_agent_failure(self, agent: AgentIdentity, result: CompletionResult):
         """State machine for failure routing: retry -> agent switch -> escalate."""
@@ -330,71 +369,69 @@ class CompletionMixin:
             {"reason": result.reason, "summary": result.summary, "model": model},
         )
 
-        decision = self._choose_escalation(issue_id)
+        ctx = self._choose_escalation(issue_id)
 
-        if decision == EscalationDecision.ANOMALY_ESCALATE:
-            recent_failures = self.db.count_events_since_minutes_since_reset(issue_id, "incomplete", Config.ANOMALY_WINDOW_MINUTES)
-            logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
-            self._try_escalate_issue(
-                issue_id,
-                agent.agent_id,
-                to_status="escalated",
-                event_type="escalated",
-                detail={
-                    "reason": "Anomaly detection: rapid repeated failures",
-                    "recent_failures": recent_failures,
-                    "window_minutes": Config.ANOMALY_WINDOW_MINUTES,
-                    "final_failure_reason": result.reason,
-                },
-                skip_event_type="anomaly_escalate_skipped",
-            )
-            return
+        match ctx.decision:
+            case EscalationDecision.ANOMALY_ESCALATE:
+                logger.warning(f"Anomaly: {ctx.recent_failures} failures on {issue_id} in {Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
+                self._try_escalate_issue(
+                    issue_id,
+                    agent.agent_id,
+                    to_status="escalated",
+                    event_type="escalated",
+                    detail={
+                        "reason": "Anomaly detection: rapid repeated failures",
+                        "recent_failures": ctx.recent_failures,
+                        "window_minutes": Config.ANOMALY_WINDOW_MINUTES,
+                        "final_failure_reason": result.reason,
+                    },
+                    skip_event_type="anomaly_escalate_skipped",
+                )
 
-        if decision == EscalationDecision.RETRY:
-            retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
-            if not self._try_escalate_issue(
-                issue_id,
-                agent.agent_id,
-                to_status="open",
-                event_type="retry",
-                detail={"retry_count": retry_count + 1, "reason": result.reason, "previous_agent": agent.name},
-                skip_event_type="retry_skipped",
-                skip_reason="issue not releasable",
-            ):
-                return
-            logger.info(f"Retrying issue {issue_id} (attempt {retry_count + 1}/{Config.MAX_RETRIES})")
-            return
+            case EscalationDecision.RETRY:
+                if self._try_escalate_issue(
+                    issue_id,
+                    agent.agent_id,
+                    to_status="open",
+                    event_type="retry",
+                    detail={"retry_count": ctx.retry_count + 1, "reason": result.reason, "previous_agent": agent.name},
+                    skip_event_type="retry_skipped",
+                    skip_reason="issue not releasable",
+                ):
+                    logger.info(f"Retrying issue {issue_id} (attempt {ctx.retry_count + 1}/{Config.MAX_RETRIES})")
 
-        if decision == EscalationDecision.AGENT_SWITCH:
-            agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
-            if not self._try_escalate_issue(
-                issue_id,
-                agent.agent_id,
-                to_status="open",
-                event_type="agent_switch",
-                detail={"switch_count": agent_switch_count + 1, "reason": result.reason, "previous_agent": agent.name, "model": model},
-                skip_event_type="agent_switch_skipped",
-                skip_reason="issue not releasable",
-            ):
-                return
-            logger.info(f"Switching agent for issue {issue_id} (switch {agent_switch_count + 1}/{Config.MAX_AGENT_SWITCHES})")
-            return
+            case EscalationDecision.AGENT_SWITCH:
+                if self._try_escalate_issue(
+                    issue_id,
+                    agent.agent_id,
+                    to_status="open",
+                    event_type="agent_switch",
+                    detail={
+                        "switch_count": ctx.agent_switch_count + 1,
+                        "reason": result.reason,
+                        "previous_agent": agent.name,
+                        "model": model,
+                    },
+                    skip_event_type="agent_switch_skipped",
+                    skip_reason="issue not releasable",
+                ):
+                    logger.info(f"Switching agent for issue {issue_id} (switch {ctx.agent_switch_count + 1}/{Config.MAX_AGENT_SWITCHES})")
 
-        retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
-        agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
-        if self._try_escalate_issue(
-            issue_id,
-            agent.agent_id,
-            to_status="escalated",
-            event_type="escalated",
-            detail={
-                "reason": "Exhausted all retry and agent switch attempts",
-                "final_failure_reason": result.reason,
-                "total_retries": retry_count,
-                "total_agent_switches": agent_switch_count,
-            },
-            skip_event_type="escalate_skipped",
-        ):
-            logger.warning(
-                f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches"
-            )
+            case EscalationDecision.ESCALATE:
+                if self._try_escalate_issue(
+                    issue_id,
+                    agent.agent_id,
+                    to_status="escalated",
+                    event_type="escalated",
+                    detail={
+                        "reason": "Exhausted all retry and agent switch attempts",
+                        "final_failure_reason": result.reason,
+                        "total_retries": ctx.retry_count,
+                        "total_agent_switches": ctx.agent_switch_count,
+                    },
+                    skip_event_type="escalate_skipped",
+                ):
+                    logger.warning(
+                        f"Escalating issue {issue_id} to human intervention "
+                        f"after {ctx.retry_count} retries and {ctx.agent_switch_count} agent switches"
+                    )
