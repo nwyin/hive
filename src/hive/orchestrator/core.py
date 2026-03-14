@@ -498,9 +498,9 @@ class OrchestratorCore:
             logger.info("Merge processor loop was cancelled")
             return
 
-        exception = task.exception()
-        if exception:
-            logger.error(f"Merge processor loop died with exception: {exception}")
+        exc = task.exception()
+        if exc:
+            logger.error(f"Merge processor loop died with exception: {exc}")
             if self.running:
                 logger.info("Auto-restarting merge processor loop")
                 new_task = asyncio.create_task(self.merge_processor_loop())

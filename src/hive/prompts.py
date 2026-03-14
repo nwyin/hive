@@ -150,7 +150,7 @@ def build_worker_prompt(
         f"- Branch: {branch_name}",
     ]
 
-    context = "\n".join(context_parts)
+    ctx = "\n".join(context_parts)
 
     notes_section = ""
     if notes:
@@ -172,7 +172,7 @@ def build_worker_prompt(
         project=project,
         title=issue["title"],
         description=issue.get("description", ""),
-        context=context,
+        context=ctx,
         notes_section=notes_section,
         retry_section=retry_section,
         worktree_path=worktree_path,
