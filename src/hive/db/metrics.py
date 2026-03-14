@@ -370,7 +370,7 @@ class MetricsMixin:
         )
         return cursor.fetchone()[0]
 
-    def count_events_since_minutes_since_reset(self, issue_id: str, event_type: str, minutes: int) -> int:
+    def count_events_in_window_after_reset(self, issue_id: str, event_type: str, minutes: int) -> int:
         """Count events within the last N minutes, but only after the most recent retry_reset.
 
         Combines the time-window filter with the reset watermark. If no retry_reset
