@@ -72,7 +72,6 @@ class LifecycleMixin:
 
         Config = _mod.Config
         create_worktree_async = _mod.create_worktree_async
-        remove_worktree_async = _mod.remove_worktree_async
 
         issue_id = issue["id"]
         issue_project = issue["project"]
@@ -103,15 +102,18 @@ class LifecycleMixin:
                 "worktree_error",
                 {"error": _exc_detail(e)},
             )
-            self._delete_agent_row(agent_id)
+            await self._cleanup_spawn_orphan(agent_id=agent_id)
             return
 
         # Atomic claim
         claimed = self.db.claim_issue(issue_id, agent_id)
         if not claimed:
             # Someone else claimed it first, clean up worktree and delete agent
-            await remove_worktree_async(worktree_path)
-            self._delete_agent_row(agent_id)
+            await self._cleanup_spawn_orphan(
+                agent_id=agent_id,
+                worktree=worktree_path,
+                remove_worktree=True,
+            )
             return
 
         # Create backend session
@@ -170,20 +172,16 @@ class LifecycleMixin:
                 "spawn_error",
                 {"error": _exc_detail(e)},
             )
-            # Clean up the backend session if it was created (best-effort —
-            # don't let cleanup failure prevent DB/worktree cleanup below)
-            if session_id:
-                await self._best_effort_cleanup(
-                    "spawn_session_cleanup",
-                    self.backend.cleanup_session(session_id, directory=worktree_path),
-                )
-            # Clean up in-memory tracking (if agent was registered)
-            if agent_id in self.active_agents:
-                self._unregister_agent(agent_id)
-            # Mark agent as failed in DB
-            self._mark_agent_failed(agent_id)
-            # Clean up worktree and escalate issue
-            await remove_worktree_async(worktree_path)
+            await self._cleanup_spawn_orphan(
+                agent_id=agent_id,
+                worktree=worktree_path,
+                session_id=session_id,
+                cleanup_session=bool(session_id),
+                unregister_agent=True,
+                mark_failed=True,
+                remove_worktree=True,
+                delete_agent_row=False,
+            )
             self.db.try_transition_issue_status(
                 issue_id,
                 from_status="in_progress",
@@ -528,8 +526,6 @@ class LifecycleMixin:
         event = self.session_status_events.get(agent.session_id)
         if event:
             event.set()
-
-        self._mark_agent_failed(agent.agent_id)
 
         self.db.log_event(
             issue_id,

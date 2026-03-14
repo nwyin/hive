@@ -13,4 +13,4 @@ class Orchestrator(CompletionMixin, LifecycleMixin, OrchestratorCore):
     pass
 
 
-__all__ = ["Orchestrator", "CompletionTransition", "_exc_detail"]
+__all__ = ["CompletionTransition", "Orchestrator", "_exc_detail"]

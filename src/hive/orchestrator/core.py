@@ -703,24 +703,65 @@ class OrchestratorCore:
         logger.info(f"Cleaning up session {agent.session_id} (agent={agent.agent_id}, issue={agent.issue_id}, worktree={agent.worktree})")
         await self.backend.cleanup_session(agent.session_id, directory=agent.worktree)
 
-    async def _teardown_agent(self, agent: AgentIdentity, *, remove_worktree: bool = False):
-        """Best-effort cleanup for session, in-memory registration, worktree, and DB state.
-
-        Always marks the agent row as terminal ('failed') so stale 'working'
-        rows don't accumulate across retries.  The merge processor stores its
-        own copy of worktree/branch in the merge_queue table, so clearing the
-        agent row's references is safe.
-        """
+    async def _cleanup_agent(
+        self,
+        agent: AgentIdentity,
+        *,
+        cleanup_session: bool = True,
+        unregister_agent: bool = True,
+        mark_failed: bool = True,
+        remove_worktree: bool = False,
+    ):
+        """Execute best-effort cleanup for an active or recently-active agent."""
         import hive.orchestrator as _mod
 
-        await self._best_effort_cleanup("cleanup_session", self._cleanup_session(agent))
+        if cleanup_session:
+            await self._best_effort_cleanup("cleanup_session", self._cleanup_session(agent))
 
-        if agent.agent_id in self.active_agents:
+        if unregister_agent and agent.agent_id in self.active_agents:
             self._unregister_agent(agent.agent_id)
 
         # Mark agent as terminal in DB — prevents ghost 'working' rows from
         # accumulating when agents are retried / agent-switched.
-        self._mark_agent_failed(agent.agent_id)
+        if mark_failed:
+            self._mark_agent_failed(agent.agent_id)
 
         if remove_worktree and agent.worktree:
             await self._best_effort_cleanup("remove_worktree", _mod.remove_worktree_async(agent.worktree))
+
+    async def _cleanup_spawn_orphan(
+        self,
+        *,
+        agent_id: str,
+        worktree: Optional[str] = None,
+        session_id: Optional[str] = None,
+        cleanup_session: bool = False,
+        unregister_agent: bool = False,
+        mark_failed: bool = False,
+        remove_worktree: bool = False,
+        delete_agent_row: bool = True,
+    ):
+        """Clean up an agent that failed before normal lifecycle ownership began."""
+        import hive.orchestrator as _mod
+
+        if cleanup_session and session_id and worktree:
+            await self._best_effort_cleanup(
+                "spawn_session_cleanup",
+                self.backend.cleanup_session(session_id, directory=worktree),
+            )
+
+        if unregister_agent and agent_id in self.active_agents:
+            self._unregister_agent(agent_id)
+
+        if mark_failed:
+            self._mark_agent_failed(agent_id)
+
+        if remove_worktree and worktree:
+            await self._best_effort_cleanup("remove_worktree", _mod.remove_worktree_async(worktree))
+
+        if delete_agent_row:
+            self._delete_agent_row(agent_id)
+
+    async def _teardown_agent(self, agent: AgentIdentity, *, remove_worktree: bool = False):
+        """Best-effort cleanup for session, in-memory registration, worktree, and DB state."""
+        await self._cleanup_agent(agent, remove_worktree=remove_worktree)
