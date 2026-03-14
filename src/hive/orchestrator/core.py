@@ -223,20 +223,14 @@ class OrchestratorCore:
 
     def _reconcile_handle_issue(self, agent: dict) -> None:
         """Decide issue fate: release to open if retry budget remains, escalate if exhausted."""
-        import hive.orchestrator as _mod
-
-        Config = _mod.Config
-
         issue_id = agent["current_issue"]
         agent_id = agent["id"]
 
         if not issue_id:
             return
 
-        retry_count = self.db.count_events_by_type_since_reset(issue_id, "retry")
-        agent_switch_count = self.db.count_events_by_type_since_reset(issue_id, "agent_switch")
-
-        if retry_count < Config.MAX_RETRIES or agent_switch_count < Config.MAX_AGENT_SWITCHES:
+        decision = self._choose_escalation(issue_id, include_anomaly=False)
+        if decision in ("retry", "agent_switch"):
             self.db.try_transition_issue_status(
                 issue_id,
                 from_status="in_progress",
