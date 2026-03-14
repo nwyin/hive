@@ -117,8 +117,7 @@ def _parse_repo_name(remote_url: str) -> str | None:
     INV-1: Always returns a bare name with no slashes.
     """
     url = remote_url.strip().rstrip("/")
-    if url.endswith(".git"):
-        url = url[:-4]
+    url = url.removesuffix(".git")
     # Strip colon-delimited host prefix (SSH URLs: "git@host:path")
     if ":" in url:
         url = url.split(":", 1)[1]
