@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import AsyncGenerator
@@ -202,13 +203,30 @@ async def await_session_created(fake_backend, count=1, timeout=5.0):
 
 def complete_worker(fake_backend, session_id, worktree, status="success", summary="Done", artifacts=None):
     """Simulate a worker completing: write result file + inject idle event."""
+    resolved_artifacts = artifacts
+    if resolved_artifacts is None and status == "success":
+        commit_hash = create_worker_commit(worktree)
+        resolved_artifacts = [{"type": "git_commit", "value": commit_hash}]
+
     write_hive_result(
         worktree_path=worktree,
         status=status,
         summary=summary,
-        artifacts=artifacts or [{"type": "git_commit", "value": "abc1234"}],
+        artifacts=resolved_artifacts or [{"type": "git_commit", "value": "abc1234"}],
     )
     fake_backend.inject_idle(session_id)
+
+
+def create_worker_commit(worktree_path: str, filename: str = "worker-output.txt") -> str:
+    """Create a real commit in a worker worktree and return its SHA."""
+    worktree = Path(worktree_path)
+    file_path = worktree / filename
+    file_path.write_text("worker output\n")
+
+    subprocess.run(["git", "add", filename], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "worker output"], cwd=worktree, check=True, capture_output=True)
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=worktree, check=True, capture_output=True, text=True)
+    return result.stdout.strip()
 
 
 def write_hive_result(

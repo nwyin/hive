@@ -150,15 +150,22 @@ class FakeBackend(HiveBackend):
             else:
                 handler(event_type, properties)
 
+    def _dispatch_sync_or_schedule(self, event_type: str, properties: dict):
+        """Dispatch immediately in sync contexts or schedule on a running loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.get_event_loop().run_until_complete(self._dispatch(event_type, properties))
+            return None
+        return loop.create_task(self._dispatch(event_type, properties))
+
     def inject_idle(self, session_id: str):
         """Set session to idle and dispatch event."""
         if session_id in self.sessions:
             self.sessions[session_id]["status"] = "idle"
-        asyncio.get_event_loop().run_until_complete(
-            self._dispatch(
-                "session.status",
-                {"sessionID": session_id, "status": {"type": "idle"}},
-            )
+        return self._dispatch_sync_or_schedule(
+            "session.status",
+            {"sessionID": session_id, "status": {"type": "idle"}},
         )
 
     def inject_idle_async(self, session_id: str):
@@ -172,17 +179,15 @@ class FakeBackend(HiveBackend):
 
     def inject_error(self, session_id: str, error_message: str = "session error"):
         """Dispatch a session error event."""
-        asyncio.get_event_loop().run_until_complete(
-            self._dispatch(
-                "session.error",
-                {"sessionID": session_id, "error": error_message},
-            )
+        return self._dispatch_sync_or_schedule(
+            "session.error",
+            {"sessionID": session_id, "error": error_message},
         )
 
     def inject_permission(self, data: dict):
         """Add a pending permission and dispatch event."""
         self.pending_permissions.append(data)
-        asyncio.get_event_loop().run_until_complete(self._dispatch("permission.request", data))
+        return self._dispatch_sync_or_schedule("permission.request", data)
 
     def set_session_status(self, session_id: str, status: str):
         """Set stored session status without dispatching events."""

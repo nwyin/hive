@@ -200,114 +200,67 @@ class OrchestratorCore:
             logger.warning(f"Could not fetch live sessions from backend ({e}), falling back to DB-only reconciliation")
             return None
 
-    async def _reconcile_handle_session(self, agent: dict, live_session_ids: Optional[set]) -> None:
-        """Decide session fate: cleanup live session, log ghost, or best-effort cleanup."""
-        session_id = agent["session_id"]
-        if not session_id:
-            return
-
-        agent_id = agent["id"]
-        worktree = agent["worktree"]
-
-        if live_session_ids is not None:
-            if session_id in live_session_ids:
-                # Session still running — abort + delete it
-                await self.backend.cleanup_session(session_id, directory=worktree)
-                live_session_ids.discard(session_id)
-            else:
-                # Ghost agent — session already gone, just log
-                logger.info(f"Agent {agent_id} is a ghost (session {session_id} no longer exists)")
-        else:
-            # Backend unreachable — best-effort abort/delete
-            await self.backend.cleanup_session(session_id, directory=worktree)
-
-    def _reconcile_handle_issue(self, agent: dict) -> None:
-        """Decide issue fate: release to open if retry budget remains, escalate if exhausted."""
-        issue_id = agent["current_issue"]
-        agent_id = agent["id"]
-
-        if not issue_id:
-            return
-
-        decision = self._choose_escalation(issue_id, include_anomaly=False)
-        if decision in ("retry", "agent_switch"):
-            self.db.try_transition_issue_status(
-                issue_id,
-                from_status="in_progress",
-                to_status="open",
-                expected_assignee=agent_id,
-            )
-            self.db.log_event(issue_id, agent_id, "reconciled", {"reason": "stale agent from previous daemon run"})
-        else:
-            self.db.try_transition_issue_status(
-                issue_id,
-                from_status="in_progress",
-                to_status="escalated",
-                expected_assignee=agent_id,
-            )
-            self.db.log_event(issue_id, agent_id, "escalated", {"reason": "Stale agent with exhausted retry budget"})
-            self.db.log_event(issue_id, agent_id, "reconciled", {"reason": "stale agent, retry budget exhausted — escalating"})
-
-    async def _reconcile_handle_worktree(self, agent: dict) -> None:
-        """Decide worktree fate: preserve if merge pending, delete otherwise."""
+    async def _reconcile_stale_agent(self, agent: dict, live_session_ids: Optional[set]) -> None:
+        """Reconcile one stale working agent from a previous daemon run."""
         import hive.orchestrator as _mod
 
         remove_worktree_async = _mod.remove_worktree_async
 
-        worktree = agent["worktree"]
+        agent_id = agent["id"]
         issue_id = agent["current_issue"]
+        session_id = agent["session_id"]
+        worktree = agent["worktree"]
+
+        if session_id:
+            if live_session_ids is None:
+                await self.backend.cleanup_session(session_id, directory=worktree)
+            elif session_id in live_session_ids:
+                await self.backend.cleanup_session(session_id, directory=worktree)
+                live_session_ids.discard(session_id)
+            else:
+                logger.info(f"Agent {agent_id} is a ghost (session {session_id} no longer exists)")
+
+        self.db.conn.execute(
+            "UPDATE agents SET status = 'failed', current_issue = NULL, session_id = NULL WHERE id = ?",
+            (agent_id,),
+        )
+
+        if issue_id:
+            decision = self._choose_escalation(issue_id, include_anomaly=False)
+            if decision in ("retry", "agent_switch"):
+                self.db.try_transition_issue_status(
+                    issue_id,
+                    from_status="in_progress",
+                    to_status="open",
+                    expected_assignee=agent_id,
+                )
+                self.db.log_event(issue_id, agent_id, "reconciled", {"reason": "stale agent from previous daemon run"})
+            else:
+                self.db.try_transition_issue_status(
+                    issue_id,
+                    from_status="in_progress",
+                    to_status="escalated",
+                    expected_assignee=agent_id,
+                )
+                self.db.log_event(issue_id, agent_id, "escalated", {"reason": "Stale agent with exhausted retry budget"})
+                self.db.log_event(issue_id, agent_id, "reconciled", {"reason": "stale agent, retry budget exhausted — escalating"})
 
         if not worktree:
             return
 
-        worktree_needed = False
         if issue_id:
             mq_row = self.db.conn.execute(
                 "SELECT id FROM merge_queue WHERE issue_id = ? AND status IN ('queued', 'running')",
                 (issue_id,),
             ).fetchone()
             if mq_row:
-                worktree_needed = True
                 logger.info(f"Preserving worktree {worktree} for pending merge of {issue_id}")
+                return
 
-        if not worktree_needed:
-            try:
-                await remove_worktree_async(worktree)
-            except Exception:
-                pass
-
-    async def _reconcile_process_stale_agents(self, live_session_ids: Optional[set]) -> None:
-        """Phase 1: process agents with status='working' from previous daemon runs."""
-        cursor = self.db.conn.execute(
-            """
-            SELECT id, current_issue, worktree, name, session_id
-            FROM agents
-            WHERE status = 'working'
-            """
-        )
-        stale = cursor.fetchall()
-
-        if not stale:
-            return
-
-        logger.info(f"Reconciling {len(stale)} stale agent(s) from previous run")
-
-        for row in stale:
-            agent = dict(row)
-
-            await self._reconcile_handle_session(agent, live_session_ids)
-
-            # Mark agent failed
-            self.db.conn.execute(
-                "UPDATE agents SET status = 'failed', current_issue = NULL, session_id = NULL WHERE id = ?",
-                (agent["id"],),
-            )
-
-            self._reconcile_handle_issue(agent)
-            await self._reconcile_handle_worktree(agent)
-
-        self.db.conn.commit()
-        logger.info(f"Reconciled {len(stale)} stale agent(s)")
+        try:
+            await remove_worktree_async(worktree)
+        except Exception:
+            pass
 
     async def _reconcile_cleanup_orphans(self, live_session_ids: Optional[set]) -> None:
         """Phase 2: cleanup orphan sessions alive on backend but not in DB."""
@@ -346,7 +299,20 @@ class OrchestratorCore:
         - Phase 3: Purge idle/failed agents (leftovers from previous runs)
         """
         live_session_ids = await self._reconcile_fetch_live_sessions()
-        await self._reconcile_process_stale_agents(live_session_ids)
+        cursor = self.db.conn.execute(
+            """
+            SELECT id, current_issue, worktree, name, session_id
+            FROM agents
+            WHERE status = 'working'
+            """
+        )
+        stale = cursor.fetchall()
+        if stale:
+            logger.info(f"Reconciling {len(stale)} stale agent(s) from previous run")
+            for row in stale:
+                await self._reconcile_stale_agent(dict(row), live_session_ids)
+            self.db.conn.commit()
+            logger.info(f"Reconciled {len(stale)} stale agent(s)")
         await self._reconcile_cleanup_orphans(live_session_ids)
         await self._reconcile_purge_old_agents()
 

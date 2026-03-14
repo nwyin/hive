@@ -13,3 +13,8 @@ repos:
         entry: uv run ty check src
         language: system
         pass_filenames: false
+      - id: integration-tests
+        name: integration-tests
+        entry: env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE uv run pytest -m integration -q
+        language: system
+        pass_filenames: false

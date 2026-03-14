@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from hive.config import Config
-from tests.conftest import await_session_created, complete_worker, run_orchestrator_until, write_hive_result
+from tests.conftest import await_session_created, complete_worker, create_worker_commit, run_orchestrator_until, write_hive_result
 
 
 # =============================================================================
@@ -95,7 +95,13 @@ async def test_happy_path_direct_completion(integration_orchestrator, fake_backe
     agent = orch.active_agents[agent_id]
 
     # Write result and call handle_agent_complete directly
-    write_hive_result(worktree_path=agent.worktree, status="success", summary="Implemented X")
+    commit_hash = create_worker_commit(agent.worktree)
+    write_hive_result(
+        worktree_path=agent.worktree,
+        status="success",
+        summary="Implemented X",
+        artifacts=[{"type": "git_commit", "value": commit_hash}],
+    )
 
     from hive.prompts import read_result_file
 
@@ -236,23 +242,22 @@ async def test_worker_failure_and_retry(integration_orchestrator, fake_backend, 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_stall_detection(integration_orchestrator, fake_backend, temp_git_repo):
-    """Worker stalls (no SSE activity), stall handler fires, retry succeeds.
+    """Worker becomes non-runnable, stall handler fires, retry succeeds.
 
     With LEASE_DURATION=4 and check_interval=min(30, 4//4)=1, the monitor_agent
-    loop checks every 1s. After 4s of no activity it triggers handle_stalled_agent.
+    loop checks every 1s. After the backend session disappears, the stalled
+    path should trigger and the retry should succeed.
     """
     orch = integration_orchestrator
 
     issue_id = orch.db.create_issue(title="Stalling task", description="Will stall", priority=1, issue_type="task", project="test-project")
 
     async def handle_stall_then_succeed():
-        # First attempt: don't inject anything — let it stall
-        await await_session_created(fake_backend, count=1, timeout=5)
+        # First attempt: let the session go non-runnable without emitting idle.
+        sid1 = await await_session_created(fake_backend, count=1, timeout=5)
+        await asyncio.sleep(Config.LEASE_DURATION + 1)
+        await fake_backend.cleanup_session(sid1)
 
-        # Wait for stall detection to fire and main_loop to spawn a retry.
-        # LEASE_DURATION=4s, so we need to wait a bit longer.
-        # The stall handler marks the agent failed, releases the issue,
-        # and main_loop picks it up for retry.
         current_count = len(fake_backend.created_session_ids)
         sid2 = await await_session_created(fake_backend, count=current_count + 1, timeout=15)
 
@@ -358,9 +363,9 @@ async def test_startup_reconciliation(integration_orchestrator, fake_backend, te
     # Run reconciliation
     await orch._reconcile_stale_agents()
 
-    # Agent should be marked failed
+    # Agent should be purged after being reconciled to failed
     agent = orch.db.get_agent(agent_id)
-    assert agent["status"] == "failed"
+    assert agent is None
 
     # Issue should be released back to open
     issue = orch.db.get_issue(issue_id)
