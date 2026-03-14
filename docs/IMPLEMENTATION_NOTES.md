@@ -10,8 +10,9 @@ _Living document tracking implementation status, delivered features, post-mortem
 
 ### Current Design Follow-Up
 
-- A concrete orchestration simplification plan now lives in `docs/ORCHESTRATOR_REFACTOR_PLAN.md`.
-- The focus is reducing orchestration complexity around monitor/completion/teardown logic without weakening the existing race-safety and reconciliation guarantees.
+- The staged orchestrator refactor work is complete.
+- The current follow-up plan now lives in `docs/ORCHESTRATOR_LOC_REDUCTION_PLAN.md`.
+- The focus is narrower: cut remaining orchestrator LOC by removing duplicated liveness, reconciliation, and escalation glue without weakening race-safety or making the code more abstract.
 
 ### Completed (Phases 1-8)
 
