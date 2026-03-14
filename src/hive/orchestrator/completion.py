@@ -27,12 +27,9 @@ def _exc_detail(e: BaseException) -> str:
 class CompletionTransition(str, Enum):
     """Transition outcomes for completion handling."""
 
-    SKIP_TERMINAL_ISSUE = "skip_terminal_issue"
-    FAIL_BUDGET = "fail_budget"
-    FAIL_ASSESSMENT = "fail_assessment"
-    FAIL_VALIDATION_NO_DIFF = "fail_validation_no_diff"
-    SUCCESS_DONE = "success_done"
-    ERROR_COMPLETION_HANDLER = "error_completion_handler"
+    SKIP = "skip"
+    FAIL = "fail"
+    SUCCESS = "success"
 
 
 class EscalationDecision(str, Enum):
@@ -50,9 +47,9 @@ class CompletionDecision:
 
     transition: CompletionTransition
     result: Optional[CompletionResult] = None
-    terminal_status: Optional[str] = None
-    budget_tokens: Optional[int] = None
-    validation_original_summary: Optional[str] = None
+    skip_reason: Optional[str] = None
+    failure_event_type: Optional[str] = None
+    failure_event_detail: Optional[Dict[str, Any]] = None
 
 
 class CompletionMixin:
@@ -77,8 +74,8 @@ class CompletionMixin:
         terminal_issue = self.db.get_issue(agent.issue_id)
         if terminal_issue and terminal_issue.get("status") in ("canceled", "finalized"):
             return CompletionDecision(
-                transition=CompletionTransition.SKIP_TERMINAL_ISSUE,
-                terminal_status=terminal_issue["status"],
+                transition=CompletionTransition.SKIP,
+                skip_reason=f"issue already {terminal_issue['status']}, cleaning up session",
             )
 
         messages = await self.backend.get_messages(agent.session_id, directory=agent.worktree)
@@ -89,46 +86,51 @@ class CompletionMixin:
             if budget_tokens > Config.MAX_TOKENS_PER_ISSUE:
                 logger.warning(f"Issue {agent.issue_id} exceeded token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})")
                 return CompletionDecision(
-                    transition=CompletionTransition.FAIL_BUDGET,
-                    budget_tokens=budget_tokens,
+                    transition=CompletionTransition.FAIL,
                     result=CompletionResult(
                         success=False,
                         reason=f"Exceeded per-issue token budget ({budget_tokens} > {Config.MAX_TOKENS_PER_ISSUE})",
                         summary=f"Terminated: per-issue token budget exceeded ({budget_tokens} tokens)",
                     ),
+                    failure_event_type="budget_exceeded",
+                    failure_event_detail={
+                        "issue_tokens": budget_tokens,
+                        "limit": Config.MAX_TOKENS_PER_ISSUE,
+                    },
                 )
 
         result = assess_completion(file_result=file_result)
         if not result.success:
             return CompletionDecision(
-                transition=CompletionTransition.FAIL_ASSESSMENT,
+                transition=CompletionTransition.FAIL,
                 result=result,
             )
 
         has_commits = await has_diff_from_main_async(agent.worktree)
         if not has_commits:
             return CompletionDecision(
-                transition=CompletionTransition.FAIL_VALIDATION_NO_DIFF,
-                validation_original_summary=result.summary,
+                transition=CompletionTransition.FAIL,
                 result=CompletionResult(
                     success=False,
                     reason="No commits relative to main despite claiming success",
                     summary=result.summary,
                 ),
+                failure_event_type="validation_failed",
+                failure_event_detail={
+                    "reason": "No commits relative to main despite claiming success",
+                    "original_summary": result.summary,
+                },
             )
 
         return CompletionDecision(
-            transition=CompletionTransition.SUCCESS_DONE,
+            transition=CompletionTransition.SUCCESS,
             result=result,
         )
 
     # Completion transition table:
-    # - SKIP_TERMINAL_ISSUE      -> log agent_complete_skipped
-    # - FAIL_BUDGET              -> log budget_exceeded + _handle_agent_failure
-    # - FAIL_ASSESSMENT          -> _handle_agent_failure
-    # - FAIL_VALIDATION_NO_DIFF  -> log validation_failed + _handle_agent_failure
-    # - SUCCESS_DONE             -> update done + enqueue merge + log completed
-    # - ERROR_COMPLETION_HANDLER -> log completion_error
+    # - SKIP     -> log agent_complete_skipped
+    # - FAIL     -> optionally log a failure event + _handle_agent_failure
+    # - SUCCESS  -> update done + enqueue merge + log completed
     def _log_completion_skip(self, agent: AgentIdentity, reason: str):
         """Log a completion-path skip reason."""
         self.db.log_event(
@@ -167,28 +169,17 @@ class CompletionMixin:
 
     async def _handle_completion_failure(self, agent: AgentIdentity, decision: CompletionDecision):
         """Apply completion failure side effects and route through failure handling."""
-        import hive.orchestrator as _mod
-
-        if decision.transition == CompletionTransition.FAIL_BUDGET:
+        if decision.failure_event_type:
             self.db.log_event(
                 agent.issue_id,
                 agent.agent_id,
-                "budget_exceeded",
-                {"issue_tokens": decision.budget_tokens, "limit": _mod.Config.MAX_TOKENS_PER_ISSUE},
-            )
-        elif decision.transition == CompletionTransition.FAIL_VALIDATION_NO_DIFF:
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "validation_failed",
-                {
-                    "reason": "No commits relative to main despite claiming success",
-                    "original_summary": decision.validation_original_summary,
-                },
+                decision.failure_event_type,
+                decision.failure_event_detail or {},
             )
 
-        if decision.result is not None:
-            await self._handle_agent_failure(agent, decision.result)
+        if decision.result is None:
+            raise RuntimeError("Missing completion result for failure transition")
+        await self._handle_agent_failure(agent, decision.result)
 
     async def _handle_completion_success(
         self,
@@ -280,24 +271,15 @@ class CompletionMixin:
             decision = await self._decide_completion_transition(agent, file_result=file_result)
 
             match decision.transition:
-                case CompletionTransition.SKIP_TERMINAL_ISSUE:
-                    status = decision.terminal_status or "unknown"
+                case CompletionTransition.SKIP:
                     remove_worktree_on_teardown = True
-                    self._log_completion_skip(agent, f"issue already {status}, cleaning up session")
+                    self._log_completion_skip(agent, decision.skip_reason or "completion skipped")
 
-                case CompletionTransition.FAIL_BUDGET:
-                    remove_worktree_on_teardown = True
-                    await self._handle_completion_failure(agent, decision)
-
-                case CompletionTransition.FAIL_VALIDATION_NO_DIFF:
+                case CompletionTransition.FAIL:
                     remove_worktree_on_teardown = True
                     await self._handle_completion_failure(agent, decision)
 
-                case CompletionTransition.FAIL_ASSESSMENT:
-                    remove_worktree_on_teardown = True
-                    await self._handle_completion_failure(agent, decision)
-
-                case CompletionTransition.SUCCESS_DONE:
+                case CompletionTransition.SUCCESS:
                     remove_worktree_on_teardown = await self._handle_completion_success(
                         agent,
                         decision,
@@ -308,7 +290,7 @@ class CompletionMixin:
                     raise RuntimeError(f"Unhandled completion transition: {decision.transition}")
 
         except Exception as e:
-            transition = decision.transition.value if decision else CompletionTransition.ERROR_COMPLETION_HANDLER.value
+            transition = decision.transition.value if decision else "error_completion_handler"
             self.db.log_event(
                 agent.issue_id,
                 agent.agent_id,
