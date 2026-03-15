@@ -293,7 +293,7 @@ class OrchestratorCore:
         cursor = self.db.conn.execute("SELECT COUNT(*) FROM agents WHERE status IN ('idle', 'failed')")
         count = cursor.fetchone()[0]
         if count > 0:
-            with self.db.foreign_keys_disabled() as conn:
+            with self.db.transaction() as conn:
                 conn.execute("DELETE FROM agents WHERE status IN ('idle', 'failed')")
             logger.info(f"Purged {count} idle/failed agent(s) from previous runs")
 
@@ -609,7 +609,7 @@ class OrchestratorCore:
 
     def _delete_agent_row(self, agent_id: str):
         """Delete agent row for early spawn-orphan cleanup paths."""
-        with self.db.foreign_keys_disabled() as conn:
+        with self.db.transaction() as conn:
             conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
 
     async def _best_effort_cleanup(self, label: str, op: Awaitable[Any]):

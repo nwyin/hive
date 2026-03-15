@@ -52,8 +52,6 @@ SCHEMA = """
 -- WAL mode for concurrent reads during writes
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
--- NOTE: Existing databases may still have agent_id FK constraints in events, notes, merge_queue.
--- Deletion code must use PRAGMA foreign_keys = OFF when deleting agents for backward compatibility.
 PRAGMA busy_timeout = 5000;
 
 ----------------------------------------------------------------------
@@ -225,8 +223,6 @@ LEFT JOIN events e_inc ON e_start.agent_id = e_inc.agent_id AND e_inc.event_type
 LEFT JOIN events e_esc ON e_start.issue_id = e_esc.issue_id AND e_esc.event_type = 'escalated'
 WHERE e_start.event_type = 'worker_started';
 
-----------------------------------------------------------------------
-
 """
 
 
@@ -298,24 +294,6 @@ class DatabaseCore:
         except Exception:
             self.conn.rollback()
             raise
-
-    @contextmanager
-    def foreign_keys_disabled(self):
-        """Temporarily disable foreign keys for legacy agent-row cleanup."""
-        if not self.conn:
-            raise RuntimeError("Database not connected")
-        if self.conn.in_transaction:
-            raise RuntimeError("foreign_keys_disabled() requires no active transaction")
-
-        self.conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            yield self.conn
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
-        finally:
-            self.conn.execute("PRAGMA foreign_keys = ON")
 
     def _ensure_column(self, table: str, column: str, col_type: str):
         """Add column to table if it does not exist. Idempotent."""

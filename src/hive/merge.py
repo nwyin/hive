@@ -560,7 +560,7 @@ class MergeProcessor:
 
         # Delete ephemeral agent (events/notes/merge_queue retain agent_id as correlation key)
         if agent_id:
-            with self.db.foreign_keys_disabled() as conn:
+            with self.db.transaction() as conn:
                 conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
 
     async def _teardown_after_finalize(self, entry: Dict[str, Any]):

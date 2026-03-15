@@ -118,6 +118,11 @@ Schema is defined in `db.py` (`SCHEMA`) and migrated by `_migrate_if_needed()`.
 - `agent_runs`
   - Derived run-level metrics from `events` and `issues`.
 
+### Historical migration note
+
+- `events.agent_id`, `notes.agent_id`, and `merge_queue.agent_id` are correlation keys, not live foreign keys to `agents`.
+- On 2026-03-15, the author's local `~/.hive/hive.db` was manually rebuilt once to drop an older `agent_id -> agents(id)` schema shape.
+
 ### Issue statuses
 
 Used in code paths:
