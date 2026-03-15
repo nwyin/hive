@@ -103,7 +103,7 @@ async def test_bug1_monitor_agent_preserves_new_session_event_after_cycling(temp
     # Mock handle_agent_complete to simulate session_id mutation:
     # it mutates agent.session_id and creates a new event for the new session.
     async def mock_handle_agent_complete(agent, file_result=None):
-        agent.session_id = new_session_id
+        object.__setattr__(agent, "session_id", new_session_id)
         orch.session_status_events[new_session_id] = asyncio.Event()
 
     orch.handle_agent_complete = mock_handle_agent_complete
@@ -146,7 +146,7 @@ async def test_bug1_monitor_poll_uses_snapshotted_session_id(temp_db, tmp_path):
     orch.handle_agent_complete = AsyncMock()
 
     async def timeout_and_mutate(awaitable, timeout):
-        agent.session_id = new_session_id
+        object.__setattr__(agent, "session_id", new_session_id)
         awaitable.close()
         raise asyncio.TimeoutError
 

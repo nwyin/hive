@@ -77,7 +77,7 @@ def generate_id(prefix: str = "w", length: int = 12) -> str:
 # --- Data models ---
 
 
-@dataclass
+@dataclass(frozen=True)
 class CompletionResult:
     """Result of assessing a worker's completion."""
 
@@ -92,7 +92,7 @@ class CompletionResult:
         return self.artifacts.get("git_commit")
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, frozen=True)
 class AgentIdentity:
     """Agent identity and context."""
 
