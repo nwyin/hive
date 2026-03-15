@@ -12,7 +12,7 @@ Failure modes:
 
 import pytest
 
-from hive.config import ConfigRegistry, _Config
+from hive.config import ConfigRegistry, _Config, _coerce
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -140,3 +140,34 @@ def test_load_global_twice_replaces_global(tmp_path):
 
     registry.load_global(project_root=proj_b)
     assert registry.MAX_AGENTS == 8
+
+
+# ── _coerce edge cases ──────────────────────────────────────────────────
+
+
+class TestCoerce:
+    def test_none_returns_none(self):
+        assert _coerce(None, int) is None
+        assert _coerce(None, bool) is None
+        assert _coerce(None, str) is None
+
+    def test_bool_true_strings(self):
+        for val in ("true", "True", "TRUE", "1", "yes", "Yes", "YES"):
+            assert _coerce(val, bool) is True
+
+    def test_bool_false_strings(self):
+        for val in ("false", "False", "FALSE", "0", "no", "No", "NO", "anything"):
+            assert _coerce(val, bool) is False
+
+    def test_bool_isinstance_passthrough(self):
+        assert _coerce(True, bool) is True
+        assert _coerce(False, bool) is False
+
+    def test_int_from_string(self):
+        assert _coerce("42", int) == 42
+
+    def test_str_passthrough(self):
+        assert _coerce("hello", str) == "hello"
+
+    def test_int_passthrough(self):
+        assert _coerce(7, int) == 7

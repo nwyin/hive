@@ -333,6 +333,108 @@ def test_agent_runs_view_with_tags(temp_db):
     assert tags == ["bugfix", "python", "small"]
 
 
+# ── get_model_performance ────────────────────────────────────────────────
+
+
+def test_get_model_performance_basic(temp_db):
+    """get_model_performance returns rows grouped by model x tag."""
+    issue1 = temp_db.create_issue("Task 1", project="test", model="sonnet", tags=["bugfix"])
+    issue2 = temp_db.create_issue("Task 2", project="test", model="sonnet", tags=["feature"])
+    agent1 = temp_db.create_agent("w-001", model="sonnet")
+    agent2 = temp_db.create_agent("w-002", model="sonnet")
+
+    temp_db.log_event(issue1, agent1, "worker_started")
+    temp_db.log_event(issue1, agent1, "completed")
+    temp_db.log_event(issue1, agent1, "tokens_used", json.dumps({"input_tokens": 100, "output_tokens": 50, "model": "sonnet"}))
+
+    temp_db.log_event(issue2, agent2, "worker_started")
+    temp_db.log_event(issue2, agent2, "completed")
+
+    # Update statuses to 'done' so successes count
+    temp_db.conn.execute("UPDATE issues SET status = 'done' WHERE id IN (?, ?)", (issue1, issue2))
+    temp_db.conn.commit()
+
+    results = temp_db.get_model_performance()
+    assert len(results) >= 1
+    models = {r["model"] for r in results}
+    assert "sonnet" in models
+
+
+def test_get_model_performance_group_by_type(temp_db):
+    """get_model_performance groups by issue type when requested."""
+    issue1 = temp_db.create_issue("Task 1", project="test", model="sonnet", issue_type="bug")
+    issue2 = temp_db.create_issue("Task 2", project="test", model="sonnet", issue_type="feature")
+    agent1 = temp_db.create_agent("w-001", model="sonnet")
+    agent2 = temp_db.create_agent("w-002", model="sonnet")
+
+    temp_db.log_event(issue1, agent1, "worker_started")
+    temp_db.log_event(issue1, agent1, "completed")
+    temp_db.log_event(issue2, agent2, "worker_started")
+    temp_db.log_event(issue2, agent2, "completed")
+
+    temp_db.conn.execute("UPDATE issues SET status = 'done'")
+    temp_db.conn.commit()
+
+    results = temp_db.get_model_performance(group_by="type")
+    types = {r["type"] for r in results}
+    assert "bug" in types
+    assert "feature" in types
+
+
+def test_get_model_performance_filter_model(temp_db):
+    """get_model_performance filters by model."""
+    issue1 = temp_db.create_issue("Task 1", project="test", model="sonnet")
+    issue2 = temp_db.create_issue("Task 2", project="test", model="opus")
+    agent1 = temp_db.create_agent("w-001", model="sonnet")
+    agent2 = temp_db.create_agent("w-002", model="opus")
+
+    temp_db.log_event(issue1, agent1, "worker_started")
+    temp_db.log_event(issue1, agent1, "completed")
+    temp_db.log_event(issue2, agent2, "worker_started")
+    temp_db.log_event(issue2, agent2, "completed")
+
+    results = temp_db.get_model_performance(model="opus")
+    assert all(r["model"] == "opus" for r in results)
+
+
+def test_get_model_performance_filter_tag(temp_db):
+    """get_model_performance filters by tag."""
+    issue1 = temp_db.create_issue("Task 1", project="test", model="sonnet", tags=["bugfix"])
+    issue2 = temp_db.create_issue("Task 2", project="test", model="sonnet", tags=["feature"])
+    agent1 = temp_db.create_agent("w-001", model="sonnet")
+    agent2 = temp_db.create_agent("w-002", model="sonnet")
+
+    temp_db.log_event(issue1, agent1, "worker_started")
+    temp_db.log_event(issue1, agent1, "completed")
+    temp_db.log_event(issue2, agent2, "worker_started")
+    temp_db.log_event(issue2, agent2, "completed")
+
+    results = temp_db.get_model_performance(tag="bugfix")
+    assert len(results) >= 1
+
+
+def test_get_model_performance_success_counts(temp_db):
+    """get_model_performance counts successes and escalations correctly."""
+    issue1 = temp_db.create_issue("Task 1", project="test", model="sonnet", tags=["bugfix"])
+    issue2 = temp_db.create_issue("Task 2", project="test", model="sonnet", tags=["bugfix"])
+    agent1 = temp_db.create_agent("w-001", model="sonnet")
+    agent2 = temp_db.create_agent("w-002", model="sonnet")
+
+    temp_db.log_event(issue1, agent1, "worker_started")
+    temp_db.log_event(issue1, agent1, "completed")
+    temp_db.log_event(issue2, agent2, "worker_started")
+    temp_db.log_event(issue2, agent2, "incomplete")
+
+    temp_db.conn.execute("UPDATE issues SET status = 'done' WHERE id = ?", (issue1,))
+    temp_db.conn.execute("UPDATE issues SET status = 'escalated' WHERE id = ?", (issue2,))
+    temp_db.conn.commit()
+
+    results = temp_db.get_model_performance()
+    sonnet_row = next(r for r in results if r["model"] == "sonnet")
+    assert sonnet_row["successes"] >= 1
+    assert sonnet_row["escalations"] >= 1
+
+
 def test_agent_runs_multiple_agents_same_issue(temp_db):
     """Test agent_runs view when multiple agents work on same issue (retry scenario)."""
     issue_id = temp_db.create_issue("Test task", project="test", model="sonnet")
