@@ -5,12 +5,39 @@ import logging
 import sqlite3
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..utils import generate_id, _normalize_project_name
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ColumnMigration:
+    """Declarative description of a missing-column migration."""
+
+    table: str
+    column: str
+    col_type: str
+
+
+@dataclass(frozen=True)
+class IndexMigration:
+    """Declarative description of an index migration."""
+
+    sql: str
+
+
+@dataclass(frozen=True)
+class SqlMigration:
+    """Declarative description of a simple SQL migration step."""
+
+    name: str
+    sql: str
+    log_template: str | None = None
+    use_total_changes_delta: bool = False
 
 
 # Allowed tag values. Validated at creation time but stored as free-form JSON
@@ -226,6 +253,50 @@ WHERE e_start.event_type = 'worker_started';
 """
 
 
+COLUMN_MIGRATIONS = [
+    ColumnMigration("issues", "model", "TEXT"),
+    ColumnMigration("issues", "tags", "TEXT"),
+    ColumnMigration("merge_queue", "test_command", "TEXT"),
+    ColumnMigration("notes", "project", "TEXT"),
+    ColumnMigration("agents", "project", "TEXT"),
+    ColumnMigration("notes", "must_read", "INTEGER NOT NULL DEFAULT 0"),
+    ColumnMigration("agents", "last_heartbeat_at", "TEXT"),
+]
+
+INDEX_MIGRATIONS = [
+    IndexMigration("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)"),
+    IndexMigration("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)"),
+    IndexMigration("CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)"),
+]
+
+SQL_MIGRATIONS = [
+    SqlMigration(
+        name="backfill_notes_project",
+        sql="""
+            UPDATE notes
+            SET project = (SELECT project FROM issues WHERE issues.id = notes.issue_id)
+            WHERE issue_id IS NOT NULL AND project IS NULL
+        """,
+        log_template="Backfilled {changes} notes.project from issues.project",
+        use_total_changes_delta=True,
+    ),
+    SqlMigration(
+        name="backfill_agent_heartbeat",
+        sql="""
+            UPDATE agents
+            SET last_heartbeat_at = COALESCE(last_progress_at, datetime('now'))
+            WHERE last_heartbeat_at IS NULL
+        """,
+        log_template="Backfilled {changes} agents.last_heartbeat_at",
+        use_total_changes_delta=True,
+    ),
+    SqlMigration(
+        name="collapse_failed_issue_status",
+        sql="UPDATE issues SET status = 'escalated' WHERE status = 'failed'",
+    ),
+]
+
+
 class DatabaseCore:
     """SQLite database wrapper for Hive orchestrator."""
 
@@ -308,62 +379,31 @@ class DatabaseCore:
                 if "duplicate column name" not in str(e).lower():
                     raise
 
+    def _run_sql_migration(self, migration: SqlMigration) -> None:
+        """Run one simple SQL migration step."""
+        before_changes = self.conn.total_changes
+        self.conn.execute(migration.sql)
+        changes = self.conn.total_changes - before_changes if migration.use_total_changes_delta else 0
+        self.conn.commit()
+        if migration.log_template and changes > 0:
+            logger.info(migration.log_template.format(changes=changes))
+
     def _migrate_if_needed(self):
         """Apply any necessary database migrations."""
         if not self.conn:
             raise RuntimeError("Database not connected")
 
-        # Add missing columns using helper
-        self._ensure_column("issues", "model", "TEXT")
-        self._ensure_column("issues", "tags", "TEXT")
-        self._ensure_column("merge_queue", "test_command", "TEXT")
-        self._ensure_column("notes", "project", "TEXT")
-        self._ensure_column("agents", "project", "TEXT")
-        self._ensure_column("notes", "must_read", "INTEGER NOT NULL DEFAULT 0")
-        self._ensure_column("agents", "last_heartbeat_at", "TEXT")
+        for migration in COLUMN_MIGRATIONS:
+            self._ensure_column(migration.table, migration.column, migration.col_type)
 
-        # Create tags index (safe after column exists via CREATE TABLE or migration)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_issues_tags ON issues(tags)")
-        self.conn.commit()
-
-        # Backfill notes.project from issues.project via issue_id FK (always run to catch any NULL values)
-        self.conn.execute("""
-            UPDATE notes
-            SET project = (SELECT project FROM issues WHERE issues.id = notes.issue_id)
-            WHERE issue_id IS NOT NULL AND project IS NULL
-        """)
-        if self.conn.total_changes > 0:
+        for migration in INDEX_MIGRATIONS:
+            self.conn.execute(migration.sql)
             self.conn.commit()
-            logger.info(f"Backfilled {self.conn.total_changes} notes.project from issues.project")
 
-        # Create index on notes.project if it doesn't exist
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project)")
-        self.conn.commit()
-
-        # Backfill heartbeat for pre-migration agent rows.
-        # Use a local delta so logging isn't polluted by prior statements on this connection.
-        before_changes = self.conn.total_changes
-        self.conn.execute(
-            """
-            UPDATE agents
-            SET last_heartbeat_at = COALESCE(last_progress_at, datetime('now'))
-            WHERE last_heartbeat_at IS NULL
-            """
-        )
-        backfilled = self.conn.total_changes - before_changes
-        if backfilled > 0:
-            self.conn.commit()
-            logger.info(f"Backfilled {backfilled} agents.last_heartbeat_at")
-
-        # Collapse 'failed' issue status into 'escalated'
-        self.conn.execute("UPDATE issues SET status = 'escalated' WHERE status = 'failed'")
-        self.conn.commit()
+        for migration in SQL_MIGRATIONS:
+            self._run_sql_migration(migration)
 
         self._ensure_merge_queue_idempotency()
-
-        # Create index on agents.project if it doesn't exist
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project)")
-        self.conn.commit()
 
     def _ensure_merge_queue_idempotency(self) -> None:
         """Ensure merge queue constraints that make enqueueing idempotent.

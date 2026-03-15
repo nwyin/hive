@@ -2,46 +2,61 @@
 
 import os
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-
-_SENSITIVE_FIELDS: set[str] = set()
-
-_FIELDS: dict[str, tuple[str, type, object]] = {
-    "max_agents": ("HIVE_MAX_AGENTS", int, 3),
-    "poll_interval": ("HIVE_POLL_INTERVAL", int, 5),
-    "lease_duration": ("HIVE_LEASE_DURATION", int, 900),
-    "lease_extension": ("HIVE_LEASE_EXTENSION", int, 600),
-    "db_path": ("HIVE_DB_PATH", str, None),  # default set below
-    "refinery_token_threshold": ("HIVE_REFINERY_TOKEN_THRESHOLD", int, 100_000),
-    "max_retries": ("HIVE_MAX_RETRIES", int, 2),
-    "max_agent_switches": ("HIVE_MAX_AGENT_SWITCHES", int, 2),
-    "merge_poll_interval": ("HIVE_MERGE_POLL_INTERVAL", int, 10),
-    "test_command": ("HIVE_TEST_COMMAND", str, None),
-    "merge_queue_enabled": ("HIVE_MERGE_QUEUE_ENABLED", bool, True),
-    "default_model": ("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
-    "worker_model": ("HIVE_WORKER_MODEL", str, "claude-sonnet-4-6"),
-    "refinery_model": ("HIVE_REFINERY_MODEL", str, "claude-opus-4-6"),
-    # Cost guardrails
-    "max_tokens_per_issue": ("HIVE_MAX_TOKENS_PER_ISSUE", int, 200_000),
-    "anomaly_window_minutes": ("HIVE_ANOMALY_WINDOW_MINUTES", int, 10),
-    "anomaly_failure_threshold": ("HIVE_ANOMALY_FAILURE_THRESHOLD", int, 3),
-    # Backend selection
-    "backend": ("HIVE_BACKEND", str, "claude"),  # "claude" | "codex"
-    # Claude WS backend settings
-    "claude_ws_host": ("HIVE_CLAUDE_WS_HOST", str, "127.0.0.1"),
-    "claude_ws_port": ("HIVE_CLAUDE_WS_PORT", int, 8765),
-    "claude_skip_permissions": ("HIVE_CLAUDE_SKIP_PERMISSIONS", bool, False),
-    # Codex App Server backend settings
-    "codex_cmd": ("HIVE_CODEX_CMD", str, "codex app-server --listen stdio://"),
-    "codex_approval_policy": ("HIVE_CODEX_APPROVAL_POLICY", str, "never"),
-    "codex_sandbox": ("HIVE_CODEX_SANDBOX", str, "workspace-write"),
-    "codex_personality": ("HIVE_CODEX_PERSONALITY", str, "pragmatic"),
-    "codex_heartbeat_interval": ("HIVE_CODEX_HEARTBEAT_INTERVAL", int, 60),
-}
 
 HIVE_DIR = Path.home() / ".hive"
 _DEFAULT_DB_PATH = str(HIVE_DIR / "hive.db")
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """Declarative metadata for one config field."""
+
+    env_var: str
+    typ: type
+    default: Any
+
+
+def _attr_name(key: str) -> str:
+    """Return the uppercase attribute name for a config key."""
+    return key.upper()
+
+
+_FIELDS: dict[str, FieldSpec] = {
+    "max_agents": FieldSpec("HIVE_MAX_AGENTS", int, 3),
+    "poll_interval": FieldSpec("HIVE_POLL_INTERVAL", int, 5),
+    "lease_duration": FieldSpec("HIVE_LEASE_DURATION", int, 900),
+    "lease_extension": FieldSpec("HIVE_LEASE_EXTENSION", int, 600),
+    "db_path": FieldSpec("HIVE_DB_PATH", str, _DEFAULT_DB_PATH),
+    "refinery_token_threshold": FieldSpec("HIVE_REFINERY_TOKEN_THRESHOLD", int, 100_000),
+    "max_retries": FieldSpec("HIVE_MAX_RETRIES", int, 2),
+    "max_agent_switches": FieldSpec("HIVE_MAX_AGENT_SWITCHES", int, 2),
+    "merge_poll_interval": FieldSpec("HIVE_MERGE_POLL_INTERVAL", int, 10),
+    "test_command": FieldSpec("HIVE_TEST_COMMAND", str, None),
+    "merge_queue_enabled": FieldSpec("HIVE_MERGE_QUEUE_ENABLED", bool, True),
+    "default_model": FieldSpec("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
+    "worker_model": FieldSpec("HIVE_WORKER_MODEL", str, "claude-sonnet-4-6"),
+    "refinery_model": FieldSpec("HIVE_REFINERY_MODEL", str, "claude-opus-4-6"),
+    # Cost guardrails
+    "max_tokens_per_issue": FieldSpec("HIVE_MAX_TOKENS_PER_ISSUE", int, 200_000),
+    "anomaly_window_minutes": FieldSpec("HIVE_ANOMALY_WINDOW_MINUTES", int, 10),
+    "anomaly_failure_threshold": FieldSpec("HIVE_ANOMALY_FAILURE_THRESHOLD", int, 3),
+    # Backend selection
+    "backend": FieldSpec("HIVE_BACKEND", str, "claude"),  # "claude" | "codex"
+    # Claude WS backend settings
+    "claude_ws_host": FieldSpec("HIVE_CLAUDE_WS_HOST", str, "127.0.0.1"),
+    "claude_ws_port": FieldSpec("HIVE_CLAUDE_WS_PORT", int, 8765),
+    "claude_skip_permissions": FieldSpec("HIVE_CLAUDE_SKIP_PERMISSIONS", bool, False),
+    # Codex App Server backend settings
+    "codex_cmd": FieldSpec("HIVE_CODEX_CMD", str, "codex app-server --listen stdio://"),
+    "codex_approval_policy": FieldSpec("HIVE_CODEX_APPROVAL_POLICY", str, "never"),
+    "codex_sandbox": FieldSpec("HIVE_CODEX_SANDBOX", str, "workspace-write"),
+    "codex_personality": FieldSpec("HIVE_CODEX_PERSONALITY", str, "pragmatic"),
+    "codex_heartbeat_interval": FieldSpec("HIVE_CODEX_HEARTBEAT_INTERVAL", int, 60),
+}
 
 
 def _read_hive_section(path: Path | None) -> dict:
@@ -61,26 +76,23 @@ class _Config:
         self._apply_env()
 
     def _apply_defaults(self):
-        for key, (_env, _typ, default) in _FIELDS.items():
-            val = default
-            if key == "db_path" and val is None:
-                val = _DEFAULT_DB_PATH
-            setattr(self, key.upper(), val)
+        for key, spec in _FIELDS.items():
+            setattr(self, _attr_name(key), spec.default)
         self.HIVE_DIR = HIVE_DIR
 
     def _apply_toml(self, path: Path):
         """Overlay values from a TOML file's [hive] section."""
         section = _read_hive_section(path)
-        for key, (_env, typ, _default) in _FIELDS.items():
+        for key, spec in _FIELDS.items():
             if key in section:
-                setattr(self, key.upper(), _coerce(section[key], typ))
+                setattr(self, _attr_name(key), _coerce(section[key], spec.typ))
 
     def _apply_env(self):
         """Overlay values from environment variables."""
-        for key, (env, typ, _default) in _FIELDS.items():
-            raw = os.environ.get(env)
+        for key, spec in _FIELDS.items():
+            raw = os.environ.get(spec.env_var)
             if raw is not None:
-                setattr(self, key.upper(), _coerce(raw, typ))
+                setattr(self, _attr_name(key), _coerce(raw, spec.typ))
 
     def load(self, project_root: Path | None = None):
         """(Re-)load config from TOML files plus env vars."""
@@ -94,7 +106,7 @@ class _Config:
         """Return resolved config with per-field source attribution.
 
         Re-walks the 4 layers (defaults → global TOML → project TOML → env)
-        to determine which layer set each field. Sensitive fields are redacted.
+        to determine which layer set each field.
         """
         global_toml = HIVE_DIR / "config.toml"
         project_toml = (project_root / ".hive.toml") if project_root else None
@@ -103,9 +115,9 @@ class _Config:
         project_section = _read_hive_section(project_toml)
 
         res = []
-        for key, (env_var, typ, default) in _FIELDS.items():
-            attr = key.upper()
-            value = getattr(self, attr, default)
+        for key, spec in _FIELDS.items():
+            attr = _attr_name(key)
+            value = getattr(self, attr, spec.default)
 
             # Walk layers in order to find effective source
             source = "default"
@@ -113,18 +125,15 @@ class _Config:
                 source = "global_toml"
             if key in project_section:
                 source = "project_toml"
-            if os.environ.get(env_var) is not None:
+            if os.environ.get(spec.env_var) is not None:
                 source = "env"
-
-            # Redact sensitive fields
-            display_value = "***" if key in _SENSITIVE_FIELDS and value else value
 
             res.append(
                 {
                     "field": attr,
-                    "value": display_value,
+                    "value": value,
                     "source": source,
-                    "env_var": env_var,
+                    "env_var": spec.env_var,
                 }
             )
 
