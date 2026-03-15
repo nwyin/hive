@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --dev
+      - run: uvx ruff check src/ tests/
+      - run: uvx ruff format --check src/ tests/
+      - run: uv run pytest tests/ -v --timeout=30
+
+  mutate:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv sync --dev
+      - run: uv run mutmut run
+      - name: Show results
+        if: always()
+        run: uv run mutmut results
