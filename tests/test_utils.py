@@ -11,7 +11,7 @@ class TestParseRepoName:
 
     def test_ssh_org_repo_git(self):
         """SSH remote with org/repo.git → bare repo name."""
-        assert _parse_repo_name("git@github.com:tnguyen21/kairos.git") == "kairos"
+        assert _parse_repo_name("git@github.com:nwyin/kairos.git") == "kairos"
 
     def test_ssh_no_org(self):
         """SSH remote with just repo (no org) → bare repo name."""
@@ -19,7 +19,7 @@ class TestParseRepoName:
 
     def test_https_org_repo_git(self):
         """HTTPS remote with org/repo.git → bare repo name."""
-        assert _parse_repo_name("https://github.com/tnguyen21/kairos.git") == "kairos"
+        assert _parse_repo_name("https://github.com/nwyin/kairos.git") == "kairos"
 
     def test_https_no_git_suffix(self):
         """HTTPS remote without .git suffix → bare repo name."""
@@ -71,7 +71,7 @@ class TestNormalizeProjectName:
 
     def test_org_slash_repo(self):
         """'org/repo' form is normalized to 'repo'."""
-        assert _normalize_project_name("tnguyen21/kairos") == "kairos"
+        assert _normalize_project_name("nwyin/kairos") == "kairos"
         assert _normalize_project_name("org/hive") == "hive"
 
     def test_multiple_slashes(self):
