@@ -197,18 +197,18 @@ class LifecycleMixin:
             )
             resources.session_id = session["id"]
 
-            self.db.conn.execute(
-                """
-                UPDATE agents
-                SET session_id = ?,
-                    worktree = ?,
-                    last_heartbeat_at = datetime('now'),
-                    last_progress_at = datetime('now')
-                WHERE id = ?
-                """,
-                (resources.session_id, resources.worktree, resources.agent_id),
-            )
-            self.db.conn.commit()
+            with self.db.transaction() as conn:
+                conn.execute(
+                    """
+                    UPDATE agents
+                    SET session_id = ?,
+                        worktree = ?,
+                        last_heartbeat_at = datetime('now'),
+                        last_progress_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (resources.session_id, resources.worktree, resources.agent_id),
+                )
 
             agent = AgentIdentity(
                 agent_id=resources.agent_id,

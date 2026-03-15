@@ -96,9 +96,9 @@ class MergeProcessor:
             cursor = self.db.conn.execute("SELECT COUNT(*) FROM merge_queue WHERE status = 'running'")
             stuck_count = cursor.fetchone()[0]
             if stuck_count > 0:
-                self.db.conn.execute("UPDATE merge_queue SET status = 'queued' WHERE status = 'running'")
-                self.db.conn.commit()
-                self.db.log_system_event("stuck_merges_reset", {"count": stuck_count})
+                with self.db.transaction() as conn:
+                    conn.execute("UPDATE merge_queue SET status = 'queued' WHERE status = 'running'")
+                    self.db.log_system_event("stuck_merges_reset", {"count": stuck_count}, commit=False)
         except Exception:
             pass  # Non-fatal
 
@@ -560,12 +560,8 @@ class MergeProcessor:
 
         # Delete ephemeral agent (events/notes/merge_queue retain agent_id as correlation key)
         if agent_id:
-            self.db.conn.execute("PRAGMA foreign_keys = OFF")
-            try:
-                self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-            finally:
-                self.db.conn.execute("PRAGMA foreign_keys = ON")
-            self.db.conn.commit()
+            with self.db.foreign_keys_disabled() as conn:
+                conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
 
     async def _teardown_after_finalize(self, entry: Dict[str, Any]):
         """Clean up worktree, session, and agent state after finalization."""

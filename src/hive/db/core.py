@@ -299,6 +299,24 @@ class DatabaseCore:
             self.conn.rollback()
             raise
 
+    @contextmanager
+    def foreign_keys_disabled(self):
+        """Temporarily disable foreign keys for legacy agent-row cleanup."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+        if self.conn.in_transaction:
+            raise RuntimeError("foreign_keys_disabled() requires no active transaction")
+
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            yield self.conn
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
     def _ensure_column(self, table: str, column: str, col_type: str):
         """Add column to table if it does not exist. Idempotent."""
         cursor = self.conn.execute(f"PRAGMA table_info({table})")

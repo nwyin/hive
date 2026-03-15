@@ -293,10 +293,8 @@ class OrchestratorCore:
         cursor = self.db.conn.execute("SELECT COUNT(*) FROM agents WHERE status IN ('idle', 'failed')")
         count = cursor.fetchone()[0]
         if count > 0:
-            self.db.conn.execute("PRAGMA foreign_keys = OFF")
-            self.db.conn.execute("DELETE FROM agents WHERE status IN ('idle', 'failed')")
-            self.db.conn.execute("PRAGMA foreign_keys = ON")
-            self.db.conn.commit()
+            with self.db.foreign_keys_disabled() as conn:
+                conn.execute("DELETE FROM agents WHERE status IN ('idle', 'failed')")
             logger.info(f"Purged {count} idle/failed agent(s) from previous runs")
 
     async def _reconcile_stale_agents(self):
@@ -546,17 +544,17 @@ class OrchestratorCore:
 
     def _mark_agent_failed(self, agent_id: str):
         """Mark an agent failed in DB and clear issue/session references."""
-        self.db.conn.execute(
-            """
-            UPDATE agents
-            SET status = 'failed',
-                current_issue = NULL,
-                session_id = NULL
-            WHERE id = ?
-            """,
-            (agent_id,),
-        )
-        self.db.conn.commit()
+        with self.db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE agents
+                SET status = 'failed',
+                    current_issue = NULL,
+                    session_id = NULL
+                WHERE id = ?
+                """,
+                (agent_id,),
+            )
 
     def _try_escalate_issue(
         self,
@@ -611,12 +609,8 @@ class OrchestratorCore:
 
     def _delete_agent_row(self, agent_id: str):
         """Delete agent row for early spawn-orphan cleanup paths."""
-        self.db.conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            self.db.conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
-        finally:
-            self.db.conn.execute("PRAGMA foreign_keys = ON")
-        self.db.conn.commit()
+        with self.db.foreign_keys_disabled() as conn:
+            conn.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
 
     async def _best_effort_cleanup(self, label: str, op: Awaitable[Any]):
         """Run async cleanup operation and suppress failures with debug logging."""
