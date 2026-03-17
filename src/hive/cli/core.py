@@ -612,9 +612,10 @@ class HiveCLI(QueenMixin):
                 SELECT mq.issue_id, i.title as issue_title
                 FROM merge_queue mq
                 LEFT JOIN issues i ON mq.issue_id = i.id
-                WHERE mq.status = 'running'
+                WHERE mq.status = 'running' AND mq.project = ?
                 LIMIT 1
-                """
+                """,
+                (self.project_name,),
             )
             running_merge = cursor.fetchone()
             refinery_info = {
@@ -629,7 +630,7 @@ class HiveCLI(QueenMixin):
         ready = self.db.get_ready_queue(limit=10)
 
         # Get merge queue stats
-        merge_stats = self.db.get_merge_queue_stats()
+        merge_stats = self.db.get_merge_queue_stats(project=self.project_name)
 
         # Merge preflight visibility: report when dirty main worktree blocks merges.
         main_worktree = {
