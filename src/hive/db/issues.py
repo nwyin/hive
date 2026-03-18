@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from ..status import CLOSED_ISSUE_STATUSES, IssueStatus, UNBLOCKING_ISSUE_STATUSES
 from ..utils import generate_id
-from .core import validate_tags
+from .core import normalize_tags
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class IssuesMixin:
             project: Project/repo name
             parent_id: Parent issue ID (for epics)
             model: Model to use for this issue (overrides global WORKER_MODEL)
-            tags: List of tags for the issue (validated against ALLOWED_TAGS)
+            tags: List of free-form tags for the issue
             metadata: Additional metadata dict
             depends_on: List of issue IDs this issue depends on (blocks type)
 
@@ -111,8 +111,7 @@ class IssuesMixin:
         # Validate and serialize tags
         tags_json = None
         if tags:
-            validated_tags = validate_tags(tags)
-            tags_json = json.dumps(validated_tags)
+            tags_json = json.dumps(normalize_tags(tags))
 
         with self.transaction() as conn:
             conn.execute(

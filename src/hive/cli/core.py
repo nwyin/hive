@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 
 from ..daemon import HiveDaemon
-from ..db import Database, validate_tags
+from ..db import Database, normalize_tags
 from ..git import GitWorktreeError, get_worktree_dirty_status
 from ..status import IssueStatus, UNBLOCKING_ISSUE_STATUSES
 from .formatters import (
@@ -324,7 +324,7 @@ class HiveCLI(QueenMixin):
             updates.append("model = ?")
             params.append(model)
         if tag_list is not None:
-            validated_tags = validate_tags(tag_list)
+            validated_tags = normalize_tags(tag_list)
             updates.append("tags = ?")
             params.append(json.dumps(validated_tags))
 

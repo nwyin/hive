@@ -41,38 +41,9 @@ class SqlMigration:
     use_total_changes_delta: bool = False
 
 
-# Allowed tag values. Validated at creation time but stored as free-form JSON
-# so the set can grow without a migration.
-ALLOWED_TAGS = {
-    # Task type
-    "refactor",
-    "bugfix",
-    "feature",
-    "test",
-    "docs",
-    "cleanup",
-    "config",
-    # Language
-    "python",
-    "typescript",
-    "javascript",
-    "sql",
-    "shell",
-    "markdown",
-    # Complexity
-    "small",
-    "medium",
-    "large",
-}
-
-
-def validate_tags(tags: list[str]) -> list[str]:
-    """Validate and normalize tags. Raises ValueError for unknown tags."""
-    normalized = [t.lower().strip() for t in tags]
-    unknown = set(normalized) - ALLOWED_TAGS
-    if unknown:
-        raise ValueError(f"Unknown tags: {unknown}. Allowed: {sorted(ALLOWED_TAGS)}")
-    return sorted(set(normalized))  # dedupe and sort for consistency
+def normalize_tags(tags: list[str]) -> list[str]:
+    """Normalize tags: lowercase, strip, dedupe, sort."""
+    return sorted({t.lower().strip() for t in tags if t.strip()})
 
 
 # SQL schema definition

@@ -132,25 +132,7 @@ hive --json merges [--status queued|running|merged|failed]
 ## ISSUE TAGGING
 
 Always tag issues when creating them. Tags help correlate model performance across task types.
-
-Available tags (comma-separated with --tags):
-
-**Task type** (pick one):
-- `refactor` — restructuring without behavior change
-- `bugfix` — fixing broken behavior
-- `feature` — new functionality
-- `test` — adding/updating tests
-- `docs` — documentation changes
-- `cleanup` — removing dead code, formatting, etc.
-- `config` — configuration/build/packaging changes
-
-**Language** (pick all that apply):
-- `python`, `typescript`, `javascript`, `sql`, `shell`, `markdown`
-
-**Complexity estimate** (pick one):
-- `small` — single file, < 50 lines changed
-- `medium` — 2-5 files, < 200 lines changed
-- `large` — 5+ files or > 200 lines changed
+Tags are free-form (comma-separated with --tags). Use whatever tags best describe the issue — language, task type, complexity, domain, etc.
 
 Example:
 ```
