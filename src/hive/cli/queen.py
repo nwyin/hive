@@ -149,7 +149,7 @@ class QueenMixin:
         instructions_path = self._queen_write_identity_files()
         print(launch_message)
         try:
-            result = subprocess.run(cmd)
+            result = subprocess.run(cmd, cwd=str(self.project_path))
             if not headless:
                 sys.exit(result.returncode)
             elif result.returncode != 0:
