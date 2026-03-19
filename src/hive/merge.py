@@ -21,6 +21,7 @@ from .git import (
     remove_worktree_async,
 )
 from .backends import HiveBackend
+from .backends.pool import BackendPool
 from .prompts import (
     build_refinery_prompt,
     build_refinery_system_prompt,
@@ -637,17 +638,27 @@ class MergeProcessorPool:
     are independent and do not block each other.
     """
 
-    def __init__(self, db: Database, backend: HiveBackend):
+    def __init__(self, db: Database, backend: HiveBackend | None = None, backend_pool: BackendPool | None = None):
         self._processors: dict[str, MergeProcessor] = {}
         self.db = db
-        self.backend = backend
+        self._backend_pool = backend_pool
+        self._fallback_backend = backend
+
+    def _resolve_backend(self, project_name: str, project_path: str) -> HiveBackend:
+        """Resolve the backend for a project."""
+        if self._backend_pool is not None:
+            return self._backend_pool.for_project(project_name, Path(project_path))
+        if self._fallback_backend is not None:
+            return self._fallback_backend
+        raise ValueError("MergeProcessorPool has no backend configured")
 
     def get(self, project_name: str, project_path: str) -> MergeProcessor:
         """Return the MergeProcessor for the given project, creating it lazily."""
         if project_name not in self._processors:
+            backend = self._resolve_backend(project_name, project_path)
             self._processors[project_name] = MergeProcessor(
                 db=self.db,
-                backend=self.backend,
+                backend=backend,
                 project_path=project_path,
                 project_name=project_name,
             )

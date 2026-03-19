@@ -130,7 +130,8 @@ async def integration_orchestrator(fake_backend, temp_db, temp_git_repo):
         yield orchestrator
 
         orchestrator.running = False
-        orchestrator.backend.stop()
+        for b in orchestrator.backend_pool.all_backends():
+            b.stop()
         orchestrator.active_agents.clear()
 
 
@@ -158,10 +159,12 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
     # (i.e., fire-and-forget monitor_agent tasks from spawn_worker).
     pre_existing_tasks = set(asyncio.all_tasks())
 
-    sse_task = asyncio.create_task(orchestrator.backend.connect_with_reconnect(max_retries=3, retry_delay=0.1))
+    sse_tasks = [
+        asyncio.create_task(b.connect_with_reconnect(max_retries=3, retry_delay=0.1)) for b in orchestrator.backend_pool.all_backends()
+    ]
     merge_task = asyncio.create_task(orchestrator.merge_processor_loop())
     main_task = asyncio.create_task(orchestrator.main_loop())
-    managed_tasks = {sse_task, merge_task, main_task}
+    managed_tasks = set(sse_tasks) | {merge_task, main_task}
 
     try:
         deadline = asyncio.get_event_loop().time() + timeout
@@ -172,7 +175,8 @@ async def run_orchestrator_until(orchestrator, predicate, timeout=10.0):
         raise TimeoutError(f"Predicate not satisfied within {timeout}s")
     finally:
         orchestrator.running = False
-        orchestrator.backend.stop()
+        for b in orchestrator.backend_pool.all_backends():
+            b.stop()
 
         # Cancel managed tasks + any fire-and-forget tasks spawned during the run
         # (monitor_agent tasks created by spawn_worker).

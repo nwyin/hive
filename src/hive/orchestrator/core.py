@@ -12,6 +12,7 @@ from ..db import Database
 from ..merge import MergeProcessorPool
 from ..utils import AgentIdentity
 from ..backends import HiveBackend
+from ..backends.pool import BackendPool
 from .deps import deps
 
 logger = logging.getLogger(__name__)
@@ -31,19 +32,29 @@ PERMISSION_DECISIONS = {
 class OrchestratorCore:
     """Core orchestration engine for Hive."""
 
-    def __init__(self, db: Database, backend: HiveBackend):
+    def __init__(self, db: Database, backend: HiveBackend | None = None, backend_pool: BackendPool | None = None):
         """
         Initialize orchestrator.
 
         Args:
             db: Database instance
-            backend: Backend implementing session management and event streaming
+            backend: Single backend (convenience — wrapped in a pool internally)
+            backend_pool: Pool of backends keyed by type name (for multi-backend)
         """
         self.db = db
-        self.backend = backend
+
+        if backend_pool is not None:
+            self.backend_pool = backend_pool
+        elif backend is not None:
+            self.backend_pool = BackendPool.from_single(backend, name=deps.Config.BACKEND)
+        else:
+            raise ValueError("Must provide either backend or backend_pool")
+
+        # Default backend (backward compat — used by tests and global operations)
+        self.backend = self.backend_pool.default_backend
 
         # Merge processor pool (one processor per project, lazy-created)
-        self.merge_pool = MergeProcessorPool(db=db, backend=backend)
+        self.merge_pool = MergeProcessorPool(db=db, backend_pool=self.backend_pool)
 
         # Track active agents
         self.active_agents: Dict[str, AgentIdentity] = {}
@@ -83,6 +94,20 @@ class OrchestratorCore:
             raise ValueError(f"Unknown project: {project_name}")
         return Path(path)
 
+    def _backend_for_project(self, project_name: str) -> HiveBackend:
+        """Resolve the backend for a project based on its per-project config."""
+        if not project_name:
+            return self.backend
+        try:
+            project_path = self._resolve_project_path(project_name)
+        except ValueError:
+            return self.backend
+        return self.backend_pool.for_project(project_name, project_path)
+
+    def _backend_for_session(self, session_id: str) -> HiveBackend:
+        """Resolve the backend that owns a session."""
+        return self.backend_pool.for_session(session_id)
+
     def _setup_sse_handlers(self):
         """Set up SSE event handlers."""
 
@@ -113,7 +138,10 @@ class OrchestratorCore:
                         f"(mapped_agent={self._session_to_agent.get(session_id)})"
                     )
 
-        self.backend.on(SESSION_STATUS_EVENT, handle_session_status)
+        # Register handlers on ALL backends in the pool so events from any
+        # backend are routed through the same orchestrator logic.
+        for backend in self.backend_pool.all_backends():
+            backend.on(SESSION_STATUS_EVENT, handle_session_status)
 
         async def handle_session_error(properties):
             session_id = properties.get("sessionID")
@@ -127,31 +155,35 @@ class OrchestratorCore:
             self.db.log_event(agent.issue_id, agent.agent_id, "session_error", {"session_id": session_id, "error": properties})
             await self.handle_stalled_agent(agent)
 
-        self.backend.on("session.error", handle_session_error)
+        for backend in self.backend_pool.all_backends():
+            backend.on("session.error", handle_session_error)
 
-        # Register permission event handler
-        self.backend.on("permission.request", self._handle_permission_event)
+        # Permission handler needs to reply on the specific backend that
+        # emitted the event, so we create a closure capturing each backend.
+        for backend in self.backend_pool.all_backends():
+            backend.on("permission.request", lambda props, b=backend: self._handle_permission_event(props, backend=b))
 
-    async def _handle_permission_event(self, event_data: dict):
+    async def _handle_permission_event(self, event_data: dict, backend: HiveBackend | None = None):
         """Handle permission request from SSE event — resolve immediately."""
+        backend = backend or self.backend
         try:
             perm_id = event_data.get("id")
             if not perm_id:
                 # If SSE event doesn't include full permission data,
                 # fetch pending permissions and resolve
-                pending = await self.backend.get_pending_permissions()
+                pending = await backend.get_pending_permissions()
                 for perm in pending:
                     permission = perm.get("permission")
                     decision = PERMISSION_DECISIONS.get(permission) if isinstance(permission, str) else None
                     if decision:
-                        await self.backend.reply_permission(perm["id"], reply=decision)
+                        await backend.reply_permission(perm["id"], reply=decision)
                         self._log_permission_resolved(perm, decision)
                 return
 
             permission = event_data.get("permission")
             decision = PERMISSION_DECISIONS.get(permission) if isinstance(permission, str) else None
             if decision:
-                await self.backend.reply_permission(perm_id, reply=decision)
+                await backend.reply_permission(perm_id, reply=decision)
                 self._log_permission_resolved(event_data, decision)
 
             logger.debug(f"Handled permission event via SSE: {perm_id}, decision: {decision}")
@@ -196,33 +228,50 @@ class OrchestratorCore:
             with suppress(Exception):
                 self.db.try_touch_agent_heartbeat(agent_id)
 
-    async def _reconcile_fetch_live_sessions(self) -> Optional[set]:
-        """Phase 0: fetch live session IDs from the backend.
+    async def _reconcile_fetch_live_sessions(self) -> Optional[Dict[str, HiveBackend]]:
+        """Phase 0: fetch live session IDs from all backends.
 
-        Returns a set of live session IDs, or None if the backend is unreachable.
+        Returns a mapping of session_id -> backend that owns it,
+        or None if backends are unreachable.
         """
         try:
-            sessions = await self.backend.list_sessions()
-            live_session_ids = {s["id"] for s in sessions}
-            logger.info(f"Fetched {len(live_session_ids)} live session(s) from backend")
-            return live_session_ids
+            session_backends: Dict[str, HiveBackend] = {}
+            failures = 0
+            all_backends = self.backend_pool.all_backends()
+            for backend in all_backends:
+                try:
+                    sessions = await backend.list_sessions()
+                    for s in sessions:
+                        session_backends[s["id"]] = backend
+                except Exception as e:
+                    failures += 1
+                    logger.warning(f"Could not fetch sessions from one backend ({e}), continuing with others")
+            # If ALL backends failed, treat as fully unreachable
+            if failures == len(all_backends):
+                logger.warning("All backends unreachable, falling back to DB-only reconciliation")
+                return None
+            logger.info(f"Fetched {len(session_backends)} live session(s) from {len(all_backends)} backend(s)")
+            return session_backends
         except Exception as e:
-            logger.warning(f"Could not fetch live sessions from backend ({e}), falling back to DB-only reconciliation")
+            logger.warning(f"Could not fetch live sessions ({e}), falling back to DB-only reconciliation")
             return None
 
-    async def _reconcile_stale_agent(self, agent: dict, live_session_ids: Optional[set]) -> None:
+    async def _reconcile_stale_agent(self, agent: dict, live_sessions: Optional[Dict[str, HiveBackend]]) -> None:
         """Reconcile one stale working agent from a previous daemon run."""
         agent_id = agent["id"]
         issue_id = agent["current_issue"]
         session_id = agent["session_id"]
         worktree = agent["worktree"]
+        project = agent.get("project", "")
 
         if session_id:
-            if live_session_ids is None:
-                await self.backend.cleanup_session(session_id, directory=worktree)
-            elif session_id in live_session_ids:
-                await self.backend.cleanup_session(session_id, directory=worktree)
-                live_session_ids.discard(session_id)
+            if live_sessions is None:
+                backend = self._backend_for_project(project)
+                await backend.cleanup_session(session_id, directory=worktree)
+            elif session_id in live_sessions:
+                backend = live_sessions[session_id]
+                await backend.cleanup_session(session_id, directory=worktree)
+                del live_sessions[session_id]
             else:
                 logger.info(f"Agent {agent_id} is a ghost (session {session_id} no longer exists)")
 
@@ -266,21 +315,22 @@ class OrchestratorCore:
         with suppress(Exception):
             await deps.remove_worktree_async(worktree)
 
-    async def _reconcile_cleanup_orphans(self, live_session_ids: Optional[set]) -> None:
+    async def _reconcile_cleanup_orphans(self, live_sessions: Optional[Dict[str, HiveBackend]]) -> None:
         """Phase 2: cleanup orphan sessions alive on backend but not in DB."""
-        if live_session_ids is None or not live_session_ids:
+        if live_sessions is None or not live_sessions:
             return
 
         cursor = self.db.conn.execute("SELECT session_id FROM agents WHERE session_id IS NOT NULL")
         db_session_ids = {row["session_id"] for row in cursor.fetchall()}
 
-        orphans = live_session_ids - db_session_ids
-        if orphans:
-            for session_id in orphans:
-                await self.backend.cleanup_session(session_id)
+        orphan_ids = set(live_sessions.keys()) - db_session_ids
+        if orphan_ids:
+            for session_id in orphan_ids:
+                backend = live_sessions[session_id]
+                await backend.cleanup_session(session_id)
 
-            self.db.log_system_event("orphan_sessions_cleaned", {"count": len(orphans)})
-            logger.info(f"Cleaned up {len(orphans)} orphan session(s)")
+            self.db.log_system_event("orphan_sessions_cleaned", {"count": len(orphan_ids)})
+            logger.info(f"Cleaned up {len(orphan_ids)} orphan session(s)")
 
     async def _reconcile_purge_old_agents(self) -> None:
         """Phase 3: purge idle/failed agents from previous runs."""
@@ -300,10 +350,10 @@ class OrchestratorCore:
         - Phase 2: Clean up orphan sessions (alive on server, no DB agent)
         - Phase 3: Purge idle/failed agents (leftovers from previous runs)
         """
-        live_session_ids = await self._reconcile_fetch_live_sessions()
+        live_sessions = await self._reconcile_fetch_live_sessions()
         cursor = self.db.conn.execute(
             """
-            SELECT id, current_issue, worktree, name, session_id
+            SELECT id, current_issue, worktree, name, session_id, project
             FROM agents
             WHERE status = 'working'
             """
@@ -312,10 +362,10 @@ class OrchestratorCore:
         if stale:
             logger.info(f"Reconciling {len(stale)} stale agent(s) from previous run")
             for row in stale:
-                await self._reconcile_stale_agent(dict(row), live_session_ids)
+                await self._reconcile_stale_agent(dict(row), live_sessions)
             self.db.conn.commit()
             logger.info(f"Reconciled {len(stale)} stale agent(s)")
-        await self._reconcile_cleanup_orphans(live_session_ids)
+        await self._reconcile_cleanup_orphans(live_sessions)
         await self._reconcile_purge_old_agents()
 
     def _register_active_agent(self, agent: AgentIdentity):
@@ -417,18 +467,21 @@ class OrchestratorCore:
 
         # Start SSE/WS server in background FIRST — other init steps may need
         # to create sessions (e.g. eager refinery), which requires the server.
-        sse_task = asyncio.create_task(self.backend.connect_with_reconnect())
+        sse_tasks = []
+        for backend in self.backend_pool.all_backends():
+            sse_tasks.append(asyncio.create_task(backend.connect_with_reconnect()))
 
-        # If the backend has a server_ready gate, wait for it before proceeding.
-        # IMPORTANT: if the event loop task dies before setting server_ready
+        # Wait for all backends with a server_ready gate to become ready.
+        # IMPORTANT: if a task dies before setting server_ready
         # (e.g. missing binary / auth failure), don't hang forever.
-        if hasattr(self.backend, "server_ready"):
-            server_ready = self.backend.server_ready
-            while not server_ready.is_set():
-                if sse_task.done():
-                    exc = sse_task.exception()
-                    raise exc or RuntimeError("Backend event loop exited before becoming ready")
-                await asyncio.sleep(0.1)
+        for i, backend in enumerate(self.backend_pool.all_backends()):
+            if hasattr(backend, "server_ready"):
+                server_ready = backend.server_ready
+                while not server_ready.is_set():
+                    if sse_tasks[i].done():
+                        exc = sse_tasks[i].exception()
+                        raise exc or RuntimeError("Backend event loop exited before becoming ready")
+                    await asyncio.sleep(0.1)
 
         await self._reconcile_stale_agents()
 
@@ -449,11 +502,13 @@ class OrchestratorCore:
             self.running = False
             # Abort all active backend sessions before shutting down
             await self._shutdown_all_sessions()
-            self.backend.stop()
+            for backend in self.backend_pool.all_backends():
+                backend.stop()
             # Cancel background tasks so we don't block on their long sleeps
-            for task in (sse_task, merge_task):
+            all_tasks = sse_tasks + [merge_task]
+            for task in all_tasks:
                 task.cancel()
-            await asyncio.gather(sse_task, merge_task, return_exceptions=True)
+            await asyncio.gather(*all_tasks, return_exceptions=True)
 
     async def main_loop(self):
         """Main orchestration loop."""
@@ -607,7 +662,9 @@ class OrchestratorCore:
         if cleanup_session:
             logger.info(f"Cleaning up session {agent.session_id} (agent={agent.agent_id}, issue={agent.issue_id}, worktree={agent.worktree})")
             with suppress(Exception):
-                await self.backend.cleanup_session(agent.session_id, directory=agent.worktree)
+                backend = self._backend_for_session(agent.session_id)
+                await backend.cleanup_session(agent.session_id, directory=agent.worktree)
+                self.backend_pool.untrack_session(agent.session_id)
 
         if unregister_agent and agent.agent_id in self.active_agents:
             self._unregister_agent(agent.agent_id)
@@ -636,7 +693,9 @@ class OrchestratorCore:
         """Clean up an agent that failed before normal lifecycle ownership began."""
         if cleanup_session and session_id and worktree:
             with suppress(Exception):
-                await self.backend.cleanup_session(session_id, directory=worktree)
+                backend = self._backend_for_session(session_id)
+                await backend.cleanup_session(session_id, directory=worktree)
+                self.backend_pool.untrack_session(session_id)
 
         if unregister_agent and agent_id in self.active_agents:
             self._unregister_agent(agent_id)

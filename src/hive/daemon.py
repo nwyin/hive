@@ -296,6 +296,7 @@ def run_daemon_foreground(db):
     """Run the orchestrator in the foreground (called by daemon child process)."""
     import asyncio
 
+    from .backends import BackendPool, ClaudeWSBackend, CodexAppServerBackend
     from .orchestrator import Orchestrator
 
     async def main():
@@ -313,22 +314,31 @@ def run_daemon_foreground(db):
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, _signal_handler)
 
-        if Config.BACKEND == "codex":
-            from .backends import CodexAppServerBackend
+        # Determine which backend types are needed by scanning registered
+        # projects. Always include the global default so new projects work.
+        needed_backends: set[str] = {Config.BACKEND}
+        for project in db.list_projects():
+            from .config import ConfigRegistry
 
-            backend = CodexAppServerBackend()
-        else:
-            from .backends import ClaudeWSBackend
+            cfg = ConfigRegistry._load_config(project_root=Path(project["path"]))
+            needed_backends.add(cfg.BACKEND)
 
-            backend = ClaudeWSBackend(
-                host=Config.CLAUDE_WS_HOST,
-                port=Config.CLAUDE_WS_PORT,
+        pool = BackendPool(default=Config.BACKEND)
+        if "claude" in needed_backends:
+            pool.register(
+                "claude",
+                ClaudeWSBackend(
+                    host=Config.CLAUDE_WS_HOST,
+                    port=Config.CLAUDE_WS_PORT,
+                ),
             )
+        if "codex" in needed_backends:
+            pool.register("codex", CodexAppServerBackend())
 
-        async with backend:
+        async with pool:
             orchestrator = Orchestrator(
                 db=db,
-                backend=backend,
+                backend_pool=pool,
             )
             main_task = asyncio.create_task(orchestrator.start())
             await stop_event.wait()

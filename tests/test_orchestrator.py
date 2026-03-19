@@ -941,14 +941,15 @@ async def test_reconcile_purges_idle_and_failed_agents(temp_db, tmp_path):
 
 @pytest.mark.asyncio
 async def test_reconcile_fetch_live_sessions_success(temp_db, tmp_path):
-    """Phase 0 returns the set of live session IDs on success."""
+    """Phase 0 returns a mapping of live session IDs to their backends."""
     mock_oc = AsyncMock(spec=HiveBackend)
     mock_oc.list_sessions = AsyncMock(return_value=[{"id": "s1"}, {"id": "s2"}])
     orch = _make_orchestrator(temp_db, tmp_path, mock_oc)
 
     result = await orch._reconcile_fetch_live_sessions()
 
-    assert result == {"s1", "s2"}
+    assert set(result.keys()) == {"s1", "s2"}
+    assert all(v is mock_oc for v in result.values())
 
 
 @pytest.mark.asyncio
@@ -974,8 +975,8 @@ async def test_reconcile_stale_agent_live_session_releases_issue_and_removes_fro
     agent_id = temp_db.create_agent("test-agent")
     temp_db.claim_issue(issue_id, agent_id)
 
-    live = {"live-sess", "other-sess"}
-    agent = {"id": agent_id, "current_issue": issue_id, "session_id": "live-sess", "worktree": "/tmp/wt"}
+    live = {"live-sess": mock_oc, "other-sess": mock_oc}
+    agent = {"id": agent_id, "current_issue": issue_id, "session_id": "live-sess", "worktree": "/tmp/wt", "project": ""}
 
     await orch._reconcile_stale_agent(agent, live)
 
@@ -996,7 +997,7 @@ async def test_reconcile_stale_agent_backend_unreachable(temp_db, tmp_path):
     agent_id = temp_db.create_agent("test-agent")
     temp_db.claim_issue(issue_id, agent_id)
 
-    agent = {"id": agent_id, "current_issue": issue_id, "session_id": "fallback-sess", "worktree": "/tmp/wt"}
+    agent = {"id": agent_id, "current_issue": issue_id, "session_id": "fallback-sess", "worktree": "/tmp/wt", "project": ""}
     await orch._reconcile_stale_agent(agent, None)
 
     mock_oc.cleanup_session.assert_called_once_with("fallback-sess", directory="/tmp/wt")
@@ -1017,8 +1018,8 @@ async def test_reconcile_stale_agent_escalates_when_budget_exhausted(temp_db, tm
     for i in range(Config.MAX_AGENT_SWITCHES):
         temp_db.log_event(issue_id, agent_id, "agent_switch", {"switch": i + 1})
 
-    agent = {"id": agent_id, "current_issue": issue_id, "session_id": None, "worktree": None}
-    await orch._reconcile_stale_agent(agent, set())
+    agent = {"id": agent_id, "current_issue": issue_id, "session_id": None, "worktree": None, "project": ""}
+    await orch._reconcile_stale_agent(agent, {})
 
     issue = temp_db.get_issue(issue_id)
     assert issue["status"] == "escalated"
@@ -1041,11 +1042,11 @@ async def test_reconcile_stale_agent_preserves_worktree_for_pending_merge(temp_d
     )
     temp_db.conn.commit()
 
-    agent = {"id": agent_id, "current_issue": issue_id, "session_id": None, "worktree": str(tmp_path)}
+    agent = {"id": agent_id, "current_issue": issue_id, "session_id": None, "worktree": str(tmp_path), "project": ""}
 
     removed = []
     with patch("hive.orchestrator.remove_worktree_async", new=AsyncMock(side_effect=lambda wt: removed.append(wt))):
-        await orch._reconcile_stale_agent(agent, set())
+        await orch._reconcile_stale_agent(agent, {})
 
     assert removed == []
 
@@ -1336,8 +1337,7 @@ async def test_session_error_handler_registration_and_trigger(temp_db, tmp_path)
     mock_bk = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
-    # Mock the SSE client
-    orch.backend = Mock()
+    # Capture handler registrations on the pool's backend
     registered_handlers = {}
 
     def mock_on(event_type, handler):
@@ -1399,8 +1399,7 @@ async def test_session_error_handler_missing_session_id(temp_db, tmp_path):
     mock_bk = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
-    # Mock the SSE client
-    orch.backend = Mock()
+    # Capture handler registrations on the pool's backend
     registered_handlers = {}
 
     def mock_on(event_type, handler):
@@ -1429,8 +1428,7 @@ async def test_session_error_handler_unknown_session(temp_db, tmp_path):
     mock_bk = AsyncMock(spec=HiveBackend)
     orch = _make_orchestrator(temp_db, tmp_path, mock_bk)
 
-    # Mock the SSE client
-    orch.backend = Mock()
+    # Capture handler registrations on the pool's backend
     registered_handlers = {}
 
     def mock_on(event_type, handler):

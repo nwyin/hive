@@ -127,7 +127,14 @@ def _gather_daemon_log_tail(lines: int = 50) -> list[str]:
     if not log_file.exists():
         return [f"(no log file: {log_file})"]
     try:
-        all_lines = log_file.read_text().splitlines()
+        # Read only the tail of the file to avoid OOM on large logs.
+        # Seek back from EOF by a generous byte budget (4KB per line).
+        chunk_size = lines * 4096
+        file_size = log_file.stat().st_size
+        with open(log_file, "rb") as f:
+            f.seek(max(0, file_size - chunk_size))
+            tail_bytes = f.read()
+        all_lines = tail_bytes.decode(errors="replace").splitlines()
         return all_lines[-lines:]
     except Exception as exc:
         return [f"(error reading log: {exc})"]

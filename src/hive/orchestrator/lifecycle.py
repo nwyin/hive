@@ -186,12 +186,14 @@ class LifecycleMixin:
         assert resources.worktree is not None
 
         try:
-            session = await self.backend.create_session(
+            backend = self._backend_for_project(ctx.issue_project)
+            session = await backend.create_session(
                 directory=resources.worktree,
                 title=f"{ctx.agent_name}: {ctx.issue['title']}",
                 permissions=WORKER_PERMISSIONS,
             )
             resources.session_id = session["id"]
+            self.backend_pool.track_session(resources.session_id, backend)
 
             with self.db.transaction() as conn:
                 conn.execute(
@@ -322,7 +324,8 @@ class LifecycleMixin:
             f"(agent={agent.agent_id}, issue={issue_id}, started_event={started_event_type})"
         )
 
-        await self.backend.send_message_async(
+        backend = self._backend_for_session(agent.session_id)
+        await backend.send_message_async(
             agent.session_id,
             parts=[{"type": "text", "text": prompt}],
             model=model,
@@ -463,7 +466,8 @@ class LifecycleMixin:
 
         probe_session_id = session_id or agent.session_id
         try:
-            status = await self.backend.get_session_status(probe_session_id, directory=agent.worktree)
+            backend = self._backend_for_session(probe_session_id)
+            status = await backend.get_session_status(probe_session_id, directory=agent.worktree)
         except Exception as e:
             return AgentLivenessProbe(
                 state=AgentLivenessState.SESSION_UNAVAILABLE,
