@@ -8,16 +8,13 @@ import pytest
 from hive.git import (
     GitWorktreeError,
     _run_git,
-    abort_rebase,
     create_worktree,
     delete_branch,
-    get_commit_hash,
     get_worktree_dirty_status,
     has_diff_from_main,
     merge_to_main,
     rebase_onto_main,
     remove_worktree,
-    run_command_in_worktree,
 )
 
 
@@ -107,15 +104,6 @@ def test_remove_nonexistent_worktree(tmp_path):
     remove_worktree(str(tmp_path / "nonexistent"))
 
 
-def test_get_commit_hash(git_repo):
-    """Test getting commit hash."""
-    commit_hash = get_commit_hash(str(git_repo))
-
-    assert commit_hash is not None
-    assert len(commit_hash) == 40  # Full SHA-1 hash
-    assert all(c in "0123456789abcdef" for c in commit_hash)
-
-
 def test_delete_branch(git_repo):
     """Test deleting a branch."""
     # Create a worktree first
@@ -188,43 +176,7 @@ def test_rebase_onto_main_with_conflict(git_repo_with_worktree):
     assert result is False
 
     # Abort the rebase so we can clean up
-    abort_rebase(worktree_path)
-    remove_worktree(worktree_path)
-
-
-def test_abort_rebase(git_repo_with_worktree):
-    """Test aborting a rebase in progress."""
-    git_repo, worktree_path = git_repo_with_worktree
-
-    # Create a conflict
-    (git_repo / "feature.py").write_text("# conflict\n")
-    subprocess.run(["git", "add", "."], cwd=git_repo, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", "Conflict"],
-        cwd=git_repo,
-        check=True,
-        capture_output=True,
-    )
-
-    rebase_onto_main(worktree_path)  # Will fail with conflict
-    abort_rebase(worktree_path)  # Should succeed
-
-    # Verify we're back to a clean state
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-    )
-    assert result.stdout.strip() == ""
-
-    remove_worktree(worktree_path)
-
-
-def test_abort_rebase_no_rebase_in_progress(git_repo):
-    """Test aborting when no rebase is in progress doesn't error."""
-    worktree_path = create_worktree(str(git_repo), "no-rebase")
-    abort_rebase(worktree_path)  # Should not raise
+    subprocess.run(["git", "rebase", "--abort"], cwd=worktree_path, capture_output=True)
     remove_worktree(worktree_path)
 
 
@@ -273,26 +225,6 @@ def test_merge_to_main_not_ff(git_repo_with_worktree):
         merge_to_main(str(git_repo), branch_name)
 
     remove_worktree(worktree_path)
-
-
-def test_run_command_in_worktree_success(git_repo):
-    """Test running a command that succeeds."""
-    success, output = run_command_in_worktree(str(git_repo), "echo hello")
-    assert success is True
-    assert "hello" in output
-
-
-def test_run_command_in_worktree_failure(git_repo):
-    """Test running a command that fails."""
-    success, output = run_command_in_worktree(str(git_repo), "false")
-    assert success is False
-
-
-def test_run_command_in_worktree_timeout(git_repo):
-    """Test running a command that times out."""
-    success, output = run_command_in_worktree(str(git_repo), "sleep 10", timeout=1)
-    assert success is False
-    assert "timed out" in output.lower()
 
 
 def test_get_worktree_dirty_status(git_repo):
@@ -384,14 +316,6 @@ def test_run_git_error_message_contains_stderr(git_repo):
 
 
 # --- Spot-check INV-3: public methods return identical values after refactor ---
-
-
-def test_get_commit_hash_returns_40char_sha(git_repo):
-    """INV-3: get_commit_hash still returns a 40-char hex SHA."""
-    commit_hash = get_commit_hash(str(git_repo))
-    assert commit_hash is not None
-    assert len(commit_hash) == 40
-    assert all(c in "0123456789abcdef" for c in commit_hash)
 
 
 def test_get_worktree_dirty_status_returns_tuple(git_repo):

@@ -1656,7 +1656,6 @@ async def test_completed_event_contains_model(temp_db, tmp_path):
         patch("hive.orchestrator.read_notes_file", return_value=None),
         patch("hive.orchestrator.remove_notes_file"),
         patch("hive.orchestrator.read_result_file"),
-        patch("hive.orchestrator.get_commit_hash", return_value="abc123"),
         patch("hive.orchestrator.has_diff_from_main_async", return_value=True),
     ):
         await orch.handle_agent_complete(agent, file_result=file_result)

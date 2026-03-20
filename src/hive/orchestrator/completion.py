@@ -1,6 +1,7 @@
 """Completion handling mixin for the Hive orchestrator."""
 
 import logging
+import subprocess
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -189,7 +190,8 @@ class CompletionMixin:
                 )
                 return True
 
-        commit_hash = decision.result.git_commit or deps.get_commit_hash(agent.worktree)
+        _rev = subprocess.run(["git", "rev-parse", "HEAD"], cwd=agent.worktree, capture_output=True, text=True)
+        commit_hash = decision.result.git_commit or (_rev.stdout.strip() or None)
         test_command = file_result.get("test_command") if file_result else None
 
         self.db.enqueue_merge(

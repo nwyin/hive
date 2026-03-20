@@ -109,16 +109,6 @@ def rebase_onto_main(worktree_path: str, main_branch: str = "main") -> bool:
     raise GitWorktreeError(f"Rebase failed unexpectedly: {res.stderr}")
 
 
-def abort_rebase(worktree_path: str):
-    """Abort an in-progress rebase."""
-    try:
-        _run_git("rebase", "--abort", cwd=str(worktree_path))
-    except GitWorktreeError as e:
-        if "no rebase in progress" in str(e).lower():
-            return
-        raise GitWorktreeError(f"Failed to abort rebase: {e}") from e
-
-
 def merge_to_main(project_path: str, branch_name: str, main_branch: str = "main"):
     """Fast-forward merge a branch into main from the main project repo."""
     project_path = str(Path(project_path).resolve())
@@ -136,34 +126,6 @@ def get_worktree_dirty_status(project_path: str) -> tuple[bool, str]:
     return (bool(output), output)
 
 
-def run_command_in_worktree(worktree_path: str, cmd: str, timeout: int = 300) -> tuple:
-    """Run an arbitrary shell command in a worktree.
-
-    Returns (success: bool, output: str) where output is combined stdout+stderr.
-    """
-    try:
-        res = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        output = res.stdout + res.stderr
-        return (res.returncode == 0, output)
-    except subprocess.TimeoutExpired:
-        return (False, f"Command timed out after {timeout}s: {cmd}")
-    except Exception as e:
-        return (False, f"Command failed: {e}")
-
-
-def get_commit_hash(worktree_path: str) -> str | None:
-    """Get the current commit hash in a worktree."""
-    res = _run_git("rev-parse", "HEAD", cwd=str(worktree_path), check=False)
-    return res or None
-
-
 def has_diff_from_main(worktree_path: str, main_branch: str = "main") -> bool:
     """Check if the worktree branch has any commits relative to main branch."""
     output = _run_git("log", f"{main_branch}..HEAD", "--oneline", cwd=str(worktree_path))
@@ -175,9 +137,7 @@ def has_diff_from_main(worktree_path: str, main_branch: str = "main") -> bool:
 create_worktree_async = _async_wrapper(create_worktree)
 remove_worktree_async = _async_wrapper(remove_worktree)
 rebase_onto_main_async = _async_wrapper(rebase_onto_main)
-abort_rebase_async = _async_wrapper(abort_rebase)
 merge_to_main_async = _async_wrapper(merge_to_main)
 get_worktree_dirty_status_async = _async_wrapper(get_worktree_dirty_status)
-run_command_in_worktree_async = _async_wrapper(run_command_in_worktree)
 delete_branch_async = _async_wrapper(delete_branch)
 has_diff_from_main_async = _async_wrapper(has_diff_from_main)
