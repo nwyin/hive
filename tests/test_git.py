@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -225,6 +226,28 @@ def test_merge_to_main_not_ff(git_repo_with_worktree):
         merge_to_main(str(git_repo), branch_name)
 
     remove_worktree(worktree_path)
+
+
+def test_merge_to_main_retries_transient_index_lock(tmp_path):
+    """Transient index.lock failures during final merge should be retried."""
+    calls: list[tuple[str, ...]] = []
+
+    def _mock_run_git(*args: str, cwd: str, check: bool = True) -> str:
+        calls.append(args)
+        if args == ("merge", "--ff-only", "agent/test-agent") and len(calls) == 2:
+            raise GitWorktreeError("fatal: Unable to create '/tmp/repo/.git/index.lock': File exists.")
+        return ""
+
+    with patch("hive.git._run_git", side_effect=_mock_run_git), patch("hive.git.time.sleep") as mock_sleep:
+        merge_to_main(str(tmp_path / "repo"), "agent/test-agent")
+
+    assert calls == [
+        ("checkout", "main"),
+        ("merge", "--ff-only", "agent/test-agent"),
+        ("checkout", "main"),
+        ("merge", "--ff-only", "agent/test-agent"),
+    ]
+    mock_sleep.assert_called_once_with(1.0)
 
 
 def test_get_worktree_dirty_status(git_repo):

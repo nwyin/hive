@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from hive.db import Database
-from hive.git import create_worktree
+from hive.git import GitWorktreeError, create_worktree
 from hive.merge import MergeProcessor, MergeProcessorPool
 
 
@@ -287,6 +287,63 @@ async def test_refinery_merged_result_finalizes_issue(merge_entry_with_worktree,
     # Should have been dispatched to refinery and then finalized
     issue = temp_db.get_issue(info["issue_id"])
     assert issue["status"] == "finalized"
+
+
+@pytest.mark.asyncio
+async def test_refinery_merge_lock_failure_escalates_issue(merge_entry_with_worktree, temp_db, mock_backend):
+    """A post-refinery merge lock failure should escalate instead of leaving done."""
+    info = merge_entry_with_worktree
+    mock_backend.create_session = AsyncMock(return_value={"id": "refinery-session-1"})
+    mock_backend.send_message_async = AsyncMock()
+    mock_backend.get_session_status = AsyncMock(side_effect=[{"type": "busy"}, {"type": "idle"}])
+    mock_backend.get_messages = AsyncMock(return_value=[{"parts": [{"type": "text", "text": "done"}]}])
+    mock_backend.cleanup_session = AsyncMock()
+
+    mp = MergeProcessor(temp_db, mock_backend, str(info["git_repo"]), "test")
+
+    with patch("hive.merge.asyncio.sleep", new_callable=AsyncMock):
+        with patch("hive.merge.Config") as mock_config:
+            mock_config.TEST_COMMAND = "pytest"
+            mock_config.REFINERY_MODEL = "test-model"
+            mock_config.LEASE_DURATION = 30
+            mock_config.REFINERY_TOKEN_THRESHOLD = 100000
+            with patch(
+                "hive.merge.read_result_file",
+                return_value={
+                    "status": "merged",
+                    "summary": "Ready to fast-forward",
+                    "tests_passed": True,
+                    "conflicts_resolved": 0,
+                },
+            ):
+                with (
+                    patch("hive.merge.remove_result_file"),
+                    patch(
+                        "hive.merge.merge_to_main_async",
+                        new=AsyncMock(
+                            side_effect=GitWorktreeError(
+                                "Failed to merge agent/worker-test to main: fatal: Unable to create '/tmp/repo/.git/index.lock': File exists."
+                            )
+                        ),
+                    ),
+                ):
+                    await mp.process_queue_once()
+
+    issue = temp_db.get_issue(info["issue_id"])
+    assert issue["status"] == "escalated"
+
+    entry = temp_db.conn.execute("SELECT status FROM merge_queue WHERE id = 1").fetchone()
+    assert entry is not None
+    assert entry["status"] == "failed"
+
+    events = temp_db.get_events(info["issue_id"])
+    merge_failed = next(e for e in events if e["event_type"] == "merge_failed")
+
+    import json
+
+    detail = json.loads(merge_failed["detail"])
+    assert detail["after_refinery"] is True
+    assert detail["issue_escalated"] is True
 
 
 @pytest.mark.asyncio

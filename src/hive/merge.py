@@ -263,11 +263,17 @@ class MergeProcessor:
                     await merge_to_main_async(self.project_path, branch_name)
                 except GitWorktreeError as e:
                     self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
+                    self.db.try_transition_issue_status(issue_id, from_status="done", to_status="escalated")
                     self.db.log_event(
                         issue_id,
                         agent_id,
                         "merge_failed",
-                        {"error": str(e), "branch": branch_name, "after_refinery": True},
+                        {
+                            "error": str(e),
+                            "branch": branch_name,
+                            "after_refinery": True,
+                            "issue_escalated": True,
+                        },
                     )
                     needs_cleanup = True
 

@@ -56,7 +56,7 @@ def create_worktree(project_path: str, agent_name: str, base_branch: str = "main
             return str(worktree_dir)
         except GitWorktreeError as e:
             last_error = e
-            is_transient = "invalid reference" in str(e) or "index.lock" in str(e)
+            is_transient = "invalid reference" in str(e) or "index.lock" in str(e).lower()
             if is_transient and attempt < max_retries - 1:
                 time.sleep(1.0 * (attempt + 1))
                 continue
@@ -112,11 +112,20 @@ def rebase_onto_main(worktree_path: str, main_branch: str = "main") -> bool:
 def merge_to_main(project_path: str, branch_name: str, main_branch: str = "main"):
     """Fast-forward merge a branch into main from the main project repo."""
     project_path = str(Path(project_path).resolve())
-    try:
-        _run_git("checkout", main_branch, cwd=str(project_path))
-        _run_git("merge", "--ff-only", branch_name, cwd=str(project_path))
-    except GitWorktreeError as e:
-        raise GitWorktreeError(f"Failed to merge {branch_name} to {main_branch}: {e}") from e
+    max_retries = 4
+    last_error: GitWorktreeError | None = None
+    for attempt in range(max_retries):
+        try:
+            _run_git("checkout", main_branch, cwd=str(project_path))
+            _run_git("merge", "--ff-only", branch_name, cwd=str(project_path))
+            return
+        except GitWorktreeError as e:
+            last_error = e
+            if "index.lock" in str(e).lower() and attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            raise GitWorktreeError(f"Failed to merge {branch_name} to {main_branch}: {e}") from e
+    raise GitWorktreeError(f"Failed to merge {branch_name} to {main_branch} after {max_retries} retries: {last_error}") from last_error
 
 
 def get_worktree_dirty_status(project_path: str) -> tuple[bool, str]:
