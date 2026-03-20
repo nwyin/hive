@@ -91,7 +91,7 @@ def test_get_issue_token_total_isolates_issues(temp_db):
     assert temp_db.get_issue_token_total(issue2) == 18000
 
 
-def test_count_events_since_minutes(temp_db):
+def test_count_events_with_minutes(temp_db):
     """Counts events within the last N minutes."""
     issue_id = temp_db.create_issue("Test", project="test")
     agent_id = temp_db.create_agent("worker-1")
@@ -102,15 +102,15 @@ def test_count_events_since_minutes(temp_db):
     temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "failed yet again"})
 
     # All events should be within the last minute
-    assert temp_db.count_events_since_minutes(issue_id, "incomplete", 1) == 3
+    assert temp_db.count_events(issue_id, "incomplete", minutes=1) == 3
 
     # Zero window should return 0 (events are at time 'now', window is 0 minutes ago = 'now')
     # Events created_at == datetime('now') so with 0 minutes they should still match
-    assert temp_db.count_events_since_minutes(issue_id, "incomplete", 0) == 3
+    assert temp_db.count_events(issue_id, "incomplete", minutes=0) == 3
 
 
-def test_count_events_since_minutes_filters_event_type(temp_db):
-    """Only counts the specified event type."""
+def test_count_events_with_minutes_filters_event_type(temp_db):
+    """Only counts the specified event type when minutes filter is applied."""
     issue_id = temp_db.create_issue("Test", project="test")
     agent_id = temp_db.create_agent("worker-1")
 
@@ -118,8 +118,8 @@ def test_count_events_since_minutes_filters_event_type(temp_db):
     temp_db.log_event(issue_id, agent_id, "retry", {"retry_count": 1})
     temp_db.log_event(issue_id, agent_id, "incomplete", {"reason": "failed again"})
 
-    assert temp_db.count_events_since_minutes(issue_id, "incomplete", 1) == 2
-    assert temp_db.count_events_since_minutes(issue_id, "retry", 1) == 1
+    assert temp_db.count_events(issue_id, "incomplete", minutes=1) == 2
+    assert temp_db.count_events(issue_id, "retry", minutes=1) == 1
 
 
 # ── Per-issue token budget (orchestrator integration) ────────────────────

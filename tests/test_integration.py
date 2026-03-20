@@ -225,8 +225,8 @@ async def test_worker_failure_and_retry(integration_orchestrator, fake_backend, 
     await inject_task
 
     # Verify retry happened
-    assert orch.db.count_events_by_type(issue_id, "retry") >= 1
-    assert orch.db.count_events_by_type(issue_id, "incomplete") >= 1
+    assert orch.db.count_events(issue_id, "retry") >= 1
+    assert orch.db.count_events(issue_id, "incomplete") >= 1
 
     # Verify final completion
     events = orch.db.get_events(issue_id=issue_id)

@@ -55,7 +55,7 @@ async def test_handle_agent_failure_retry_tier(temp_db, tmp_path):
     assert issue["status"] == "open"
 
     # Check retry event was logged
-    retry_count = temp_db.count_events_by_type(issue_id, "retry")
+    retry_count = temp_db.count_events(issue_id, "retry")
     assert retry_count == 1
 
     # Check event details
@@ -116,7 +116,7 @@ async def test_handle_agent_failure_agent_switch_tier(temp_db, tmp_path):
     assert issue["status"] == "open"
 
     # Check agent_switch event was logged
-    agent_switch_count = temp_db.count_events_by_type(issue_id, "agent_switch")
+    agent_switch_count = temp_db.count_events(issue_id, "agent_switch")
     assert agent_switch_count == 1
 
     # Verify model field is propagated to the agent_switch event
@@ -176,7 +176,7 @@ async def test_handle_agent_failure_escalation_tier(temp_db, tmp_path):
     assert issue["status"] == "escalated"
 
     # Check escalated event was logged
-    escalated_count = temp_db.count_events_by_type(issue_id, "escalated")
+    escalated_count = temp_db.count_events(issue_id, "escalated")
     assert escalated_count == 1
 
 
@@ -341,9 +341,9 @@ async def test_escalation_chain_full_progression(temp_db, tmp_path):
     assert issue["status"] == "escalated"
 
     # Verify event counts
-    assert temp_db.count_events_by_type(issue_id, "retry") == Config.MAX_RETRIES
-    assert temp_db.count_events_by_type(issue_id, "agent_switch") == Config.MAX_AGENT_SWITCHES
-    assert temp_db.count_events_by_type(issue_id, "escalated") == 1
+    assert temp_db.count_events(issue_id, "retry") == Config.MAX_RETRIES
+    assert temp_db.count_events(issue_id, "agent_switch") == Config.MAX_AGENT_SWITCHES
+    assert temp_db.count_events(issue_id, "escalated") == 1
 
 
 @pytest.mark.asyncio

@@ -272,51 +272,24 @@ class MetricsMixin:
         )
         return self._scalar(cursor, 0)
 
-    def count_events_by_type(self, issue_id: str, event_type: str) -> int:
-        """Count events of a specific type for an issue."""
-        cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM events WHERE issue_id = ? AND event_type = ?",
-            (issue_id, event_type),
-        )
-        return self._scalar(cursor, 0)
+    def count_events(self, issue_id: str, event_type: str, *, since_reset: bool = False, minutes: int | None = None) -> int:
+        """Count events of a specific type for an issue.
 
-    def count_events_by_type_since_reset(self, issue_id: str, event_type: str) -> int:
-        """Count events since the last retry_reset. Uses event id (not timestamp) to avoid granularity issues."""
-        cursor = self.conn.execute(
-            """
-            SELECT COUNT(*) FROM events
-            WHERE issue_id = ? AND event_type = ?
-              AND id > COALESCE(
-                (SELECT MAX(id) FROM events
-                 WHERE issue_id = ? AND event_type = 'retry_reset'),
-                0
-              )
-            """,
-            (issue_id, event_type, issue_id),
-        )
-        return self._scalar(cursor, 0)
+        Args:
+            since_reset: If True, only count events after the most recent retry_reset (uses row id, not timestamp).
+            minutes: If set, only count events within the last N minutes.
+        """
+        conditions = ["issue_id = ?", "event_type = ?"]
+        params: list = [issue_id, event_type]
 
-    def count_events_in_window_after_reset(self, issue_id: str, event_type: str, minutes: int) -> int:
-        """Count events within the last N minutes and after the most recent retry_reset."""
-        cursor = self.conn.execute(
-            """
-            SELECT COUNT(*) FROM events
-            WHERE issue_id = ? AND event_type = ?
-              AND created_at >= datetime('now', ?)
-              AND id > COALESCE(
-                (SELECT MAX(id) FROM events
-                 WHERE issue_id = ? AND event_type = 'retry_reset'),
-                0
-              )
-            """,
-            (issue_id, event_type, f"-{minutes} minutes", issue_id),
-        )
-        return self._scalar(cursor, 0)
+        if minutes is not None:
+            conditions.append("created_at >= datetime('now', ?)")
+            params.append(f"-{minutes} minutes")
 
-    def count_events_since_minutes(self, issue_id: str, event_type: str, minutes: int) -> int:
-        """Count events within the last N minutes. Uses SQLite datetime('now') to avoid timezone mismatches."""
-        cursor = self.conn.execute(
-            "SELECT COUNT(*) FROM events WHERE issue_id = ? AND event_type = ? AND created_at >= datetime('now', ?)",
-            (issue_id, event_type, f"-{minutes} minutes"),
-        )
+        if since_reset:
+            conditions.append("id > COALESCE((SELECT MAX(id) FROM events WHERE issue_id = ? AND event_type = 'retry_reset'), 0)")
+            params.append(issue_id)
+
+        sql = f"SELECT COUNT(*) FROM events WHERE {' AND '.join(conditions)}"
+        cursor = self.conn.execute(sql, params)
         return self._scalar(cursor, 0)

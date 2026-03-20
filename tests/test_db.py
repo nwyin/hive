@@ -477,14 +477,14 @@ def test_get_merge_queue_stats_empty(temp_db):
     assert stats == {"queued": 0, "running": 0, "merged": 0, "failed": 0}
 
 
-def test_count_events_by_type(temp_db):
+def test_count_events(temp_db):
     """Test counting events by type for an issue."""
     issue_id = temp_db.create_issue("Test issue")
     agent_id = temp_db.create_agent("test-agent")
 
     # Initially no events
-    assert temp_db.count_events_by_type(issue_id, "retry") == 0
-    assert temp_db.count_events_by_type(issue_id, "agent_switch") == 0
+    assert temp_db.count_events(issue_id, "retry") == 0
+    assert temp_db.count_events(issue_id, "agent_switch") == 0
 
     # Log some retry events
     temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 1})
@@ -492,30 +492,30 @@ def test_count_events_by_type(temp_db):
     temp_db.log_event(issue_id, agent_id, "agent_switch", {"switch": 1})
 
     # Count should be correct
-    assert temp_db.count_events_by_type(issue_id, "retry") == 2
-    assert temp_db.count_events_by_type(issue_id, "agent_switch") == 1
-    assert temp_db.count_events_by_type(issue_id, "escalated") == 0
+    assert temp_db.count_events(issue_id, "retry") == 2
+    assert temp_db.count_events(issue_id, "agent_switch") == 1
+    assert temp_db.count_events(issue_id, "escalated") == 0
 
 
-def test_count_events_by_type_nonexistent_issue(temp_db):
+def test_count_events_nonexistent_issue(temp_db):
     """Test counting events for non-existent issue returns 0."""
-    assert temp_db.count_events_by_type("nonexistent", "retry") == 0
+    assert temp_db.count_events("nonexistent", "retry") == 0
 
 
-def test_count_events_by_type_since_reset_no_reset(temp_db):
-    """Without a retry_reset event, behaves same as count_events_by_type."""
+def test_count_events_since_reset_no_reset(temp_db):
+    """Without a retry_reset event, since_reset=True behaves same as no filter."""
     issue_id = temp_db.create_issue("Test issue")
     agent_id = temp_db.create_agent("test-agent")
 
     temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 1})
     temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 2})
 
-    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 2
-    assert temp_db.count_events_by_type(issue_id, "retry") == 2
+    assert temp_db.count_events(issue_id, "retry", since_reset=True) == 2
+    assert temp_db.count_events(issue_id, "retry") == 2
 
 
-def test_count_events_by_type_since_reset_after_reset(temp_db):
-    """After a retry_reset, only counts events after the reset."""
+def test_count_events_since_reset_after_reset(temp_db):
+    """After a retry_reset, since_reset=True only counts events after the reset."""
     issue_id = temp_db.create_issue("Test issue")
     agent_id = temp_db.create_agent("test-agent")
 
@@ -531,16 +531,16 @@ def test_count_events_by_type_since_reset_after_reset(temp_db):
     temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 3})
 
     # Since-reset should only count post-reset events
-    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 1
-    assert temp_db.count_events_by_type_since_reset(issue_id, "agent_switch") == 0
+    assert temp_db.count_events(issue_id, "retry", since_reset=True) == 1
+    assert temp_db.count_events(issue_id, "agent_switch", since_reset=True) == 0
 
     # Total count still includes all events
-    assert temp_db.count_events_by_type(issue_id, "retry") == 3
-    assert temp_db.count_events_by_type(issue_id, "agent_switch") == 1
+    assert temp_db.count_events(issue_id, "retry") == 3
+    assert temp_db.count_events(issue_id, "agent_switch") == 1
 
 
-def test_count_events_by_type_since_reset_returns_zero_immediately_after_reset(temp_db):
-    """Immediately after a reset, count should be 0."""
+def test_count_events_since_reset_returns_zero_immediately_after_reset(temp_db):
+    """Immediately after a reset, since_reset=True count should be 0."""
     issue_id = temp_db.create_issue("Test issue")
     agent_id = temp_db.create_agent("test-agent")
 
@@ -548,7 +548,7 @@ def test_count_events_by_type_since_reset_returns_zero_immediately_after_reset(t
     temp_db.log_event(issue_id, agent_id, "retry", {"attempt": 2})
     temp_db.log_event(issue_id, None, "retry_reset", {"notes": "reset"})
 
-    assert temp_db.count_events_by_type_since_reset(issue_id, "retry") == 0
+    assert temp_db.count_events(issue_id, "retry", since_reset=True) == 0
 
 
 def test_log_system_event(temp_db):

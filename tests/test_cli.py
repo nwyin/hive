@@ -454,8 +454,8 @@ def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
     cli.retry(issue_id, notes="manual retry test")
 
     # Verify the event type is 'manual_retry' and 'retry' count is 0
-    manual_retry_count = temp_db.count_events_by_type(issue_id, "manual_retry")
-    retry_count = temp_db.count_events_by_type(issue_id, "retry")
+    manual_retry_count = temp_db.count_events(issue_id, "manual_retry")
+    retry_count = temp_db.count_events(issue_id, "retry")
 
     assert manual_retry_count == 1, "Should have exactly 1 manual_retry event"
     assert retry_count == 0, "Should have 0 retry events (only manual_retry)"
@@ -476,8 +476,8 @@ def test_cli_retry_reset_logs_retry_reset_event(temp_db, tmp_path):
     assert result["reset"] is True
 
     # Should have both retry_reset and manual_retry events
-    reset_count = temp_db.count_events_by_type(issue_id, "retry_reset")
-    manual_retry_count = temp_db.count_events_by_type(issue_id, "manual_retry")
+    reset_count = temp_db.count_events(issue_id, "retry_reset")
+    manual_retry_count = temp_db.count_events(issue_id, "manual_retry")
     assert reset_count == 1
     assert manual_retry_count == 1
 
@@ -492,7 +492,7 @@ def test_cli_retry_without_reset_no_retry_reset_event(temp_db, tmp_path):
     result = cli.retry(issue_id, notes="try again")
 
     assert result["reset"] is False
-    reset_count = temp_db.count_events_by_type(issue_id, "retry_reset")
+    reset_count = temp_db.count_events(issue_id, "retry_reset")
     assert reset_count == 0
 
 
