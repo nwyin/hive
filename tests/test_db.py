@@ -132,7 +132,7 @@ def test_get_ready_queue_resolved_dependencies(db_with_issues):
     assert issues["issue3"] not in [item["id"] for item in ready]
 
     # Mark issue1 as done
-    db.update_issue_status(issues["issue1"], "done")
+    db.try_transition_issue_status(issues["issue1"], to_status="done")
 
     # Now issue3 should be ready
     ready = db.get_ready_queue()
@@ -232,7 +232,7 @@ def test_claim_issue_resolved_dependency(temp_db):
     temp_db.add_dependency(blocked_id, blocker_id, "blocks")
 
     # Resolve the blocker
-    temp_db.update_issue_status(blocker_id, "finalized")
+    temp_db.try_transition_issue_status(blocker_id, to_status="finalized")
 
     # Now claim should succeed
     success = temp_db.claim_issue(blocked_id, agent_id)
@@ -277,7 +277,7 @@ def test_create_issue_with_depends_on(temp_db):
     assert not temp_db.claim_issue(issue_id, agent_id)
 
     # Resolve blocker → now it should be claimable
-    temp_db.update_issue_status(blocker_id, "finalized")
+    temp_db.try_transition_issue_status(blocker_id, to_status="finalized")
     ready = temp_db.get_ready_queue()
     ready_ids = [r["id"] for r in ready]
     assert issue_id in ready_ids
@@ -330,12 +330,13 @@ def test_add_dependency(temp_db):
     assert issue2 not in ready_ids
 
 
-def test_update_issue_status(temp_db):
-    """Test updating issue status."""
+def test_unconditional_status_transition(temp_db):
+    """Unconditional try_transition_issue_status (no from_status) updates regardless of current status."""
     issue_id = temp_db.create_issue("Test issue")
 
-    temp_db.update_issue_status(issue_id, "done")
+    result = temp_db.try_transition_issue_status(issue_id, to_status="done")
 
+    assert result is True
     issue = temp_db.get_issue(issue_id)
     assert issue["status"] == "done"
     assert issue["closed_at"] is not None
@@ -344,6 +345,35 @@ def test_update_issue_status(temp_db):
     events = temp_db.get_events(issue_id=issue_id)
     event_types = [e["event_type"] for e in events]
     assert "status_done" in event_types
+
+
+def test_try_transition_issue_status_cas(temp_db):
+    """CAS transition succeeds when from_status matches; fails when it doesn't."""
+    issue_id = temp_db.create_issue("CAS test")
+
+    # Wrong from_status → no update
+    result = temp_db.try_transition_issue_status(issue_id, from_status="done", to_status="canceled")
+    assert result is False
+    assert temp_db.get_issue(issue_id)["status"] == "open"
+
+    # Correct from_status → succeeds
+    result = temp_db.try_transition_issue_status(issue_id, from_status="open", to_status="done")
+    assert result is True
+    assert temp_db.get_issue(issue_id)["status"] == "done"
+
+
+def test_try_transition_issue_status_clears_assignee_on_open(temp_db):
+    """Transitioning to 'open' always clears the assignee (INV-2), unconditionally."""
+    issue_id = temp_db.create_issue("Assignee clear test")
+    # Set an assignee directly
+    temp_db.conn.execute("UPDATE issues SET assignee = 'agent-x', status = 'in_progress' WHERE id = ?", (issue_id,))
+    temp_db.conn.commit()
+
+    temp_db.try_transition_issue_status(issue_id, to_status="open")
+
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "open"
+    assert issue["assignee"] is None
 
 
 def test_wal_mode_enabled(temp_db):
@@ -377,9 +407,9 @@ def db_with_merge_queue(temp_db):
     id3 = db.create_issue(title="Feature C", project="test")
 
     # Mark them done
-    db.update_issue_status(id1, "done")
-    db.update_issue_status(id2, "done")
-    db.update_issue_status(id3, "done")
+    db.try_transition_issue_status(id1, to_status="done")
+    db.try_transition_issue_status(id2, to_status="done")
+    db.try_transition_issue_status(id3, to_status="done")
 
     # Enqueue to merge queue
     db.conn.execute(
@@ -1222,8 +1252,8 @@ def db_with_projects(temp_db):
     db.add_note(content="Global note", project=None)
 
     # Add merge queue entries
-    db.update_issue_status(alpha_issue1, "done")
-    db.update_issue_status(beta_issue1, "done")
+    db.try_transition_issue_status(alpha_issue1, to_status="done")
+    db.try_transition_issue_status(beta_issue1, to_status="done")
     db.conn.execute(
         "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
         (alpha_issue1, alpha_agent, "alpha", "/tmp/alpha-wt", "agent/alpha-1"),
@@ -1650,7 +1680,7 @@ def test_get_issue_status_counts(temp_db):
     temp_db.create_issue("A", project="p1")
     temp_db.create_issue("B", project="p1")
     temp_db.create_issue("C", project="p2")
-    temp_db.update_issue_status(temp_db.create_issue("D", project="p1"), "done")
+    temp_db.try_transition_issue_status(temp_db.create_issue("D", project="p1"), to_status="done")
 
     counts = temp_db.get_issue_status_counts(project="p1")
     assert counts["open"] == 2
@@ -1678,7 +1708,7 @@ def test_get_running_merge(temp_db):
 def test_get_escalated_issues(temp_db):
     temp_db.create_issue("ok", project="proj")
     i2 = temp_db.create_issue("bad", project="proj")
-    temp_db.update_issue_status(i2, "escalated")
+    temp_db.try_transition_issue_status(i2, to_status="escalated")
 
     esc = temp_db.get_escalated_issues(project="proj")
     assert len(esc) == 1
@@ -1724,7 +1754,7 @@ def test_list_issues_method(temp_db):
     temp_db.create_issue("A", priority=1, project="proj", issue_type="bug")
     temp_db.create_issue("B", priority=2, project="proj", issue_type="task")
     i3 = temp_db.create_issue("C", priority=3, project="proj", issue_type="task")
-    temp_db.update_issue_status(i3, "done")
+    temp_db.try_transition_issue_status(i3, to_status="done")
 
     # Basic listing
     all_issues = temp_db.list_issues(project="proj")
@@ -1746,7 +1776,7 @@ def test_list_issues_method(temp_db):
 def test_get_review_queue(temp_db):
     i1 = temp_db.create_issue("done1", project="proj")
     i2 = temp_db.create_issue("open1", project="proj")
-    temp_db.update_issue_status(i1, "done")
+    temp_db.try_transition_issue_status(i1, to_status="done")
 
     # Without issue_id — only done issues
     rows = temp_db.get_review_queue(project="proj")

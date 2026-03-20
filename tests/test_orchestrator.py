@@ -1195,7 +1195,7 @@ async def test_handle_stalled_agent_terminal_issue_skips_escalation(temp_db, tmp
     orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Terminal stalled task", "Already canceled")
-    temp_db.update_issue_status(issue_id, "canceled")
+    temp_db.try_transition_issue_status(issue_id, to_status="canceled")
     agent_id = temp_db.create_agent("test-agent")
     _activate_agent_for_issue(temp_db, issue_id, agent_id, keep_issue_status=True)
     agent = AgentIdentity(
@@ -1272,7 +1272,7 @@ async def test_handle_agent_complete_terminal_transition_skips_message_fetch(tem
     orch = _make_orchestrator(temp_db, tmp_path, mock_backend)
 
     issue_id = temp_db.create_issue("Terminal task", "Already canceled")
-    temp_db.update_issue_status(issue_id, "canceled")
+    temp_db.try_transition_issue_status(issue_id, to_status="canceled")
     agent_id = temp_db.create_agent("test-agent")
     _activate_agent_for_issue(temp_db, issue_id, agent_id, keep_issue_status=True)
 

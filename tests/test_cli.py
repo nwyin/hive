@@ -47,7 +47,7 @@ def test_cli_create_with_depends_on(temp_db, tmp_path, capsys):
     assert not claimed
 
     # Resolve blocker, then claim should work
-    temp_db.update_issue_status(blocker_id, "finalized")
+    temp_db.try_transition_issue_status(blocker_id, to_status="finalized")
     claimed = temp_db.claim_issue(dependent_id, agent_id)
     assert claimed
 
@@ -91,7 +91,7 @@ def test_cli_list_issues_by_status(temp_db, tmp_path, capsys):
     # Create issues with different statuses
     temp_db.create_issue("Open issue", project=tmp_path.name)
     issue2 = temp_db.create_issue("Done issue", project=tmp_path.name)
-    temp_db.update_issue_status(issue2, "done")
+    temp_db.try_transition_issue_status(issue2, to_status="done")
 
     cli.list_issues(status="open")
 
@@ -139,7 +139,7 @@ def test_cli_status(temp_db, tmp_path, capsys):
     temp_db.create_issue("Open 1", project=tmp_path.name)
     temp_db.create_issue("Open 2", project=tmp_path.name)
     issue3 = temp_db.create_issue("Done 1", project=tmp_path.name)
-    temp_db.update_issue_status(issue3, "done")
+    temp_db.try_transition_issue_status(issue3, to_status="done")
 
     cli.status()
 
@@ -179,7 +179,7 @@ def test_cli_status_json_includes_dirty_main_merge_blocker(temp_db, tmp_path, ca
 
     cli = HiveCLI(temp_db, str(repo))
     issue_id = temp_db.create_issue("Queued merge", project=repo.name)
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     temp_db.conn.execute(
         """
         INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status)
@@ -363,7 +363,7 @@ def test_cli_finalize_marks_merge_queue_merged(temp_db, tmp_path):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("To finalize", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     temp_db.conn.execute(
         """
         INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status)
@@ -386,7 +386,7 @@ def test_cli_review_lists_done_issues(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Ready for review", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     temp_db.conn.execute(
         """
         INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status)
@@ -409,7 +409,7 @@ def test_cli_review_json(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("JSON review", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     temp_db.conn.execute(
         """
         INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name, status)
@@ -433,7 +433,7 @@ def test_cli_retry(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "escalated")
+    temp_db.try_transition_issue_status(issue_id, to_status="escalated")
 
     cli.retry(issue_id, notes="try different approach")
 
@@ -448,7 +448,7 @@ def test_cli_retry_logs_manual_retry_event(temp_db, tmp_path):
 
     # Create and escalate an issue
     issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "escalated")
+    temp_db.try_transition_issue_status(issue_id, to_status="escalated")
 
     # Retry the issue manually
     cli.retry(issue_id, notes="manual retry test")
@@ -466,7 +466,7 @@ def test_cli_retry_reset_logs_retry_reset_event(temp_db, tmp_path):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "escalated")
+    temp_db.try_transition_issue_status(issue_id, to_status="escalated")
 
     result = cli.retry(issue_id, notes="fixed the root cause", reset=True)
 
@@ -487,7 +487,7 @@ def test_cli_retry_without_reset_no_retry_reset_event(temp_db, tmp_path):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Escalated task", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "escalated")
+    temp_db.try_transition_issue_status(issue_id, to_status="escalated")
 
     result = cli.retry(issue_id, notes="try again")
 
@@ -916,7 +916,7 @@ def test_status_shows_worker_details(temp_db, tmp_path, capsys):
 
     # Create issues
     issue_id = temp_db.create_issue("Add auth module", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "in_progress")
+    temp_db.try_transition_issue_status(issue_id, to_status="in_progress")
 
     # Create a working agent
     agent_id = temp_db.create_agent(name="worker-abc123", project=tmp_path.name)
@@ -938,7 +938,7 @@ def test_status_shows_refinery_reviewing(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Fix login bug", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
 
     # Insert a running merge entry
     temp_db.conn.execute(
@@ -973,7 +973,7 @@ def test_status_json_includes_workers_and_refinery(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     issue_id = temp_db.create_issue("Task A", project=tmp_path.name)
-    temp_db.update_issue_status(issue_id, "in_progress")
+    temp_db.try_transition_issue_status(issue_id, to_status="in_progress")
 
     agent_id = temp_db.create_agent(name="worker-xyz", project=tmp_path.name)
     temp_db.conn.execute(

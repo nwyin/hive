@@ -317,7 +317,7 @@ class HiveCLI(QueenMixin):
         """Cancel an issue."""
         self._require_issue(issue_id)
 
-        self.db.update_issue_status(issue_id, IssueStatus.CANCELED)
+        self.db.try_transition_issue_status(issue_id, to_status=IssueStatus.CANCELED)
         self.db.log_event(issue_id, None, "canceled", {"reason": reason})
 
         return {
@@ -332,7 +332,7 @@ class HiveCLI(QueenMixin):
         """Finalize/close an issue."""
         self._require_issue(issue_id)
 
-        self.db.update_issue_status(issue_id, IssueStatus.FINALIZED)
+        self.db.try_transition_issue_status(issue_id, to_status=IssueStatus.FINALIZED)
         # If this issue was sitting in the merge queue (manual review mode),
         # mark those entries complete so they don't get processed later.
         with self.db.transaction() as conn:
@@ -394,7 +394,7 @@ class HiveCLI(QueenMixin):
         self._require_issue(issue_id)
 
         # Reset to open and unassign
-        self.db.update_issue_status(issue_id, IssueStatus.OPEN)
+        self.db.try_transition_issue_status(issue_id, to_status=IssueStatus.OPEN)
 
         if reset:
             self.db.log_event(issue_id, None, "retry_reset", {"notes": notes})

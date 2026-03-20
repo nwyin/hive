@@ -62,7 +62,7 @@ def merge_entry_with_worktree(git_repo, temp_db):
 
     # Create issue and mark done
     issue_id = temp_db.create_issue(title="Test Feature", project="test")
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
 
     # Create worktree with a commit
     worktree_path = create_worktree(str(git_repo), "worker-test")
@@ -1226,7 +1226,7 @@ async def test_send_to_refinery_retries_on_dead_session(tmp_path, temp_db, mock_
     Path(worktree_path).mkdir()
 
     issue_id = temp_db.create_issue(title="Test Issue", project="test")
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     agent_id = temp_db.create_agent(name="test-agent")
     temp_db.conn.execute(
         "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
@@ -1292,7 +1292,7 @@ async def test_send_to_refinery_gives_up_after_two_deaths(tmp_path, temp_db, moc
     Path(worktree_path).mkdir()
 
     issue_id = temp_db.create_issue(title="Test Issue", project="test")
-    temp_db.update_issue_status(issue_id, "done")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
     agent_id = temp_db.create_agent(name="test-agent")
     temp_db.conn.execute(
         "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",

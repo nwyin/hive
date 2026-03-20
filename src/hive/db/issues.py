@@ -29,14 +29,30 @@ class IssuesMixin:
         self,
         issue_id: str,
         *,
-        from_status: IssueStatus | str,
+        from_status: IssueStatus | str | None = None,
         to_status: IssueStatus | str,
         expected_assignee: str | None = None,
     ) -> bool:
-        """CAS-style issue status transition. For transitions to 'open', clears assignee (INV-2)."""
-        from_status_value = str(from_status)
+        """Update issue status, optionally with CAS guard.
+
+        When *from_status* is given, the UPDATE is conditional (CAS): only applies if the
+        current status matches *from_status* and the assignee matches *expected_assignee*.
+        When *from_status* is None, the update is unconditional (any current status).
+        Transitions to 'open' always clear the assignee (INV-2).
+        Returns True if the row was updated.
+        """
         to_status_value = str(to_status)
         closed_status_placeholders = ", ".join("?" for _ in CLOSED_ISSUE_STATUSES)
+
+        cas_clause = ""
+        cas_params: tuple = ()
+        detail: dict = {"status": to_status_value, "to": to_status_value}
+        if from_status is not None:
+            from_status_value = str(from_status)
+            cas_clause = "AND status = ?\n                  AND (? IS NULL OR assignee = ?)"
+            cas_params = (from_status_value, expected_assignee, expected_assignee)
+            detail["from"] = from_status_value
+
         with self.transaction() as conn:
             cursor = conn.execute(
                 f"""
@@ -48,8 +64,7 @@ class IssuesMixin:
                                      THEN datetime('now')
                                      ELSE closed_at END
                 WHERE id = ?
-                  AND status = ?
-                  AND (? IS NULL OR assignee = ?)
+                  {cas_clause}
                 """,
                 (
                     to_status_value,
@@ -58,9 +73,7 @@ class IssuesMixin:
                     to_status_value,
                     *CLOSED_ISSUE_STATUSES,
                     issue_id,
-                    from_status_value,
-                    expected_assignee,
-                    expected_assignee,
+                    *cas_params,
                 ),
             )
             if cursor.rowcount != 1:
@@ -68,13 +81,7 @@ class IssuesMixin:
 
             # commit=False so the status transition + audit event commit atomically via
             # the surrounding `transaction()` context manager.
-            self.log_event(
-                issue_id,
-                None,
-                f"status_{to_status_value}",
-                {"status": to_status_value, "from": from_status_value, "to": to_status_value},
-                commit=False,
-            )
+            self.log_event(issue_id, None, f"status_{to_status_value}", detail, commit=False)
             return True
 
     def create_issue(
@@ -200,26 +207,6 @@ class IssuesMixin:
         """Get issue by ID."""
         cursor = self.conn.execute("SELECT * FROM issues WHERE id = ?", (issue_id,))
         return self._one(cursor)
-
-    def update_issue_status(self, issue_id: str, status: IssueStatus | str):
-        """Update issue status. Clears assignee when setting to 'open' (INV-2)."""
-        status_value = str(status)
-        closed_status_placeholders = ", ".join("?" for _ in CLOSED_ISSUE_STATUSES)
-        with self.transaction() as conn:
-            conn.execute(
-                f"""
-                UPDATE issues
-                SET status = ?,
-                    assignee = CASE WHEN ? = ? THEN NULL ELSE assignee END,
-                    updated_at = datetime('now'),
-                    closed_at = CASE WHEN ? IN ({closed_status_placeholders})
-                                     THEN datetime('now')
-                                     ELSE closed_at END
-                WHERE id = ?
-                """,
-                (status_value, status_value, IssueStatus.OPEN, status_value, *CLOSED_ISSUE_STATUSES, issue_id),
-            )
-            self.log_event(issue_id, None, f"status_{status_value}", {"status": status_value}, commit=False)
 
     def list_issues(
         self,
