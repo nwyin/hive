@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "f806a5905064",
+  "session_id": "3fd63e3e-2f83-4194-92b7-4c32b0cde9a3",
+  "strategy": "manual-commit",
+  "created_at": "2026-03-20T07:06:08.806603Z",
+  "branch": "centralize-sql-into-db-layer",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/db/core.py",
+    "src/hive/db/issues.py"
+  ],
+  "agent": "Claude Code",
+  "turn_id": "dd06e06dca7a",
+  "token_usage": {
+    "input_tokens": 5984,
+    "cache_creation_tokens": 64043,
+    "cache_read_tokens": 2703587,
+    "output_tokens": 13084,
+    "api_call_count": 42
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-03-20T07:06:08.596329Z",
+    "agent_lines": 0,
+    "human_added": 115,
+    "human_modified": 82,
+    "human_removed": 0,
+    "total_committed": 182,
+    "agent_percentage": 0
+  }
+}
