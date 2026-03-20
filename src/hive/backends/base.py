@@ -8,6 +8,7 @@ Both the Claude and Codex backends combine these into a single class.
 """
 
 import inspect
+from contextlib import suppress
 from types import TracebackType
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Self
@@ -54,9 +55,12 @@ class HiveBackend(ABC):
     async def delete_session(self, session_id: str, directory: str | None = None) -> bool:
         """Delete a session. Returns True if successful."""
 
-    @abstractmethod
     async def cleanup_session(self, session_id: str, directory: str | None = None):
         """Abort + delete a session. Best-effort, exceptions swallowed."""
+        with suppress(Exception):
+            await self.abort_session(session_id, directory)
+        with suppress(Exception):
+            await self.delete_session(session_id, directory)
 
     @abstractmethod
     async def get_session_status(self, session_id: str, directory: str | None = None) -> dict[str, Any]:
@@ -66,13 +70,12 @@ class HiveBackend(ABC):
     async def get_messages(self, session_id: str, directory: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         """Get messages from a session."""
 
-    @abstractmethod
     async def get_pending_permissions(self, directory: str | None = None) -> list[dict[str, Any]]:
-        """Get pending permission requests."""
+        """Get pending permission requests. Default: no pending requests."""
+        return []
 
-    @abstractmethod
     async def reply_permission(self, request_id: str, reply: str, message: str | None = None, directory: str | None = None):
-        """Reply to a permission request."""
+        """Reply to a permission request. Default: no-op."""
 
     # ── Event streaming ───────────────────────────────────────────────
 

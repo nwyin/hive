@@ -285,21 +285,6 @@ class ClaudeWSBackend(HiveBackend):
             await session.ws.close()
         return True
 
-    async def cleanup_session(self, session_id: str, directory: str | None = None):
-        """Abort + delete. Best-effort."""
-        with suppress(Exception):
-            await self.abort_session(session_id, directory)
-        with suppress(Exception):
-            await self.delete_session(session_id, directory)
-
-    async def get_pending_permissions(self, directory: str | None = None) -> list[dict[str, Any]]:
-        """No-op — CLI runs with bypassPermissions."""
-        return []
-
-    async def reply_permission(self, request_id: str, reply: str, message: str | None = None, directory: str | None = None):
-        """No-op — CLI runs with bypassPermissions."""
-        pass
-
     # ── Event streaming ───────────────────────────────────────────────
 
     async def connect_with_reconnect(self, max_retries: int = -1, retry_delay: int = 5):

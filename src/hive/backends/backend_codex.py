@@ -319,12 +319,6 @@ class CodexAppServerBackend(HiveBackend):
             state.heartbeat_task.cancel()
         return True
 
-    async def cleanup_session(self, session_id: str, directory: str | None = None):
-        with suppress(Exception):
-            await self.abort_session(session_id, directory=directory)
-        with suppress(Exception):
-            await self.delete_session(session_id, directory=directory)
-
     async def get_session_status(self, session_id: str, directory: str | None = None) -> dict[str, Any]:
         state = self.sessions.get(session_id)
         if not state:
@@ -339,14 +333,6 @@ class CodexAppServerBackend(HiveBackend):
         if limit:
             return state.messages[-limit:]
         return state.messages
-
-    async def get_pending_permissions(self, directory: str | None = None) -> list[dict[str, Any]]:
-        # Codex approvals are handled directly via JSON-RPC server->client requests.
-        return []
-
-    async def reply_permission(self, request_id: str, reply: str, message: str | None = None, directory: str | None = None):
-        # No-op: we auto-handle Codex approval requests.
-        return
 
     # ── Event streaming ───────────────────────────────────────────────
 
