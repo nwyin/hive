@@ -102,25 +102,6 @@ class AgentIdentity:
 # --- Project detection ---
 
 
-def _parse_repo_name(remote_url: str) -> str | None:
-    """Extract repository name (bare, no slashes) from a git remote URL.
-
-    Works for:
-    - SSH:   git@github.com:org/repo.git  → "repo"
-    - HTTPS: https://github.com/org/repo.git → "repo"
-
-    INV-1: Always returns a bare name with no slashes.
-    """
-    url = remote_url.strip().rstrip("/")
-    url = url.removesuffix(".git")
-    # Strip colon-delimited host prefix (SSH URLs: "git@host:path")
-    if ":" in url:
-        url = url.split(":", 1)[1]
-    # Take the last non-empty path component
-    parts = [p for p in url.split("/") if p]
-    return parts[-1] if parts else None
-
-
 def _normalize_project_name(name: str) -> str:
     """Normalize a project name to the bare repo form (no slashes).
 
@@ -143,7 +124,14 @@ def _git_remote_name(project_root: Path) -> str | None:
             timeout=5,
         )
         if res.returncode == 0 and res.stdout.strip():
-            return _parse_repo_name(res.stdout)
+            url = res.stdout.strip().rstrip("/")
+            url = url.removesuffix(".git")
+            # Strip colon-delimited host prefix (SSH URLs: "git@host:path")
+            if ":" in url:
+                url = url.split(":", 1)[1]
+            # Take the last non-empty path component
+            parts = [p for p in url.split("/") if p]
+            return parts[-1] if parts else None
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     return None
