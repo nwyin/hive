@@ -256,7 +256,7 @@ class OrchestratorCore:
         )
 
         if issue_id:
-            decision = self._choose_escalation(issue_id, include_anomaly=False)
+            decision, _counts = self._choose_escalation(issue_id, include_anomaly=False)
             if decision in ("retry", "agent_switch"):
                 self.db.try_transition_issue_status(
                     issue_id,

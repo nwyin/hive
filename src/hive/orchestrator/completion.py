@@ -45,6 +45,15 @@ class EscalationDecision(StrEnum):
 
 
 @dataclass
+class EscalationCounts:
+    """Event counts gathered once by _choose_escalation and threaded through to _apply_failure_disposition."""
+
+    retry_count: int
+    agent_switch_count: int
+    recent_failures: int
+
+
+@dataclass
 class CompletionDecision:
     """Decision payload from completion transition analysis."""
 
@@ -274,22 +283,38 @@ class CompletionMixin:
         finally:
             await self._cleanup_agent(agent, remove_worktree=remove_worktree_on_teardown)
 
-    def _choose_escalation(self, issue_id: str, *, include_anomaly: bool = True) -> EscalationDecision:
-        """Decide retry/switch/escalate tier for an issue."""
-        if include_anomaly and deps.Config.ANOMALY_FAILURE_THRESHOLD and deps.Config.ANOMALY_WINDOW_MINUTES:
-            recent_failures = self.db.count_events(issue_id, "incomplete", since_reset=True, minutes=deps.Config.ANOMALY_WINDOW_MINUTES)
-            if recent_failures >= deps.Config.ANOMALY_FAILURE_THRESHOLD:
-                return EscalationDecision.ANOMALY_ESCALATE
+    def _choose_escalation(self, issue_id: str, *, include_anomaly: bool = True) -> tuple[EscalationDecision, EscalationCounts]:
+        """Decide retry/switch/escalate tier for an issue.
 
+        Returns both the routing decision and the event counts used to reach it.
+        The counts are threaded through to _apply_failure_disposition so the DB is
+        only queried once.
+        """
+        recent_failures = (
+            self.db.count_events(issue_id, "incomplete", since_reset=True, minutes=deps.Config.ANOMALY_WINDOW_MINUTES)
+            if (include_anomaly and deps.Config.ANOMALY_FAILURE_THRESHOLD and deps.Config.ANOMALY_WINDOW_MINUTES)
+            else 0
+        )
         retry_count = self.db.count_events(issue_id, "retry", since_reset=True)
-        if retry_count < deps.Config.MAX_RETRIES:
-            return EscalationDecision.RETRY
-
         agent_switch_count = self.db.count_events(issue_id, "agent_switch", since_reset=True)
-        if agent_switch_count < deps.Config.MAX_AGENT_SWITCHES:
-            return EscalationDecision.AGENT_SWITCH
 
-        return EscalationDecision.ESCALATE
+        counts = EscalationCounts(
+            retry_count=retry_count,
+            agent_switch_count=agent_switch_count,
+            recent_failures=recent_failures,
+        )
+
+        if include_anomaly and deps.Config.ANOMALY_FAILURE_THRESHOLD and deps.Config.ANOMALY_WINDOW_MINUTES:
+            if recent_failures >= deps.Config.ANOMALY_FAILURE_THRESHOLD:
+                return EscalationDecision.ANOMALY_ESCALATE, counts
+
+        if retry_count < deps.Config.MAX_RETRIES:
+            return EscalationDecision.RETRY, counts
+
+        if agent_switch_count < deps.Config.MAX_AGENT_SWITCHES:
+            return EscalationDecision.AGENT_SWITCH, counts
+
+        return EscalationDecision.ESCALATE, counts
 
     def _apply_failure_disposition(
         self,
@@ -297,13 +322,15 @@ class CompletionMixin:
         issue_id: str,
         agent: AgentIdentity,
         decision: EscalationDecision,
+        counts: EscalationCounts,
         reason: str,
         model: str | None,
     ) -> bool:
         """Apply retry/switch/escalate side effects for a failure decision."""
         if decision == EscalationDecision.ANOMALY_ESCALATE:
-            recent_failures = self.db.count_events(issue_id, "incomplete", since_reset=True, minutes=deps.Config.ANOMALY_WINDOW_MINUTES)
-            logger.warning(f"Anomaly: {recent_failures} failures on {issue_id} in {deps.Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating")
+            logger.warning(
+                f"Anomaly: {counts.recent_failures} failures on {issue_id} in {deps.Config.ANOMALY_WINDOW_MINUTES}m — auto-escalating"
+            )
             return self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
@@ -311,7 +338,7 @@ class CompletionMixin:
                 event_type="escalated",
                 detail={
                     "reason": "Anomaly detection: rapid repeated failures",
-                    "recent_failures": recent_failures,
+                    "recent_failures": counts.recent_failures,
                     "window_minutes": deps.Config.ANOMALY_WINDOW_MINUTES,
                     "final_failure_reason": reason,
                 },
@@ -319,37 +346,33 @@ class CompletionMixin:
             )
 
         if decision == EscalationDecision.RETRY:
-            retry_count = self.db.count_events(issue_id, "retry", since_reset=True)
             if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
                 to_status=IssueStatus.OPEN,
                 event_type="retry",
-                detail={"retry_count": retry_count + 1, "reason": reason, "previous_agent": agent.name},
+                detail={"retry_count": counts.retry_count + 1, "reason": reason, "previous_agent": agent.name},
                 skip_event_type="retry_skipped",
                 skip_reason="issue not releasable",
             ):
                 return False
-            logger.info(f"Retrying issue {issue_id} (attempt {retry_count + 1}/{deps.Config.MAX_RETRIES})")
+            logger.info(f"Retrying issue {issue_id} (attempt {counts.retry_count + 1}/{deps.Config.MAX_RETRIES})")
             return True
 
         if decision == EscalationDecision.AGENT_SWITCH:
-            agent_switch_count = self.db.count_events(issue_id, "agent_switch", since_reset=True)
             if not self._try_escalate_issue(
                 issue_id,
                 agent.agent_id,
                 to_status=IssueStatus.OPEN,
                 event_type="agent_switch",
-                detail={"switch_count": agent_switch_count + 1, "reason": reason, "previous_agent": agent.name, "model": model},
+                detail={"switch_count": counts.agent_switch_count + 1, "reason": reason, "previous_agent": agent.name, "model": model},
                 skip_event_type="agent_switch_skipped",
                 skip_reason="issue not releasable",
             ):
                 return False
-            logger.info(f"Switching agent for issue {issue_id} (switch {agent_switch_count + 1}/{deps.Config.MAX_AGENT_SWITCHES})")
+            logger.info(f"Switching agent for issue {issue_id} (switch {counts.agent_switch_count + 1}/{deps.Config.MAX_AGENT_SWITCHES})")
             return True
 
-        retry_count = self.db.count_events(issue_id, "retry", since_reset=True)
-        agent_switch_count = self.db.count_events(issue_id, "agent_switch", since_reset=True)
         if self._try_escalate_issue(
             issue_id,
             agent.agent_id,
@@ -358,13 +381,13 @@ class CompletionMixin:
             detail={
                 "reason": "Exhausted all retry and agent switch attempts",
                 "final_failure_reason": reason,
-                "total_retries": retry_count,
-                "total_agent_switches": agent_switch_count,
+                "total_retries": counts.retry_count,
+                "total_agent_switches": counts.agent_switch_count,
             },
             skip_event_type="escalate_skipped",
         ):
             logger.warning(
-                f"Escalating issue {issue_id} to human intervention after {retry_count} retries and {agent_switch_count} agent switches"
+                f"Escalating issue {issue_id} to human intervention after {counts.retry_count} retries and {counts.agent_switch_count} agent switches"
             )
             return True
         return False
@@ -383,11 +406,12 @@ class CompletionMixin:
             {"reason": result.reason, "summary": result.summary, "model": model},
         )
 
-        decision = self._choose_escalation(issue_id)
+        decision, counts = self._choose_escalation(issue_id)
         self._apply_failure_disposition(
             issue_id=issue_id,
             agent=agent,
             decision=decision,
+            counts=counts,
             reason=result.reason,
             model=model,
         )

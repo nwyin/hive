@@ -202,15 +202,18 @@ async def test_choose_escalation_retry_after_reset(temp_db, tmp_path):
     # Without reset, should escalate
     from hive.orchestrator.completion import EscalationDecision
 
-    decision = orch._choose_escalation(issue_id)
+    decision, counts = orch._choose_escalation(issue_id)
     assert decision == EscalationDecision.ESCALATE
+    assert counts.retry_count == Config.MAX_RETRIES
+    assert counts.agent_switch_count == Config.MAX_AGENT_SWITCHES
 
     # Now log a retry_reset
     temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed root cause"})
 
     # After reset, should retry again
-    decision = orch._choose_escalation(issue_id)
+    decision, counts = orch._choose_escalation(issue_id)
     assert decision == EscalationDecision.RETRY
+    assert counts.retry_count == 0
 
 
 @pytest.mark.asyncio
@@ -234,15 +237,17 @@ async def test_choose_escalation_anomaly_respects_reset(temp_db, tmp_path):
 
     # Without reset, should anomaly-escalate
     if Config.ANOMALY_FAILURE_THRESHOLD:
-        decision = orch._choose_escalation(issue_id)
+        decision, counts = orch._choose_escalation(issue_id)
         assert decision == EscalationDecision.ANOMALY_ESCALATE
+        assert counts.recent_failures >= Config.ANOMALY_FAILURE_THRESHOLD
 
     # Log a retry_reset — old incompletes should no longer count
     temp_db.log_event(issue_id, None, "retry_reset", {"notes": "fixed"})
 
     # After reset, should retry (not anomaly-escalate)
-    decision = orch._choose_escalation(issue_id)
+    decision, counts = orch._choose_escalation(issue_id)
     assert decision == EscalationDecision.RETRY
+    assert counts.recent_failures == 0
 
 
 @pytest.mark.asyncio
