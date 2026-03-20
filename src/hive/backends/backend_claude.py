@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import uuid
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -39,7 +38,7 @@ import aiohttp.web
 from ..config import Config
 from ..status import BackendSessionStatusType, SESSION_STATUS_EVENT, session_status_payload
 from ..utils import generate_id
-from .base import HiveBackend, _first_text
+from .base import HiveBackend, _first_text, _terminate_process_group
 
 logger = logging.getLogger(__name__)
 
@@ -269,18 +268,7 @@ class ClaudeWSBackend(HiveBackend):
             return False
         logger.info(f"Deleting session {session_id} (directory={directory or session.directory})")
         if session.process and session.process.returncode is None:
-            # Send SIGTERM to the process group (child is a session leader
-            # via start_new_session=True) so grandchildren are also killed.
-            with suppress(ProcessLookupError, PermissionError):
-                os.killpg(session.process.pid, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(session.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                with suppress(ProcessLookupError, PermissionError):
-                    os.killpg(session.process.pid, signal.SIGKILL)
-                if session.process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        session.process.kill()
+            await _terminate_process_group(session.process, timeout=5)
         if session.ws and not session.ws.closed:
             await session.ws.close()
         return True
@@ -491,11 +479,7 @@ class ClaudeWSBackend(HiveBackend):
         # No graceful abort/WS-close — we're shutting down the whole daemon.
         for session_id, session in list(self.sessions.items()):
             if session.process and session.process.returncode is None:
-                with suppress(ProcessLookupError, PermissionError):
-                    os.killpg(session.process.pid, signal.SIGKILL)
-                if session.process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        session.process.kill()
+                await _terminate_process_group(session.process, timeout=0)
         self.sessions.clear()
         if self._runner:
             with suppress(Exception):

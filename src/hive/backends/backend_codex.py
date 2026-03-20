@@ -35,14 +35,13 @@ import json
 import logging
 import os
 import shlex
-import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..config import Config
 from ..status import BackendSessionStatusType, SESSION_STATUS_EVENT, session_status_payload
-from .base import HiveBackend, _first_text
+from .base import HiveBackend, _first_text, _terminate_process_group
 
 logger = logging.getLogger(__name__)
 
@@ -438,21 +437,7 @@ class CodexAppServerBackend(HiveBackend):
         if not proc or proc.returncode is not None:
             return
 
-        # Kill the process group (best-effort).
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except Exception:
-            with suppress(Exception):
-                proc.terminate()
-
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except Exception:
-                with suppress(Exception):
-                    proc.kill()
+        await _terminate_process_group(proc, timeout=3)
 
     async def _read_stream_lines(self, stream: asyncio.StreamReader, *, errors: str = "strict"):
         while True:

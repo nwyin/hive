@@ -7,7 +7,10 @@ A backend provides two capabilities to the orchestrator:
 Both the Claude and Codex backends combine these into a single class.
 """
 
+import asyncio
 import inspect
+import os
+import signal
 from contextlib import suppress
 from types import TracebackType
 from abc import ABC, abstractmethod
@@ -116,6 +119,27 @@ class HiveBackend(ABC):
 
     @abstractmethod
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None: ...
+
+
+async def _terminate_process_group(proc: asyncio.subprocess.Process, timeout: float = 5.0) -> None:
+    """Terminate a process group: SIGTERM → wait(timeout) → SIGKILL → proc.kill().
+
+    When timeout=0, skip the graceful SIGTERM/wait and go straight to SIGKILL.
+    Caller must ensure proc.returncode is None before calling.
+    """
+    if timeout > 0:
+        with suppress(OSError):
+            os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            return
+        except asyncio.TimeoutError:
+            pass
+    with suppress(OSError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    if proc.returncode is None:
+        with suppress(OSError):
+            proc.kill()
 
 
 def _first_text(parts: list[dict[str, Any]]) -> str:
