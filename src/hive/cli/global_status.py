@@ -7,6 +7,7 @@ from pathlib import Path
 from ..daemon import HiveDaemon
 from ..db import Database
 from ..git import GitWorktreeError, get_worktree_dirty_status
+from .helpers import _enrich_agents_with_issues
 
 
 def get_global_status(db: Database) -> dict:
@@ -43,20 +44,7 @@ def get_global_status(db: Database) -> dict:
 
         # Active agents with issue titles
         active_agents = db.get_active_agents(project=name)
-        workers = []
-        for agent in active_agents:
-            issue_title = ""
-            if agent.get("current_issue"):
-                issue_row = db.get_issue(agent["current_issue"])
-                if issue_row:
-                    issue_title = issue_row.get("title", "")
-            workers.append(
-                {
-                    "name": agent.get("name", ""),
-                    "issue_id": agent.get("current_issue", ""),
-                    "issue_title": issue_title,
-                }
-            )
+        workers = _enrich_agents_with_issues(db, active_agents)
         entry["active_agents"] = len(active_agents)
         entry["workers"] = workers
 

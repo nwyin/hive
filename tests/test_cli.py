@@ -8,6 +8,56 @@ import unittest.mock
 import pytest
 
 from hive.cli import HiveCLI
+from hive.cli.helpers import _enrich_agents_with_issues
+
+
+# ── _enrich_agents_with_issues helper ─────────────────────────────────────────
+
+
+def test_enrich_agents_returns_worker_dicts(temp_db, tmp_path):
+    """Helper returns one dict per agent with name/issue_id/issue_title keys."""
+    issue_id = temp_db.create_issue("Fix the bug", project=tmp_path.name)
+    agent_id = temp_db.create_agent(name="worker-abc", project=tmp_path.name)
+    temp_db.conn.execute("UPDATE agents SET current_issue = ? WHERE id = ?", (issue_id, agent_id))
+    temp_db.conn.commit()
+
+    agents = temp_db.get_active_agents(project=tmp_path.name)
+    # make agent working so get_active_agents returns it
+    temp_db.conn.execute("UPDATE agents SET status = 'working' WHERE id = ?", (agent_id,))
+    temp_db.conn.commit()
+    agents = temp_db.get_active_agents(project=tmp_path.name)
+
+    result = _enrich_agents_with_issues(temp_db, agents)
+
+    assert len(result) == len(agents)
+    worker = result[0]
+    assert worker["name"] == "worker-abc"
+    assert worker["issue_id"] == issue_id
+    assert worker["issue_title"] == "Fix the bug"
+
+
+def test_enrich_agents_empty_input(temp_db):
+    """Helper returns empty list for empty agent list."""
+    assert _enrich_agents_with_issues(temp_db, []) == []
+
+
+def test_enrich_agents_no_current_issue(temp_db):
+    """Helper returns empty issue_id and issue_title when agent has no current issue."""
+    agent_dict = {"name": "idle-worker", "current_issue": None}
+    result = _enrich_agents_with_issues(temp_db, [agent_dict])
+
+    assert result[0]["issue_title"] == ""
+    assert result[0]["issue_id"] == ""
+    assert result[0]["name"] == "idle-worker"
+
+
+def test_enrich_agents_missing_issue_in_db(temp_db):
+    """Helper gracefully handles an agent whose current_issue no longer exists."""
+    agent_dict = {"name": "stale-worker", "current_issue": "w-doesnotexist"}
+    result = _enrich_agents_with_issues(temp_db, [agent_dict])
+
+    assert result[0]["issue_title"] == ""
+    assert result[0]["issue_id"] == "w-doesnotexist"
 
 
 def test_cli_create(temp_db, tmp_path):

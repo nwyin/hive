@@ -30,6 +30,7 @@ from .formatters import (
     _fmt_status,
     _fmt_stop,
 )
+from .helpers import _enrich_agents_with_issues
 from .queen import QueenMixin
 
 _CONSOLE = Console()
@@ -466,20 +467,7 @@ class HiveCLI(QueenMixin):
 
         # Get active agents with issue titles
         active_agents = self.db.get_active_agents(project=self.project_name)
-        workers_detail = []
-        for agent in active_agents:
-            issue_title = ""
-            if agent.get("current_issue"):
-                issue_row = self.db.get_issue(agent["current_issue"])
-                if issue_row:
-                    issue_title = issue_row.get("title", "")
-            workers_detail.append(
-                {
-                    "name": agent.get("name", ""),
-                    "issue_id": agent.get("current_issue", ""),
-                    "issue_title": issue_title,
-                }
-            )
+        workers_detail = _enrich_agents_with_issues(self.db, active_agents)
 
         # Get running merge entry (refinery status proxy)
         try:
@@ -580,11 +568,9 @@ class HiveCLI(QueenMixin):
         agents = self.db.list_agents(project=self.project_name, status=status)
 
         # Enrich with current issue info
-        for agent in agents:
-            if agent.get("current_issue"):
-                issue = self.db.get_issue(agent["current_issue"])
-                if issue:
-                    agent["current_issue_title"] = issue.get("title", "unknown")
+        for agent, worker in zip(agents, _enrich_agents_with_issues(self.db, agents)):
+            if worker["issue_title"]:
+                agent["current_issue_title"] = worker["issue_title"]
 
         return {"count": len(agents), "agents": agents}
 
