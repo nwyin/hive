@@ -441,6 +441,22 @@ class LifecycleMixin:
             file_result=file_result,
         )
 
+    def _refresh_agent_heartbeat(self, session_id: str, agent: AgentIdentity) -> None:
+        """Refresh heartbeat state when a session is observed busy.
+
+        Updates _session_last_activity, touches the DB heartbeat, and logs the
+        heartbeat_refreshed event. Called from both _handle_monitor_timeout and
+        _handle_stalled_with_session_check.
+        """
+        self._session_last_activity[session_id] = datetime.now()
+        self.db.try_touch_agent_heartbeat(agent.agent_id)
+        self.db.log_event(
+            agent.issue_id,
+            agent.agent_id,
+            "heartbeat_refreshed",
+            {"session_status": BackendSessionStatusType.BUSY.value},
+        )
+
     async def _probe_agent_liveness(self, agent: AgentIdentity, *, session_id: str | None = None) -> AgentLivenessProbe:
         """Read result-file truth first, then one backend session-status snapshot."""
         completion_truth = self._read_monitor_completion_truth(agent)
@@ -564,14 +580,7 @@ class LifecycleMixin:
             return MonitorStep(signal=MonitorSignal.CONTINUE_MONITORING)
 
         if probe.state == AgentLivenessState.SESSION_BUSY:
-            self._session_last_activity[session_id] = datetime.now()
-            self.db.try_touch_agent_heartbeat(agent.agent_id)
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "heartbeat_refreshed",
-                {"session_status": BackendSessionStatusType.BUSY.value},
-            )
+            self._refresh_agent_heartbeat(session_id, agent)
             return MonitorStep(signal=MonitorSignal.CONTINUE_MONITORING)
 
         # Heartbeat appears stale. Re-check file/session once.
@@ -714,14 +723,7 @@ class LifecycleMixin:
 
         if probe.state == AgentLivenessState.SESSION_BUSY:
             activity_session_id = session_id_override or agent.session_id
-            self._session_last_activity[activity_session_id] = datetime.now()
-            self.db.try_touch_agent_heartbeat(agent.agent_id)
-            self.db.log_event(
-                agent.issue_id,
-                agent.agent_id,
-                "heartbeat_refreshed",
-                {"session_status": BackendSessionStatusType.BUSY.value},
-            )
+            self._refresh_agent_heartbeat(activity_session_id, agent)
             return StalledSessionCheckResult.CONTINUE_MONITORING
 
         if probe.error:
