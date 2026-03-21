@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.4.8",
+  "checkpoint_id": "2e4064bb8224",
+  "strategy": "manual-commit",
+  "branch": "feat/tau-backend",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "src/hive/backends/__init__.py",
+    "src/hive/backends/backend_tau.py",
+    "tests/test_backend_tau.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/2e/4064bb8224/0/metadata.json",
+      "transcript": "/2e/4064bb8224/0/full.jsonl",
+      "context": "/2e/4064bb8224/0/context.md",
+      "content_hash": "/2e/4064bb8224/0/content_hash.txt",
+      "prompt": "/2e/4064bb8224/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
