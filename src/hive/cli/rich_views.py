@@ -226,8 +226,7 @@ def render_status(result: dict):
         blocker_lines = []
         for blocker in blockers:
             blocker_lines.append(blocker.get("message", blocker.get("type", "unknown blocker")))
-            for change in (blocker.get("changes") or [])[:5]:
-                blocker_lines.append(f"  {change}")
+            blocker_lines.extend(f"  {c}" for c in (blocker.get("changes") or [])[:5])
         renderables.append(Panel(Text("\n".join(blocker_lines)), title="Merge Blockers", border_style="red"))
 
     if result.get("total_issues", 0) == 0:

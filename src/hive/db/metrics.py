@@ -72,8 +72,7 @@ class MetricsMixin:
                 extra_where="e.issue_id IS NOT NULL",
                 group_by="e.issue_id",
             )
-            for row in rows:
-                issue_breakdown[row["issue_id"]] = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
+            issue_breakdown = {row["issue_id"]: {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]} for row in rows}
         elif issue_id:
             issue_breakdown[issue_id] = {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
 
@@ -88,8 +87,7 @@ class MetricsMixin:
                 extra_where="e.agent_id IS NOT NULL",
                 group_by="e.agent_id",
             )
-            for row in rows:
-                agent_breakdown[row["agent_id"]] = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
+            agent_breakdown = {row["agent_id"]: {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]} for row in rows}
         elif agent_id:
             agent_breakdown[agent_id] = {"input_tokens": total_input_tokens, "output_tokens": total_output_tokens}
 

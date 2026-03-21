@@ -71,15 +71,13 @@ def remove_worktree(worktree_path: str) -> bool:
         return False
     try:
         _run_git("worktree", "remove", "--force", str(abs_path), cwd=str(abs_path.parent))
-        return True
     except GitWorktreeError:
-        # Fallback: force remove if worktree is dirty
         try:
             shutil.rmtree(abs_path, ignore_errors=True)
             _run_git("worktree", "prune", cwd=str(abs_path.parent), check=False)
-            return True
         except Exception:
             return False
+    return True
 
 
 def delete_branch(project_path: str, branch_name: str, force: bool = False):

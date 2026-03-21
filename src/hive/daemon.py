@@ -126,6 +126,22 @@ class HiveDaemon:
                     pass
         return killed
 
+    def _terminate_pid(self, pid: int):
+        """Send SIGTERM, wait up to 3s, then SIGKILL if still running."""
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        for _ in range(30):
+            if not self._is_running(pid):
+                return
+            time.sleep(0.1)
+        try:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+        except OSError:
+            pass
+
     def start(self) -> bool:
         """Start the global daemon if not already running. Spawns a detached subprocess. Returns False if already running."""
         self.pid_dir.mkdir(parents=True, exist_ok=True)
@@ -195,25 +211,7 @@ class HiveDaemon:
         stopped_any = False
 
         if pid and self._is_running(pid):
-            # Send SIGTERM to the tracked PID
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-
-            # Wait for process to exit
-            for _ in range(30):  # Wait up to 3 seconds
-                if not self._is_running(pid):
-                    break
-                time.sleep(0.1)
-
-            # Force kill if still running
-            if self._is_running(pid):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    time.sleep(0.5)
-                except OSError:
-                    pass
+            self._terminate_pid(pid)
             stopped_any = True
 
         # Also kill any orphaned daemon processes not tracked by PID file

@@ -45,15 +45,9 @@ def _parse_event_detail(event: dict[str, Any]) -> dict[str, Any]:
 
 def _artifacts_from_list(artifacts_list: Any) -> dict[str, Any]:
     """Convert a result-file artifacts list into a simple dict."""
-    artifacts: dict[str, Any] = {}
-    if isinstance(artifacts_list, list):
-        for artifact in artifacts_list:
-            if isinstance(artifact, dict):
-                art_type = artifact.get("type")
-                art_value = artifact.get("value")
-                if art_type:
-                    artifacts[art_type] = art_value
-    return artifacts
+    if not isinstance(artifacts_list, list):
+        return {}
+    return {a["type"]: a.get("value") for a in artifacts_list if isinstance(a, dict) and a.get("type")}
 
 
 def _read_first_jsonl(path: Path) -> dict[str, Any] | None:

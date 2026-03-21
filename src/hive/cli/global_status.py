@@ -62,11 +62,8 @@ def get_global_status(db: Database) -> dict:
 
         projects.append(entry)
 
-        # Accumulate totals
-        totals["open"] += issue_counts.get("open", 0)
-        totals["in_progress"] += issue_counts.get("in_progress", 0)
-        totals["done"] += issue_counts.get("done", 0)
-        totals["escalated"] += issue_counts.get("escalated", 0)
+        for key in ("open", "in_progress", "done", "escalated"):
+            totals[key] += issue_counts.get(key, 0)
         totals["workers"] += len(active_agents)
 
     return {

@@ -11,27 +11,18 @@ if TYPE_CHECKING:
 
 
 def _enrich_agents_with_issues(db: Database, agents: list[dict]) -> list[dict]:
-    """Return a worker-summary list with current issue titles resolved.
-
-    For each agent dict, looks up the current_issue in the database and
-    extracts its title, returning a list of ``{"name", "issue_id", "issue_title"}``
-    dicts suitable for ``workers`` fields in status / global-status responses.
-    """
-    result = []
+    """Return a worker-summary list with current issue titles resolved."""
+    enriched = []
     for agent in agents:
-        issue_title = ""
-        if agent.get("current_issue"):
-            issue_row = db.get_issue(agent["current_issue"])
-            if issue_row:
-                issue_title = issue_row.get("title", "")
-        result.append(
+        issue_row = db.get_issue(agent["current_issue"]) if agent.get("current_issue") else None
+        enriched.append(
             {
                 "name": agent.get("name", "") or "",
                 "issue_id": agent.get("current_issue") or "",
-                "issue_title": issue_title,
+                "issue_title": issue_row.get("title", "") if issue_row else "",
             }
         )
-    return result
+    return enriched
 
 
 def _build_refinery_info(db: Database, project: str) -> dict:

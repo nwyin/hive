@@ -103,14 +103,8 @@ class AgentIdentity:
 
 
 def _normalize_project_name(name: str) -> str:
-    """Normalize a project name to the bare repo form (no slashes).
-
-    If *name* contains a slash (e.g. "org/repo"), the portion after the last
-    slash is returned.  Plain names (e.g. "repo") are returned unchanged.
-    """
-    if "/" in name:
-        return name.rsplit("/", 1)[-1]
-    return name
+    """Normalize a project name to the bare repo form (no slashes)."""
+    return name.rsplit("/", 1)[-1]
 
 
 def _git_remote_name(project_root: Path) -> str | None:
