@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -204,8 +203,10 @@ class OrchestratorCore:
         # Find agent for this session and touch heartbeat in DB.
         agent_id = self._session_to_agent.get(session_id)
         if agent_id and agent_id in self.active_agents:
-            with suppress(Exception):
+            try:
                 self.db.try_touch_agent_heartbeat(agent_id)
+            except Exception:
+                logger.debug("Failed to touch heartbeat for agent %s", agent_id, exc_info=True)
 
     async def _reconcile_fetch_live_sessions(self) -> Optional[Dict[str, HiveBackend]]:
         """Phase 0: fetch live session IDs from all backends. Returns {session_id: backend} or None if all backends are unreachable."""
@@ -287,8 +288,10 @@ class OrchestratorCore:
                 logger.info(f"Preserving worktree {worktree} for pending merge of {issue_id}")
                 return
 
-        with suppress(Exception):
+        try:
             await deps.remove_worktree_async(worktree)
+        except Exception:
+            logger.debug("Failed to remove worktree %s during reconciliation", worktree, exc_info=True)
 
     async def _reconcile_cleanup_orphans(self, live_sessions: Optional[Dict[str, HiveBackend]]) -> None:
         """Phase 2: cleanup orphan sessions alive on backend but not in DB."""
@@ -369,7 +372,7 @@ class OrchestratorCore:
         logger.info(f"Shutting down {len(self.active_agents)} active session(s)")
 
         for agent_id, agent in list(self.active_agents.items()):
-            with suppress(Exception):
+            try:
                 self.db.conn.execute(
                     """
                     UPDATE agents
@@ -386,9 +389,13 @@ class OrchestratorCore:
                     """,
                     (agent.issue_id,),
                 )
+            except Exception:
+                logger.debug("Failed to reset agent %s during shutdown", agent_id, exc_info=True)
 
-        with suppress(Exception):
+        try:
             self.db.conn.commit()
+        except Exception:
+            logger.debug("Failed to commit shutdown state", exc_info=True)
 
         self.active_agents.clear()
         self._session_to_agent.clear()
@@ -633,10 +640,12 @@ class OrchestratorCore:
 
         if cleanup_session and session_id:
             logger.info(f"Cleaning up session {session_id} (agent={agent_id}, worktree={worktree})")
-            with suppress(Exception):
+            try:
                 backend = self._backend_for_session(session_id)
                 await backend.cleanup_session(session_id, directory=worktree)
                 self.backend_pool.untrack_session(session_id)
+            except Exception:
+                logger.debug("Failed to cleanup session %s", session_id, exc_info=True)
 
         if unregister_agent and agent_id in self.active_agents:
             self._unregister_agent(agent_id)
@@ -647,8 +656,10 @@ class OrchestratorCore:
             self._mark_agent_failed(agent_id)
 
         if remove_worktree and worktree:
-            with suppress(Exception):
+            try:
                 await deps.remove_worktree_async(worktree)
+            except Exception:
+                logger.debug("Failed to remove worktree %s", worktree, exc_info=True)
 
         if delete_agent_row and agent_id:
             with self.db.transaction() as conn:

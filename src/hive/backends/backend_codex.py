@@ -30,7 +30,6 @@ Internal contract details this file relies on:
 """
 
 import asyncio
-from contextlib import suppress
 import json
 import logging
 import os
@@ -629,8 +628,10 @@ class CodexAppServerBackend(HiveBackend):
                 await asyncio.sleep(interval)
                 if not self.running or state.status != BackendSessionStatusType.BUSY:
                     break
-                with suppress(Exception):
+                try:
                     await self._emit(SESSION_STATUS_EVENT, session_status_payload(session_id, BackendSessionStatusType.BUSY))
+                except Exception:
+                    logger.debug("Heartbeat emit failed for %s", session_id, exc_info=True)
 
         state.heartbeat_task = asyncio.create_task(_beat())
 

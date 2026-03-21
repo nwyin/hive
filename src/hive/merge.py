@@ -90,17 +90,21 @@ class MergeProcessor:
         """Initialize the merge processor, including eager refinery session creation."""
         # Reset any merge entries stuck in 'running' from a previous crash.
         # Without this, a daemon crash mid-merge leaves the entry permanently stuck.
-        with suppress(Exception):
+        try:
             cursor = self.db.conn.execute("SELECT COUNT(*) FROM merge_queue WHERE status = 'running'")
             stuck_count = cursor.fetchone()[0]
             if stuck_count > 0:
                 with self.db.transaction() as conn:
                     conn.execute("UPDATE merge_queue SET status = 'queued' WHERE status = 'running'")
                     self.db.log_system_event("stuck_merges_reset", {"count": stuck_count}, commit=False)
+        except Exception:
+            logger.debug("Failed to reset stuck merges", exc_info=True)
 
-        with suppress(Exception):
+        try:
             # Pre-create refinery session so it's warm when first merge arrives
             await self._ensure_refinery_session()
+        except Exception:
+            logger.debug("Failed to pre-create refinery session", exc_info=True)
 
     async def health_check(self) -> bool:
         """Check if the refinery session is alive; recreate if needed. Returns False if recreation fails."""
@@ -310,7 +314,7 @@ class MergeProcessor:
 
         # Harvest notes from the worktree (refinery may have written .hive-notes.jsonl)
         try:
-            with suppress(Exception):
+            try:
                 notes_data = read_notes_file(worktree_path)
                 if notes_data:
                     for note in notes_data:
@@ -322,6 +326,8 @@ class MergeProcessor:
                             project=self.project_name,
                         )
                     self.db.log_event(issue_id, agent_id, "notes_harvested", {"count": len(notes_data), "source": "refinery"})
+            except Exception:
+                logger.debug("Failed to harvest notes for issue %s", issue_id, exc_info=True)
         finally:
             remove_notes_file(worktree_path)
 
@@ -489,8 +495,10 @@ class MergeProcessor:
             agent = self.db.get_agent(agent_id)
             session_id = agent.get("session_id") if agent else None
             if session_id:
-                with suppress(Exception):
+                try:
                     await self.backend.cleanup_session(session_id, directory=entry.get("worktree"))
+                except Exception:
+                    logger.debug("Failed to cleanup session %s during merge cleanup", session_id, exc_info=True)
 
         # Remove worktree (in executor to avoid blocking event loop)
         if entry.get("worktree"):
@@ -554,10 +562,12 @@ class MergeProcessor:
         """Ensure a refinery session exists, creating one if needed. Returns the session ID."""
         # Check if existing session is still alive
         if self.refinery_session_id:
-            with suppress(Exception):
+            try:
                 status = await self.backend.get_session_status(self.refinery_session_id, directory=self.project_path)
                 if status is not None:
                     return self.refinery_session_id
+            except Exception:
+                logger.debug("Refinery session %s health check failed", self.refinery_session_id, exc_info=True)
             self.refinery_session_id = None
 
         # Create new refinery session

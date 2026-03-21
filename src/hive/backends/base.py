@@ -9,12 +9,15 @@ Both the Claude and Codex backends combine these into a single class.
 
 import asyncio
 import inspect
+import logging
 import os
 import signal
 from contextlib import suppress
 from types import TracebackType
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Self
+
+logger = logging.getLogger(__name__)
 
 
 class HiveBackend(ABC):
@@ -59,11 +62,15 @@ class HiveBackend(ABC):
         """Delete a session. Returns True if successful."""
 
     async def cleanup_session(self, session_id: str, directory: str | None = None):
-        """Abort + delete a session. Best-effort, exceptions swallowed."""
-        with suppress(Exception):
+        """Abort + delete a session. Best-effort, exceptions logged."""
+        try:
             await self.abort_session(session_id, directory)
-        with suppress(Exception):
+        except Exception:
+            logger.debug("Failed to abort session %s", session_id, exc_info=True)
+        try:
             await self.delete_session(session_id, directory)
+        except Exception:
+            logger.debug("Failed to delete session %s", session_id, exc_info=True)
 
     @abstractmethod
     async def get_session_status(self, session_id: str, directory: str | None = None) -> dict[str, Any]:

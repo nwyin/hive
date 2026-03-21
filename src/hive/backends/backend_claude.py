@@ -22,7 +22,6 @@ Hive spawns `claude` CLI processes with
 """
 
 import asyncio
-from contextlib import suppress
 import json
 import logging
 import os
@@ -482,5 +481,7 @@ class ClaudeWSBackend(HiveBackend):
                 await _terminate_process_group(session.process, timeout=0)
         self.sessions.clear()
         if self._runner:
-            with suppress(Exception):
+            try:
                 await asyncio.wait_for(self._runner.cleanup(), timeout=3)
+            except Exception:
+                logger.debug("Runner cleanup failed", exc_info=True)
