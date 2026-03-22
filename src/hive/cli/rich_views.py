@@ -209,9 +209,13 @@ def render_status(result: dict):
 
     workers = result.get("workers", [])
     if workers:
-        workers_table = _simple_table(("Name", {}), ("Issue", {"style": "cyan"}), ("Title", {"overflow": "fold"}))
+        workers_table = _simple_table(
+            ("Name", {}), ("Issue", {"style": "cyan"}), ("Elapsed", {"style": "dim", "no_wrap": True}), ("Title", {"overflow": "fold"})
+        )
         for worker in workers:
-            workers_table.add_row(worker.get("name", ""), worker.get("issue_id", ""), (worker.get("issue_title") or "")[:40])
+            workers_table.add_row(
+                worker.get("name", ""), worker.get("issue_id", ""), worker.get("elapsed", ""), (worker.get("issue_title") or "")[:40]
+            )
         renderables.append(Panel(workers_table, title="Workers", border_style="green"))
 
     attention = result.get("attention_issues", [])
@@ -548,9 +552,10 @@ def render_global_status(result: dict):
         worker_table.add_column("Project", style="cyan", no_wrap=True)
         worker_table.add_column("Worker", no_wrap=True)
         worker_table.add_column("Issue", style="cyan", no_wrap=True)
+        worker_table.add_column("Elapsed", style="dim", no_wrap=True)
         worker_table.add_column("Title", overflow="fold")
         for proj_name, w in all_workers:
-            worker_table.add_row(proj_name, w.get("name", ""), w.get("issue_id", ""), (w.get("issue_title") or "")[:50])
+            worker_table.add_row(proj_name, w.get("name", ""), w.get("issue_id", ""), w.get("elapsed", ""), (w.get("issue_title") or "")[:50])
         renderables.append(worker_table)
 
     return Group(*renderables)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ..git import GitWorktreeError, get_worktree_dirty_status
@@ -10,16 +11,35 @@ if TYPE_CHECKING:
     from ..db import Database
 
 
+def _format_elapsed(seconds: float) -> str:
+    """Format seconds into a compact human-readable elapsed string."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    remaining = minutes % 60
+    return f"{hours}h{remaining:02d}m"
+
+
 def _enrich_agents_with_issues(db: Database, agents: list[dict]) -> list[dict]:
     """Return a worker-summary list with current issue titles resolved."""
+    now = datetime.now(timezone.utc)
     enriched = []
     for agent in agents:
         issue_row = db.get_issue(agent["current_issue"]) if agent.get("current_issue") else None
+        elapsed = ""
+        if agent.get("created_at"):
+            try:
+                started = datetime.fromisoformat(agent["created_at"]).replace(tzinfo=timezone.utc)
+                elapsed = _format_elapsed((now - started).total_seconds())
+            except (ValueError, TypeError):
+                pass
         enriched.append(
             {
                 "name": agent.get("name", "") or "",
                 "issue_id": agent.get("current_issue") or "",
                 "issue_title": issue_row.get("title", "") if issue_row else "",
+                "elapsed": elapsed,
             }
         )
     return enriched
