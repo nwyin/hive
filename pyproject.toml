@@ -43,7 +43,7 @@ unresolved-attribute = "ignore"
 [tool.ty.src]
 exclude = ["analysis-output"]
 
-[tool.mutmut]
+[tool.irradiate]
 paths_to_mutate = [
     "src/hive/status.py",
     "src/hive/config.py",
@@ -57,7 +57,6 @@ paths_to_mutate = [
 ]
 tests_dir = ["tests/"]
 pytest_add_cli_args = ["-x", "-n", "0", "--timeout=10", "-q", "-o", "addopts=", "--override-ini=pythonpath=src"]
-also_copy = ["src/"]
 
 [dependency-groups]
 dev = [
