@@ -39,3 +39,4 @@ env/
 analysis-output/
 .mutmut-cache/
 mutants/
+.irradiate/
