@@ -268,7 +268,7 @@ def run_daemon_foreground(db):
     """Run the orchestrator in the foreground (called by daemon child process)."""
     import asyncio
 
-    from .backends import BackendPool, ClaudeWSBackend, CodexAppServerBackend
+    from .backends import BackendPool, ClaudeWSBackend, CodexAppServerBackend, TauBackend
     from .orchestrator import Orchestrator
 
     async def main():
@@ -306,6 +306,8 @@ def run_daemon_foreground(db):
             )
         if "codex" in needed_backends:
             pool.register("codex", CodexAppServerBackend())
+        if "tau" in needed_backends:
+            pool.register("tau", TauBackend())
 
         async with pool:
             orchestrator = Orchestrator(

@@ -449,7 +449,9 @@ def stop(ctx: typer.Context) -> None:
 @app.command()
 def queen(
     ctx: typer.Context,
-    backend: Annotated[Literal["claude", "codex"] | None, typer.Option(help="Override backend (default: from config/HIVE_BACKEND)")] = None,
+    backend: Annotated[
+        Literal["claude", "codex", "tau"] | None, typer.Option(help="Override backend (default: from config/HIVE_BACKEND)")
+    ] = None,
     dangerously_skip_permissions: Annotated[
         bool, typer.Option(help="Pass --dangerously-skip-permissions to Claude CLI (queen and workers)")
     ] = False,

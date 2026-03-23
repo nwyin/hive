@@ -24,7 +24,9 @@ def do_setup(project_path: Path, project_name: str, *, json_mode: bool = False):
         else:
             print(f"{target} already exists.")
         return
-    target.write_text(f'[project]\nname = "{project_name}"\n\n[hive]\nbackend = "claude"\nmerge_queue_enabled = false\n')
+    target.write_text(
+        f'[project]\nname = "{project_name}"\n\n[hive]\nbackend = "claude"  # options: claude, codex, tau\nmerge_queue_enabled = false\n'
+    )
     if json_mode:
         print(json.dumps({"config_created": str(target)}))
     else:
