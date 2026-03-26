@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,14 +41,48 @@ def _auto_load_global_config():
     Config.load_global()
 
 
+@pytest.fixture(scope="session")
+def _db_template():
+    """Create one template database with schema for the entire test session.
+
+    Schema init (~7ms) happens once; each test copies via conn.backup() (~0.1ms).
+    """
+    db = Database(":memory:")
+    db.connect()
+    return db
+
+
 @pytest.fixture
-def temp_db():
-    """Provide a temporary test database."""
+def temp_db(_db_template):
+    """Provide a temporary test database via fast in-memory copy."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    _db_template.conn.backup(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+
+    db = Database(":memory:")
+    db.conn = conn
+
+    yield db
+
+    db.close()
+
+
+@pytest.fixture
+def temp_db_file(_db_template):
+    """Provide a file-backed test database (for tests that pass db_path to subprocesses/CLI)."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    _db_template.conn.backup(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+
     db = Database(db_path)
-    db.connect()
+    db.conn = conn
 
     yield db
 

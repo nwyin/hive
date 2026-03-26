@@ -248,20 +248,20 @@ def test_cli_status_json_includes_dirty_main_merge_blocker(temp_db, tmp_path, ca
     assert data["merge_blockers"][0]["type"] == "dirty_main_worktree"
 
 
-def test_cli_show_format_json(temp_db, tmp_path, capsys):
+def test_cli_show_format_json(temp_db_file, tmp_path, capsys):
     """--format json on show should produce same JSON output as json_mode=True."""
     from hive.cli import main
 
-    cli = HiveCLI(temp_db, str(tmp_path))
-    issue_id = temp_db.create_issue("Format test", "desc", priority=3, project=tmp_path.name)
+    cli = HiveCLI(temp_db_file, str(tmp_path))
+    issue_id = temp_db_file.create_issue("Format test", "desc", priority=3, project=tmp_path.name)
 
     # Call show with format=json via the method directly to verify the raw payload
     cli.show(issue_id, json_mode=True)
     captured_method = capsys.readouterr()
     expected = json.loads(captured_method.out)
 
-    # Verify the real CLI entrypoint accepts --format json
-    main(["--project", str(tmp_path), "--db", str(temp_db.db_path), "show", issue_id, "--format", "json"])
+    # Verify the real CLI entrypoint accepts --format json (needs file-backed DB)
+    main(["--project", str(tmp_path), "--db", str(temp_db_file.db_path), "show", issue_id, "--format", "json"])
     captured_main = capsys.readouterr()
     via_main = json.loads(captured_main.out)
     assert via_main == expected

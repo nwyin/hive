@@ -377,10 +377,10 @@ def test_try_transition_issue_status_clears_assignee_on_open(temp_db):
 
 
 def test_wal_mode_enabled(temp_db):
-    """Test that WAL mode is enabled."""
+    """Test that WAL mode is enabled (file-backed) or memory journal (in-memory)."""
     cursor = temp_db.conn.execute("PRAGMA journal_mode")
-    mode = cursor.fetchone()[0]
-    assert mode.lower() == "wal"
+    mode = cursor.fetchone()[0].lower()
+    assert mode in ("wal", "memory")  # :memory: DBs use 'memory' journal mode
 
 
 def test_foreign_keys_enabled(temp_db):
