@@ -42,51 +42,50 @@ def _auto_load_global_config():
 
 
 @pytest.fixture(scope="session")
-def _db_template_path(tmp_path_factory):
-    """Create one template database file with schema for the entire test session.
+def _db_template():
+    """Create one template database with schema for the entire test session.
 
-    Schema init happens once; each test restores from the file via conn.backup().
-    Stored as a file (not a live connection) so it survives os.fork() safely
-    (mutmut forks workers and inherited SQLite connections segfault).
+    Schema init (~7ms) happens once; each test copies via conn.backup() (~0.1ms).
     """
-    path = str(tmp_path_factory.mktemp("db") / "template.db")
-    db = Database(path)
+    db = Database(":memory:")
     db.connect()
-    db.close()
-    return path
-
-
-def _db_from_template(template_path: str, target_path: str = ":memory:") -> Database:
-    """Create a Database by copying the template via SQLite backup API."""
-    source = sqlite3.connect(template_path)
-    conn = sqlite3.connect(target_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    source.backup(conn)
-    source.close()
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-
-    db = Database(target_path)
-    db.conn = conn
     return db
 
 
 @pytest.fixture
-def temp_db(_db_template_path):
+def temp_db(_db_template):
     """Provide a temporary test database via fast in-memory copy."""
-    db = _db_from_template(_db_template_path)
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    _db_template.conn.backup(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+
+    db = Database(":memory:")
+    db.conn = conn
+
     yield db
+
     db.close()
 
 
 @pytest.fixture
-def temp_db_file(_db_template_path):
+def temp_db_file(_db_template):
     """Provide a file-backed test database (for tests that pass db_path to subprocesses/CLI)."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
-    db = _db_from_template(_db_template_path, db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    _db_template.conn.backup(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+
+    db = Database(db_path)
+    db.conn = conn
+
     yield db
+
     db.close()
     os.unlink(db_path)
 
