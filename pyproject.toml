@@ -49,6 +49,7 @@ paths_to_mutate = [
     "src/hive/config.py",
     "src/hive/utils.py",
     "src/hive/git.py",
+    "src/hive/cli/core.py",
     "src/hive/db/core.py",
     "src/hive/db/issues.py",
     "src/hive/db/metrics.py",
