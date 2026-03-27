@@ -1336,6 +1336,8 @@ def test_cli_command_decorator_does_not_print_json_in_human_mode(temp_db, tmp_pa
 def git_project(tmp_path):
     """Create a minimal git repo suitable for cleanup tests."""
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(tmp_path), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "commit", "--allow-empty", "-m", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     return tmp_path
 
