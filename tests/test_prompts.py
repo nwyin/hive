@@ -454,3 +454,22 @@ Address these specific failure reasons. Do not repeat the same mistakes."""
     retry_index = prompt.find("## Prior Attempts")
 
     assert context_index < retry_index < behavioral_index
+
+
+# ── Mode-specific prompt templates ───────────────────────────────────────
+
+
+def test_load_competitive_prompt():
+    """Competitive mode prompt template can be loaded."""
+    content = _load_template("queen_competitive")
+    assert "COMPETITIVE MODE" in content
+    assert "strategy" in content
+    assert "variant" in content.lower()
+
+
+def test_load_experiment_prompt():
+    """Experiment mode prompt template can be loaded."""
+    content = _load_template("queen_experiment")
+    assert "EXPERIMENT MODE" in content
+    assert "sweep" in content.lower()
+    assert "metrics" in content.lower()

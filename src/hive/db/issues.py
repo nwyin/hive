@@ -138,6 +138,12 @@ class IssuesMixin:
 
         return issue_id
 
+    def update_issue_metadata(self, issue_id: str, metadata: dict[str, Any]):
+        """Update the metadata JSON field for an issue."""
+        metadata_json = json.dumps(metadata)
+        self.conn.execute("UPDATE issues SET metadata = ?, updated_at = datetime('now') WHERE id = ?", (metadata_json, issue_id))
+        self.conn.commit()
+
     def get_ready_queue(self, project: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         """Return open, unassigned issues with all blocking deps resolved, ordered by priority then creation time."""
         deps_check = _DEPS_UNBLOCKED_SQL.format(issue_ref="i.id")

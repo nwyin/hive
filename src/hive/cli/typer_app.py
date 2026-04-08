@@ -114,12 +114,14 @@ def create(
     title: Annotated[str, typer.Argument(help="Issue title")],
     description: Annotated[str, typer.Argument(help="Issue description")] = "",
     priority: Annotated[int, typer.Option(help="Priority (0-4)")] = 2,
-    issue_type: Annotated[str, typer.Option("--type", help="Issue type (task, bug, feature)")] = "task",
+    issue_type: Annotated[str, typer.Option("--type", help="Issue type (task, bug, feature, epic)")] = "task",
     model: Annotated[str | None, typer.Option(help="Model to use for this issue (overrides global WORKER_MODEL)")] = None,
     depends_on: Annotated[
         list[str] | None, typer.Option("--depends-on", help="Issue ID this depends on; repeat the option to add more")
     ] = None,
     tags: Annotated[str | None, typer.Option(help="Comma-separated tags (e.g. refactor,python,small)")] = None,
+    parent: Annotated[str | None, typer.Option("--parent", help="Parent issue ID (for grouping variants/experiments under an epic)")] = None,
+    metadata: Annotated[str | None, typer.Option("--metadata", help="JSON metadata string")] = None,
 ) -> None:
     """Create a new issue."""
     _run(
@@ -132,6 +134,8 @@ def create(
         model=model,
         tags=tags,
         depends_on=depends_on,
+        parent_id=parent,
+        metadata=metadata,
     )
 
 
@@ -458,6 +462,7 @@ def queen(
     mcp_config: Annotated[list[str] | None, typer.Option(help="Claude MCP config(s); repeat the option for multiple configs")] = None,
     headless: Annotated[bool, typer.Option(help="Run non-interactively (requires --prompt)")] = False,
     prompt: Annotated[str | None, typer.Option("-p", "--prompt", help="Task prompt for headless mode")] = None,
+    mode: Annotated[str | None, typer.Option("-m", "--mode", help="Queen mode: competitive, experiment (default: standard)")] = None,
 ) -> None:
     """Launch Queen Bee TUI."""
     if headless and not prompt:
@@ -471,6 +476,7 @@ def queen(
                 mcp_configs=mcp_config,
                 headless=headless,
                 prompt=prompt,
+                mode=mode,
             )
     except Exception as exc:
         _fail(ctx.obj, exc)

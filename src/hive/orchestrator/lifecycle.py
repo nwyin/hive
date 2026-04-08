@@ -254,9 +254,27 @@ class LifecycleMixin:
             return None
 
     def _gather_notes_for_worker(self, issue_id: str, project: str) -> list[dict[str, Any]] | None:
-        """Gather project-wide notes for a worker prompt. Returns None if none found (so caller skips the section)."""
+        """Gather notes for a worker prompt.
+
+        For issues under a competitive/sweep epic, includes epic-scoped sibling
+        notes in addition to project-wide notes.
+        """
         seen_ids: set = set()
         notes: list[dict[str, Any]] = []
+
+        # Check for epic-scoped notes (competitive/sweep variants share discoveries)
+        issue = self.db.get_issue(issue_id)
+        if issue and issue.get("parent_id"):
+            parent = self.db.get_issue(issue["parent_id"])
+            if parent:
+                import json as _json
+
+                metadata = _json.loads(parent.get("metadata") or "{}")
+                if metadata.get("strategy") in ("competitive", "sweep"):
+                    for note in self.db.get_notes(parent_id=issue["parent_id"], limit=10):
+                        if note["id"] not in seen_ids:
+                            seen_ids.add(note["id"])
+                            notes.append(note)
 
         # Get recent project-wide notes
         for note in self.db.get_notes(project=project, limit=10):

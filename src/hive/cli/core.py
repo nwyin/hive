@@ -161,17 +161,22 @@ class HiveCLI(QueenMixin):
         model: str | None = None,
         tags: str | None = None,
         depends_on: list | None = None,
+        parent_id: str | None = None,
+        metadata: str | None = None,
     ):
         """Create a new issue."""
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
+        metadata_dict = json.loads(metadata) if metadata else None
         issue_id = self.db.create_issue(
             title=title,
             description=description,
             priority=priority,
             issue_type=issue_type,
             project=self.project_name,
+            parent_id=parent_id,
             model=model,
             tags=tag_list,
+            metadata=metadata_dict,
             depends_on=depends_on,
         )
 
@@ -183,6 +188,7 @@ class HiveCLI(QueenMixin):
             "status": IssueStatus.OPEN.value,
             "tags": tag_list or [],
             "depends_on": depends_on or [],
+            "parent_id": parent_id,
             "message": f"Created issue {issue_id}: {title}",
         }
 

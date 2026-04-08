@@ -217,6 +217,7 @@ Field details:
 - **test_command**: The exact command used to run tests, so the refinery can re-run it
 - **blockers**: Array of strings describing blockers (empty if none)
 - **artifacts**: Array of objects like `{"type": "git_commit", "value": "<sha>"}`
+- **metrics**: (optional) Object of measured values, e.g. `{"val_bpb": 0.997, "latency_ms": 42}`. Include this when your issue description requests specific measurements such as benchmark results, performance numbers, or experiment outcomes.
 
 Write this file using your file-writing tool. Do NOT forget this step — without
 it, the orchestrator cannot detect your completion.

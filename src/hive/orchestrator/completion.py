@@ -1,5 +1,6 @@
 """Completion handling mixin for the Hive orchestrator."""
 
+import json
 import logging
 import subprocess
 from dataclasses import dataclass
@@ -226,6 +227,21 @@ class CompletionMixin:
                 "model": model,
             },
         )
+
+        # Store result summary + metrics in issue metadata so the queen can read them via `hive show`
+        if file_result:
+            result_metadata: dict[str, Any] = {}
+            if file_result.get("summary"):
+                result_metadata["result_summary"] = file_result["summary"]
+            if file_result.get("metrics"):
+                result_metadata["metrics"] = file_result["metrics"]
+            if result_metadata:
+                existing = self.db.get_issue(agent.issue_id)
+                if existing:
+                    current_meta = json.loads(existing.get("metadata") or "{}")
+                    current_meta.update(result_metadata)
+                    self.db.update_issue_metadata(agent.issue_id, current_meta)
+
         return False
 
     async def handle_agent_complete(self, agent: AgentIdentity, file_result: dict[str, Any] | None = None):

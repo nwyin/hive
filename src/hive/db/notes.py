@@ -27,16 +27,29 @@ class NotesMixin:
         self.conn.commit()
         return cursor.lastrowid
 
-    def get_notes(self, issue_id: str | None = None, category: str | None = None, project: str | None = None, limit: int = 20) -> list[dict]:
-        """Retrieve notes newest-first. NULL-project notes match any project query (backward compat)."""
+    def get_notes(
+        self,
+        issue_id: str | None = None,
+        category: str | None = None,
+        project: str | None = None,
+        parent_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Retrieve notes newest-first. NULL-project notes match any project query (backward compat).
+
+        When *parent_id* is given, only notes from sibling issues (same parent epic) are returned.
+        """
         if not self.conn:
             raise RuntimeError("Database not connected")
 
         query = "SELECT * FROM notes WHERE 1=1"
-        params = []
+        params: list = []
         if issue_id is not None:
             query += " AND issue_id = ?"
             params.append(issue_id)
+        if parent_id is not None:
+            query += " AND issue_id IN (SELECT id FROM issues WHERE parent_id = ?)"
+            params.append(parent_id)
         if category is not None:
             query += " AND category = ?"
             params.append(category)

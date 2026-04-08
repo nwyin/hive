@@ -870,7 +870,35 @@ def test_queen_interactive_unchanged(temp_db, tmp_path):
     ):
         cli.queen(backend="claude")
 
-    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None)
+    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None, mode=None)
+
+
+def test_queen_mode_passed_to_claude(temp_db, tmp_path):
+    """Queen mode flag is forwarded to _queen_claude."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+
+    with (
+        unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
+        unittest.mock.patch.object(cli, "_queen_claude") as mock_claude,
+    ):
+        cli.queen(backend="claude", mode="competitive")
+
+    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None, mode="competitive")
+
+
+def test_create_with_parent_and_metadata(temp_db, tmp_path):
+    """Create issue with --parent and --metadata."""
+    cli = HiveCLI(temp_db, str(tmp_path))
+    epic = cli.create("Epic", issue_type="epic")
+    epic_id = epic["id"]
+
+    result = cli.create("Child", parent_id=epic_id, metadata='{"strategy":"competitive"}')
+    assert result["parent_id"] == epic_id
+
+    issue = temp_db.get_issue(result["id"])
+    assert issue["parent_id"] == epic_id
+    stored = json.loads(issue["metadata"])
+    assert stored["strategy"] == "competitive"
 
 
 def test_list_empty_suggests_create(temp_db, tmp_path, capsys):
