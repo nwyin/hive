@@ -120,10 +120,12 @@ class LifecycleMixin:
         issue_id = issue["id"]
         issue_project = issue["project"]
         agent_name = generate_id("worker")
-        model = issue.get("model") or deps.Config.WORKER_MODEL or deps.Config.DEFAULT_MODEL
 
         # Resolve project path from the DB — raises ValueError for unknown projects.
         project_path = self._resolve_project_path(issue_project)
+
+        cfg = deps.Config.get(issue_project, project_path)
+        model = issue.get("model") or cfg.WORKER_MODEL or cfg.DEFAULT_MODEL
 
         # Ensure the merge pool has a processor for this project (lazy registration).
         self.merge_pool.get(issue_project, str(project_path))

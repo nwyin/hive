@@ -369,7 +369,7 @@ class MergeProcessor:
         await self.backend.send_message_async(
             session_id,
             parts=[{"type": "text", "text": prompt}],
-            model=Config.REFINERY_MODEL,
+            model=Config.get(self.project_name, Path(self.project_path)).REFINERY_MODEL,
             system=self._refinery_system_prompt,
             directory=self.project_path,
         )
