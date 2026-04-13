@@ -187,7 +187,47 @@ def test_role_backend_from_toml(tmp_path):
 def test_role_backend_from_env(tmp_path, monkeypatch):
     """Role-specific backends can be set via environment variables."""
     monkeypatch.setenv("HIVE_WORKER_BACKEND", "tau")
+    monkeypatch.setenv("HIVE_WORKER_MODEL", "gpt-5.4")  # keep model compatible
 
     registry = ConfigRegistry()
     registry.load_global(project_root=tmp_path)
     assert registry.WORKER_BACKEND == "tau"
+
+
+# ── Backend/model compatibility validation ──────────────────────────────
+
+
+def test_codex_backend_with_claude_model_raises(tmp_path):
+    """Codex backend + claude model is rejected at load time."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".hive.toml").write_text('[hive]\nworker_backend = "codex"\nworker_model = "claude-sonnet-4-6"\n')
+
+    registry = ConfigRegistry()
+    with pytest.raises(ValueError, match="codex backend but claude model"):
+        registry.get("proj", project_root=proj)
+
+
+def test_claude_backend_with_openai_model_raises(tmp_path):
+    """Claude backend + OpenAI model is rejected at load time."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".hive.toml").write_text('[hive]\nqueen_backend = "claude"\ndefault_model = "gpt-5.4"\n')
+
+    registry = ConfigRegistry()
+    with pytest.raises(ValueError, match="claude backend but OpenAI model"):
+        registry.get("proj", project_root=proj)
+
+
+def test_compatible_backend_model_passes(tmp_path):
+    """Compatible backend+model combinations pass validation."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".hive.toml").write_text(
+        '[hive]\nqueen_backend = "claude"\ndefault_model = "claude-opus-4-6"\nworker_backend = "codex"\nworker_model = "gpt-5.4"\n'
+    )
+
+    registry = ConfigRegistry()
+    cfg = registry.get("proj", project_root=proj)
+    assert cfg.DEFAULT_MODEL == "claude-opus-4-6"
+    assert cfg.WORKER_MODEL == "gpt-5.4"

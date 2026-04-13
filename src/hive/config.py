@@ -1,10 +1,13 @@
 """Layered configuration for Hive orchestrator."""
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 HIVE_DIR = Path.home() / ".hive"
@@ -107,6 +110,34 @@ class _Config:
         if project_root:
             self._apply_toml(project_root / ".hive.toml")
         self._apply_env()
+        self._validate_backend_model_compat()
+
+    # Model prefixes that belong to each provider.
+    _CLAUDE_PREFIXES = ("claude-",)
+    _OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4")
+
+    def _validate_backend_model_compat(self):
+        """Warn on backend/model mismatches (e.g. claude model on codex backend)."""
+        checks = [
+            ("queen", self.QUEEN_BACKEND, self.DEFAULT_MODEL),
+            ("worker", self.WORKER_BACKEND, self.WORKER_MODEL),
+            ("refinery", self.REFINERY_BACKEND, self.REFINERY_MODEL),
+        ]
+        for role, backend, model in checks:
+            if not backend or not model:
+                continue
+            if backend == "codex" and model.startswith(self._CLAUDE_PREFIXES):
+                raise ValueError(
+                    f"Config error: {role} uses codex backend but claude model '{model}'. "
+                    f"Codex can only run OpenAI models (gpt-5.4, o3, etc). "
+                    f"Set HIVE_{role.upper()}_MODEL to an OpenAI model or change the backend."
+                )
+            if backend == "claude" and model.startswith(self._OPENAI_PREFIXES):
+                raise ValueError(
+                    f"Config error: {role} uses claude backend but OpenAI model '{model}'. "
+                    f"Claude backend can only run Claude models. "
+                    f"Set HIVE_{role.upper()}_MODEL to a Claude model or change the backend."
+                )
 
     def get_resolved_config(self, project_root: Path | None = None) -> list[dict]:
         """Return resolved config with per-field source attribution.
