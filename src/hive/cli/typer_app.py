@@ -102,6 +102,11 @@ def init(
     finally:
         db.close()
 
+    # Seed queen instruction/context files so the queen always has CLI conventions
+    from .runtime import do_seed_queen_files
+
+    do_seed_queen_files(project_path, json_mode=ctx.obj.json_mode)
+
     if analyze:
         from .runtime import do_analyze
 

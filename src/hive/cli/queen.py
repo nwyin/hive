@@ -83,39 +83,27 @@ class QueenMixin:
                 mode=mode,
             )
 
-    _HIVE_GITIGNORE = "# Ephemeral queen session files (regenerated each session)\nqueen-state.md\nqueen-instructions.md\n"
-
     def _queen_write_identity_files(self, mode: str | None = None) -> Path:
-        """Write queen identity files and return the instructions path."""
+        """Write queen identity files and return the instructions path.
+
+        The base queen-instructions.md is seeded by ``hive init`` and persists
+        between sessions.  This method overwrites it with mode-specific content
+        when a mode is active; cleanup restores the base version.
+        """
         from ..prompts import _load_template
 
-        queen_prompt = _load_template("queen")
+        from .runtime import do_seed_queen_files
+
+        # Ensure base files exist (idempotent — mirrors what ``hive init`` does)
+        do_seed_queen_files(self.project_path, json_mode=True)
+
+        instructions_path = self.project_path / ".hive" / "queen-instructions.md"
+
+        # Append mode addendum if active
         if mode:
+            queen_prompt = _load_template("queen")
             mode_addendum = _load_template(f"queen_{mode}")
-            queen_prompt += f"\n\n{mode_addendum}"
-
-        hive_dir = self.project_path / ".hive"
-        hive_dir.mkdir(exist_ok=True)
-        instructions_path = hive_dir / "queen-instructions.md"
-        instructions_path.write_text(queen_prompt)
-
-        # Seed persistent queen context if it doesn't exist yet
-        context_path = hive_dir / "queen-context.md"
-        if not context_path.exists():
-            context_path.write_text(
-                "# Queen Context\n\n"
-                "Persistent project knowledge accumulated across queen sessions.\n"
-                "Update this file with architectural decisions, gotchas, and patterns.\n"
-            )
-
-        # Ensure .hive/.gitignore covers ephemeral files
-        gitignore_path = hive_dir / ".gitignore"
-        if not gitignore_path.exists():
-            gitignore_path.write_text(self._HIVE_GITIGNORE)
-        else:
-            existing = gitignore_path.read_text()
-            if "queen-state.md" not in existing:
-                gitignore_path.write_text(existing.rstrip("\n") + "\n" + self._HIVE_GITIGNORE)
+            instructions_path.write_text(f"{queen_prompt}\n\n{mode_addendum}")
 
         # Clean up legacy sentinel block from CLAUDE.md if present
         claude_md = self.project_path / ".claude" / "CLAUDE.md"
@@ -144,8 +132,14 @@ class QueenMixin:
             claude_md.unlink()
 
     def _queen_cleanup_identity_files(self, instructions_path: Path):
-        """Remove ephemeral queen files written for the session."""
-        instructions_path.unlink(missing_ok=True)
+        """Clean up ephemeral session files; restore base queen instructions."""
+        from ..prompts import _load_template
+
+        # Restore base instructions (strip any mode addendum written for this session)
+        try:
+            instructions_path.write_text(_load_template("queen"))
+        except Exception:
+            pass
         state_file = self.project_path / ".hive" / "queen-state.md"
         state_file.unlink(missing_ok=True)
 

@@ -87,6 +87,48 @@ def initialize_cli(*, db_override: str | None, project: str | None) -> tuple[Dat
     return db, cli, project_path, project_name
 
 
+_HIVE_GITIGNORE = "# Ephemeral queen session files (regenerated each session)\nqueen-state.md\n"
+
+
+def do_seed_queen_files(project_path: Path, *, json_mode: bool = False):
+    """Write queen-instructions.md and queen-context.md into .hive/ if they don't exist."""
+    from ..prompts import _load_template
+
+    hive_dir = project_path / ".hive"
+    hive_dir.mkdir(exist_ok=True)
+
+    # Write base queen instructions (always overwrite — keeps in sync with package)
+    instructions_path = hive_dir / "queen-instructions.md"
+    instructions_path.write_text(_load_template("queen"))
+    if not json_mode:
+        print(f"Created {instructions_path}")
+
+    # Seed persistent queen context if it doesn't exist yet
+    context_path = hive_dir / "queen-context.md"
+    if not context_path.exists():
+        context_path.write_text(
+            "# Queen Context\n\n"
+            "Persistent project knowledge accumulated across queen sessions.\n"
+            "Update this file with architectural decisions, gotchas, and patterns.\n"
+        )
+        if not json_mode:
+            print(f"Created {context_path}")
+
+    # Ensure .hive/.gitignore covers ephemeral files
+    gitignore_path = hive_dir / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(_HIVE_GITIGNORE)
+    else:
+        existing = gitignore_path.read_text()
+        # Migrate: queen-instructions.md is no longer ephemeral
+        if "queen-instructions.md" in existing:
+            lines = [ln for ln in existing.splitlines() if ln.strip() != "queen-instructions.md"]
+            existing = "\n".join(lines) + "\n"
+            gitignore_path.write_text(existing)
+        if "queen-state.md" not in existing:
+            gitignore_path.write_text(existing.rstrip("\n") + "\n" + _HIVE_GITIGNORE)
+
+
 def do_analyze(project_path: Path, project_name: str, *, json_mode: bool = False):
     """Launch a Claude CLI session to analyze the project and generate .hive/project-context.md."""
     from ..prompts import _load_template
