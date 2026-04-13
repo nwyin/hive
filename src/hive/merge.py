@@ -30,6 +30,7 @@ from .prompts import (
     remove_notes_file,
     remove_result_file,
 )
+from .status import BackendSessionStatusType, parse_backend_session_status_type
 
 import logging
 
@@ -40,6 +41,23 @@ class RefinerySessionDied(Exception):
     """Raised when the refinery session is detected as dead (error/not_found) during polling."""
 
     pass
+
+
+def _session_status_type(status: dict[str, Any] | None) -> BackendSessionStatusType | None:
+    """Normalize a backend session-status payload into a typed enum."""
+    if not status:
+        return None
+    return parse_backend_session_status_type(status.get("type"))
+
+
+def _session_is_alive(status: dict[str, Any] | None) -> bool:
+    """Return True only for active refinery session states we can safely reuse."""
+    return _session_status_type(status) in (BackendSessionStatusType.IDLE, BackendSessionStatusType.BUSY)
+
+
+def _missing_session_error(exc: Exception) -> bool:
+    """Best-effort detection for backend send failures caused by a dead session."""
+    return isinstance(exc, ValueError) and " not found" in str(exc) and "Session " in str(exc)
 
 
 class MergeProcessor:
@@ -119,7 +137,7 @@ class MergeProcessor:
         try:
             # Check if existing session is still alive
             status = await self.backend.get_session_status(self.refinery_session_id, directory=self.project_path)
-            if status is not None:
+            if _session_is_alive(status):
                 return True  # Session is alive
 
             # Session is dead, recreate
@@ -247,13 +265,15 @@ class MergeProcessor:
                 }
             except Exception as e2:
                 self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
-                self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e2)})
+                self.db.try_transition_issue_status(issue_id, from_status="done", to_status="escalated")
+                self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e2), "issue_escalated": True})
                 await self._force_reset_refinery_session(f"Exception in retry: {e2}")
                 await self._cleanup_merge_resources(entry)
                 return
         except Exception as e:
             self.db.try_transition_merge_queue_status(queue_id, from_status="running", to_status="failed")
-            self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e)})
+            self.db.try_transition_issue_status(issue_id, from_status="done", to_status="escalated")
+            self.db.log_event(issue_id, agent_id, "refinery_error", {"error": str(e), "issue_escalated": True})
             await self._force_reset_refinery_session(f"Exception in _send_to_refinery: {e}")
             await self._cleanup_merge_resources(entry)
             return
@@ -367,19 +387,27 @@ class MergeProcessor:
 
         # Send to refinery (system prompt only takes effect on first message of a new session)
         cfg = Config.get(self.project_name, Path(self.project_path))
-        await self.backend.send_message_async(
-            session_id,
-            parts=[{"type": "text", "text": prompt}],
-            model=cfg.REFINERY_MODEL,
-            system=self._refinery_system_prompt,
-            directory=self.project_path,
-            reasoning_effort=getattr(cfg, "REFINERY_REASONING_EFFORT", None),
-        )
+        try:
+            await self.backend.send_message_async(
+                session_id,
+                parts=[{"type": "text", "text": prompt}],
+                model=cfg.REFINERY_MODEL,
+                system=self._refinery_system_prompt,
+                directory=self.project_path,
+                reasoning_effort=getattr(cfg, "REFINERY_REASONING_EFFORT", None),
+            )
+        except Exception as e:
+            if _missing_session_error(e):
+                raise RefinerySessionDied(str(e)) from e
+            raise
 
         # Brief delay to check if message was picked up
         await asyncio.sleep(0.5)
         status = await self.backend.get_session_status(session_id, directory=self.project_path)
-        if status and status.get("type") == "idle":
+        status_type = _session_status_type(status)
+        if status_type in (BackendSessionStatusType.ERROR, BackendSessionStatusType.NOT_FOUND):
+            raise RefinerySessionDied(f"Refinery session returned {status_type.value}")
+        if status_type == BackendSessionStatusType.IDLE:
             raise RuntimeError("Refinery session did not pick up the message")
 
         # Wait for refinery to finish (poll session status)
@@ -566,7 +594,7 @@ class MergeProcessor:
         if self.refinery_session_id:
             try:
                 status = await self.backend.get_session_status(self.refinery_session_id, directory=self.project_path)
-                if status is not None:
+                if _session_is_alive(status):
                     return self.refinery_session_id
             except Exception:
                 logger.debug("Refinery session %s health check failed", self.refinery_session_id, exc_info=True)

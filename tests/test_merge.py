@@ -663,6 +663,23 @@ async def test_health_check_recreates_dead_session(temp_db, mock_backend):
 
 
 @pytest.mark.asyncio
+async def test_health_check_recreates_not_found_session(temp_db, mock_backend):
+    """Test health_check recreates a session that the backend no longer knows about."""
+    mp = MergeProcessor(temp_db, mock_backend, "/tmp/project", "test")
+    mp.refinery_session_id = "missing-session"
+
+    mock_backend.get_session_status = AsyncMock(return_value={"type": "not_found"})
+    mock_backend.create_session = AsyncMock(return_value={"id": "new-session"})
+
+    healthy = await mp.health_check()
+
+    assert healthy is True
+    assert mp.refinery_session_id == "new-session"
+    mock_backend.get_session_status.assert_called_once_with("missing-session", directory=mp.project_path)
+    mock_backend.create_session.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_health_check_healthy_session(temp_db, mock_backend):
     """Test health_check returns True for healthy session."""
     mp = MergeProcessor(temp_db, mock_backend, "/tmp/project", "test")
@@ -1341,6 +1358,39 @@ async def test_send_to_refinery_retries_on_dead_session(tmp_path, temp_db, mock_
 
 
 @pytest.mark.asyncio
+async def test_send_to_refinery_inner_raises_on_missing_session_error(tmp_path, temp_db, mock_backend):
+    """A send-path session-not-found error should trigger the dead-session retry path."""
+    from hive.merge import RefinerySessionDied
+
+    worktree_path = str(tmp_path / "worktree")
+    Path(worktree_path).mkdir()
+
+    entry = {
+        "id": 1,
+        "issue_id": "w-test",
+        "branch_name": "agent/test",
+        "worktree": worktree_path,
+        "issue_title": "Test Issue",
+    }
+
+    mp = MergeProcessor(temp_db, mock_backend, "/tmp/project", "test")
+    mp.refinery_session_id = "stale-session"
+
+    mock_backend.get_session_status = AsyncMock(return_value={"type": "idle"})
+    mock_backend.send_message_async = AsyncMock(side_effect=ValueError("Session stale-session not found"))
+
+    with patch("hive.merge.Config") as mock_config:
+        mock_config.TEST_COMMAND = None
+        mock_config.get.return_value = type(
+            "Cfg",
+            (),
+            {"REFINERY_MODEL": "test-model", "REFINERY_REASONING_EFFORT": "high"},
+        )()
+        with pytest.raises(RefinerySessionDied, match="stale-session"):
+            await mp._send_to_refinery_inner(entry, worktree_path)
+
+
+@pytest.mark.asyncio
 async def test_send_to_refinery_gives_up_after_two_deaths(tmp_path, temp_db, mock_backend):
     """Test _send_to_refinery escalates to needs_human after two session deaths."""
     from hive.merge import RefinerySessionDied
@@ -1404,6 +1454,55 @@ async def test_send_to_refinery_gives_up_after_two_deaths(tmp_path, temp_db, moc
     cursor = temp_db.conn.execute("SELECT status FROM merge_queue WHERE id = ?", (queue_id,))
     row = cursor.fetchone()
     assert row["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_send_to_refinery_unexpected_exception_escalates_issue(tmp_path, temp_db, mock_backend):
+    """Unexpected refinery exceptions should not leave the issue stranded in done."""
+    worktree_path = str(tmp_path / "worktree")
+    Path(worktree_path).mkdir()
+
+    issue_id = temp_db.create_issue(title="Test Issue", project="test")
+    temp_db.try_transition_issue_status(issue_id, to_status="done")
+    agent_id = temp_db.create_agent(name="test-agent")
+    temp_db.conn.execute(
+        "INSERT INTO merge_queue (issue_id, agent_id, project, worktree, branch_name) VALUES (?, ?, ?, ?, ?)",
+        (issue_id, agent_id, "test", worktree_path, "test-branch"),
+    )
+    temp_db.conn.commit()
+    queue_id = temp_db.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    temp_db.conn.execute("UPDATE merge_queue SET status = 'running' WHERE id = ?", (queue_id,))
+    temp_db.conn.commit()
+
+    entry = {
+        "id": queue_id,
+        "issue_id": issue_id,
+        "agent_id": agent_id,
+        "branch_name": "test-branch",
+        "worktree": worktree_path,
+        "issue_title": "Test Issue",
+    }
+
+    mp = MergeProcessor(temp_db, mock_backend, "/tmp/project", "test")
+    mock_backend.cleanup_session = AsyncMock()
+
+    with patch.object(mp, "_send_to_refinery_inner", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        await mp._send_to_refinery(entry)
+
+    issue = temp_db.get_issue(issue_id)
+    assert issue["status"] == "escalated"
+
+    row = temp_db.conn.execute("SELECT status FROM merge_queue WHERE id = ?", (queue_id,)).fetchone()
+    assert row is not None
+    assert row["status"] == "failed"
+
+    events = temp_db.get_events(issue_id)
+    refinery_error = next(e for e in events if e["event_type"] == "refinery_error")
+
+    import json
+
+    detail = json.loads(refinery_error["detail"])
+    assert detail["issue_escalated"] is True
 
 
 # ---------------------------------------------------------------------------
