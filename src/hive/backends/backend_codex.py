@@ -213,7 +213,13 @@ class CodexAppServerBackend(HiveBackend):
         }
 
         # Codex ignores unknown keys; keep payload minimal.
-        res = await self._request("thread/start", params)
+        try:
+            res = await self._request("thread/start", params)
+        except (TimeoutError, asyncio.TimeoutError):
+            logger.warning("Codex thread/start timed out — restarting app-server")
+            await self._restart_process()
+            res = await self._request("thread/start", params)
+
         thread = res.get("thread", {})
         thread_id = thread.get("id")
         if not thread_id:
@@ -414,6 +420,21 @@ class CodexAppServerBackend(HiveBackend):
                 + "If you installed Codex via npm (wrapper script), ensure `node` is on PATH for the Hive daemon.\n"
                 "You can also set CODEX_CMD to the absolute path of the native Codex binary."
             ) from e
+
+    async def _restart_process(self):
+        """Kill the current app-server and start a fresh one.
+
+        Called when the app-server becomes unresponsive (e.g. thread/start
+        timeouts due to accumulated state). Active sessions are lost — the
+        orchestrator will reconcile and re-spawn affected workers.
+        """
+        active_count = len(self.sessions)
+        logger.warning(f"Restarting codex app-server (dropping {active_count} tracked sessions)")
+        self.server_ready.clear()
+        await self._stop_process()
+        await self._start_process()
+        self.server_ready.set()
+        logger.info("Codex app-server restarted successfully")
 
     async def _stop_process(self):
         for sid, state in list(self.sessions.items()):
