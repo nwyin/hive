@@ -54,16 +54,17 @@ def _write_hive_toml(path, **fields):
 # ── INV-1: no role-specific backend → same as for_project ──────────────
 
 
-def test_for_role_falls_back_to_project_backend(two_backend_pool, tmp_path):
-    """When no role-specific backend is set, for_role returns the project backend."""
+def test_for_role_uses_default_backend_config(two_backend_pool, tmp_path):
+    """Role-specific backends use their compiled-in defaults (queen=claude, worker=codex)."""
     proj = tmp_path / "proj"
     proj.mkdir()
     _write_hive_toml(proj, backend="claude")
 
-    # refinery_backend defaults to None, so it should fall back to project backend
-    result = two_backend_pool.for_role("refinery", "proj", proj)
-    expected = two_backend_pool.for_project("proj", proj)
-    assert result is expected
+    queen = two_backend_pool.for_role("queen", "proj", proj)
+    worker = two_backend_pool.for_role("worker", "proj", proj)
+
+    assert queen.name == "claude"
+    assert worker.name == "codex"
 
 
 # ── INV-2: role-specific backend is used ────────────────────────────────

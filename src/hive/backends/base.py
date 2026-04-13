@@ -50,6 +50,7 @@ class HiveBackend(ABC):
         model: str | None = None,
         system: str | None = None,
         directory: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         """Send a message to a session (fire-and-forget)."""
 

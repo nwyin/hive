@@ -54,6 +54,7 @@ class FakeBackend(HiveBackend):
         model: Optional[str] = None,
         system: Optional[str] = None,
         directory: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         if session_id not in self.sessions:
             raise ValueError(f"Session {session_id} not found")

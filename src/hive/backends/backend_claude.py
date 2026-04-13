@@ -183,6 +183,7 @@ class ClaudeWSBackend(HiveBackend):
         model: str | None = None,
         system: str | None = None,
         directory: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         """Send a user message on the WebSocket. Fire-and-forget."""
         session = self.sessions.get(session_id)

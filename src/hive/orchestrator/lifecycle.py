@@ -80,6 +80,7 @@ class SpawnContext:
     agent_name: str
     model: str
     project_path: Path
+    reasoning_effort: str | None = None
 
 
 @dataclass
@@ -126,6 +127,7 @@ class LifecycleMixin:
 
         cfg = deps.Config.get(issue_project, project_path)
         model = issue.get("model") or cfg.WORKER_MODEL or cfg.DEFAULT_MODEL
+        reasoning_effort = getattr(cfg, "CODEX_REASONING_EFFORT", None)
 
         # Ensure the merge pool has a processor for this project (lazy registration).
         self.merge_pool.get(issue_project, str(project_path))
@@ -137,6 +139,7 @@ class LifecycleMixin:
             agent_name=agent_name,
             model=model,
             project_path=project_path,
+            reasoning_effort=reasoning_effort,
         )
 
     async def _create_spawn_resources(self, ctx: SpawnContext) -> SpawnResources | None:
@@ -218,6 +221,7 @@ class LifecycleMixin:
                 agent=agent,
                 issue=ctx.issue,
                 model=ctx.model,
+                reasoning_effort=ctx.reasoning_effort,
                 started_event_type="worker_started",
                 started_event_detail={
                     "session_id": resources.session_id,
@@ -303,6 +307,7 @@ class LifecycleMixin:
         model: str,
         started_event_type: str,
         started_event_detail: dict[str, Any],
+        reasoning_effort: str | None = None,
     ):
         """Shared prompt + dispatch flow for worker spawning."""
         issue_id = issue["id"]
@@ -352,6 +357,7 @@ class LifecycleMixin:
             model=model,
             system=system_prompt,
             directory=agent.worktree,
+            reasoning_effort=reasoning_effort,
         )
         logger.info(f"Dispatched worker prompt for session {agent.session_id} (agent={agent.agent_id}, issue={issue_id}, model={model})")
 

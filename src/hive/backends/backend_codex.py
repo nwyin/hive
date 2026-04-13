@@ -238,6 +238,7 @@ class CodexAppServerBackend(HiveBackend):
         model: str | None = None,
         system: str | None = None,
         directory: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         await self.server_ready.wait()
 
@@ -282,7 +283,7 @@ class CodexAppServerBackend(HiveBackend):
                 "settings": {
                     "model": model_id,
                     "developer_instructions": system,
-                    "reasoning_effort": getattr(Config, "CODEX_REASONING_EFFORT", "medium"),
+                    "reasoning_effort": reasoning_effort or getattr(Config, "CODEX_REASONING_EFFORT", "medium"),
                 },
             }
             state.developer_instructions_set = True

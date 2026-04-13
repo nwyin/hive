@@ -168,7 +168,7 @@ def test_role_backend_defaults():
     registry.load_global()
     assert registry.QUEEN_BACKEND == "claude"
     assert registry.WORKER_BACKEND == "codex"
-    assert registry.REFINERY_BACKEND is None
+    assert registry.REFINERY_BACKEND == "codex"
 
 
 def test_role_backend_from_toml(tmp_path):
@@ -181,7 +181,7 @@ def test_role_backend_from_toml(tmp_path):
     cfg = registry.get("proj", project_root=proj)
     assert cfg.WORKER_BACKEND == "codex"
     assert cfg.QUEEN_BACKEND == "claude"  # default
-    assert cfg.REFINERY_BACKEND is None
+    assert cfg.REFINERY_BACKEND == "codex"  # default
 
 
 def test_role_backend_from_env(tmp_path, monkeypatch):

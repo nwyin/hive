@@ -114,6 +114,7 @@ class TauBackend(HiveBackend):
         model: str | None = None,
         system: str | None = None,
         directory: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         state = self.sessions.get(session_id)
         if not state:

@@ -366,12 +366,14 @@ class MergeProcessor:
         )
 
         # Send to refinery (system prompt only takes effect on first message of a new session)
+        cfg = Config.get(self.project_name, Path(self.project_path))
         await self.backend.send_message_async(
             session_id,
             parts=[{"type": "text", "text": prompt}],
-            model=Config.get(self.project_name, Path(self.project_path)).REFINERY_MODEL,
+            model=cfg.REFINERY_MODEL,
             system=self._refinery_system_prompt,
             directory=self.project_path,
+            reasoning_effort=getattr(cfg, "REFINERY_REASONING_EFFORT", None),
         )
 
         # Brief delay to check if message was picked up

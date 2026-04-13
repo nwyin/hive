@@ -39,7 +39,8 @@ _FIELDS: dict[str, FieldSpec] = {
     "merge_queue_enabled": FieldSpec("HIVE_MERGE_QUEUE_ENABLED", bool, True),
     "default_model": FieldSpec("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
     "worker_model": FieldSpec("HIVE_WORKER_MODEL", str, "claude-sonnet-4-6"),
-    "refinery_model": FieldSpec("HIVE_REFINERY_MODEL", str, "claude-opus-4-6"),
+    "refinery_model": FieldSpec("HIVE_REFINERY_MODEL", str, "o3"),
+    "refinery_reasoning_effort": FieldSpec("HIVE_REFINERY_REASONING_EFFORT", str, "high"),
     # Cost guardrails
     "max_tokens_per_issue": FieldSpec("HIVE_MAX_TOKENS_PER_ISSUE", int, 200_000),
     "anomaly_window_minutes": FieldSpec("HIVE_ANOMALY_WINDOW_MINUTES", int, 10),
@@ -48,7 +49,7 @@ _FIELDS: dict[str, FieldSpec] = {
     "backend": FieldSpec("HIVE_BACKEND", str, "claude"),  # "claude" | "codex"
     "queen_backend": FieldSpec("HIVE_QUEEN_BACKEND", str, "claude"),
     "worker_backend": FieldSpec("HIVE_WORKER_BACKEND", str, "codex"),
-    "refinery_backend": FieldSpec("HIVE_REFINERY_BACKEND", str, None),
+    "refinery_backend": FieldSpec("HIVE_REFINERY_BACKEND", str, "codex"),
     # Claude WS backend settings
     "claude_ws_host": FieldSpec("HIVE_CLAUDE_WS_HOST", str, "127.0.0.1"),
     "claude_ws_port": FieldSpec("HIVE_CLAUDE_WS_PORT", int, 8765),
