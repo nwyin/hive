@@ -282,7 +282,7 @@ class CodexAppServerBackend(HiveBackend):
                 "settings": {
                     "model": model_id,
                     "developer_instructions": system,
-                    "reasoning_effort": None,
+                    "reasoning_effort": getattr(Config, "CODEX_REASONING_EFFORT", "medium"),
                 },
             }
             state.developer_instructions_set = True

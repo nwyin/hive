@@ -60,7 +60,8 @@ def test_for_role_falls_back_to_project_backend(two_backend_pool, tmp_path):
     proj.mkdir()
     _write_hive_toml(proj, backend="claude")
 
-    result = two_backend_pool.for_role("worker", "proj", proj)
+    # refinery_backend defaults to None, so it should fall back to project backend
+    result = two_backend_pool.for_role("refinery", "proj", proj)
     expected = two_backend_pool.for_project("proj", proj)
     assert result is expected
 

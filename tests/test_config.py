@@ -162,12 +162,13 @@ class TestCoerce:
 # ── Per-role backend config fields ──────────────────────────────────────
 
 
-def test_role_backend_defaults_to_none():
-    """Role-specific backend fields default to None (fall back to 'backend')."""
+def test_role_backend_defaults():
+    """Role-specific backend fields have correct defaults."""
     registry = ConfigRegistry()
     registry.load_global()
-    for attr in ("QUEEN_BACKEND", "WORKER_BACKEND", "REFINERY_BACKEND"):
-        assert getattr(registry, attr) is None
+    assert registry.QUEEN_BACKEND == "claude"
+    assert registry.WORKER_BACKEND == "codex"
+    assert registry.REFINERY_BACKEND is None
 
 
 def test_role_backend_from_toml(tmp_path):
@@ -179,7 +180,7 @@ def test_role_backend_from_toml(tmp_path):
     registry = ConfigRegistry()
     cfg = registry.get("proj", project_root=proj)
     assert cfg.WORKER_BACKEND == "codex"
-    assert cfg.QUEEN_BACKEND is None
+    assert cfg.QUEEN_BACKEND == "claude"  # default
     assert cfg.REFINERY_BACKEND is None
 
 

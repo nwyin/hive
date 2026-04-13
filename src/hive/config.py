@@ -46,8 +46,8 @@ _FIELDS: dict[str, FieldSpec] = {
     "anomaly_failure_threshold": FieldSpec("HIVE_ANOMALY_FAILURE_THRESHOLD", int, 3),
     # Backend selection
     "backend": FieldSpec("HIVE_BACKEND", str, "claude"),  # "claude" | "codex"
-    "queen_backend": FieldSpec("HIVE_QUEEN_BACKEND", str, None),
-    "worker_backend": FieldSpec("HIVE_WORKER_BACKEND", str, None),
+    "queen_backend": FieldSpec("HIVE_QUEEN_BACKEND", str, "claude"),
+    "worker_backend": FieldSpec("HIVE_WORKER_BACKEND", str, "codex"),
     "refinery_backend": FieldSpec("HIVE_REFINERY_BACKEND", str, None),
     # Claude WS backend settings
     "claude_ws_host": FieldSpec("HIVE_CLAUDE_WS_HOST", str, "127.0.0.1"),
@@ -59,6 +59,7 @@ _FIELDS: dict[str, FieldSpec] = {
     "codex_sandbox": FieldSpec("HIVE_CODEX_SANDBOX", str, "workspace-write"),
     "codex_personality": FieldSpec("HIVE_CODEX_PERSONALITY", str, "pragmatic"),
     "codex_heartbeat_interval": FieldSpec("HIVE_CODEX_HEARTBEAT_INTERVAL", int, 60),
+    "codex_reasoning_effort": FieldSpec("HIVE_CODEX_REASONING_EFFORT", str, "medium"),
 }
 _FIELD_ATTRS = {_attr_name(key) for key in _FIELDS}
 

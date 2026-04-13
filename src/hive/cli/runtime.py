@@ -26,9 +26,10 @@ def do_setup(project_path: Path, project_name: str, *, json_mode: bool = False):
         return
     target.write_text(
         f'[project]\nname = "{project_name}"\n\n[hive]\nbackend = "claude"  # options: claude, codex, tau\n'
-        f'# queen_backend = "claude"    # override backend for queen\n'
-        f'# worker_backend = "codex"    # override backend for workers\n'
+        f'queen_backend = "claude"      # opus 4.6 queen\n'
+        f'worker_backend = "codex"      # codex 5.4 workers\n'
         f'# refinery_backend = "claude" # override backend for refinery\n'
+        f'codex_reasoning_effort = "medium"\n'
         f"merge_queue_enabled = false\n"
     )
     if json_mode:
