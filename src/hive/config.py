@@ -38,8 +38,8 @@ _FIELDS: dict[str, FieldSpec] = {
     "test_command": FieldSpec("HIVE_TEST_COMMAND", str, None),
     "merge_queue_enabled": FieldSpec("HIVE_MERGE_QUEUE_ENABLED", bool, True),
     "default_model": FieldSpec("HIVE_DEFAULT_MODEL", str, "claude-opus-4-6"),
-    "worker_model": FieldSpec("HIVE_WORKER_MODEL", str, "claude-sonnet-4-6"),
-    "refinery_model": FieldSpec("HIVE_REFINERY_MODEL", str, "o3"),
+    "worker_model": FieldSpec("HIVE_WORKER_MODEL", str, "gpt-5.4"),
+    "refinery_model": FieldSpec("HIVE_REFINERY_MODEL", str, "gpt-5.4"),
     "refinery_reasoning_effort": FieldSpec("HIVE_REFINERY_REASONING_EFFORT", str, "high"),
     # Cost guardrails
     "max_tokens_per_issue": FieldSpec("HIVE_MAX_TOKENS_PER_ISSUE", int, 200_000),
