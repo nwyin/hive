@@ -6,19 +6,28 @@ to read. The grammar we emit is a small, well-defined subset:
 
 * scalars            ``key: value``                  (None -> empty, bools -> true/false)
 * nested objects     ``key:`` then 2-space-indented child lines
-* uniform object     ``key[N]{f1,f2,f3}:`` then one indented comma-joined row per item
-  arrays             (only when every item shares the same scalar-valued key set)
+* object arrays      ``key[N]{f1,f2,f3}:`` then one indented comma-joined row per item
+                     (every item must share the same key set; a non-scalar cell is
+                     flattened into the cell — scalar lists join with ``|``, anything
+                     else becomes compact JSON)
 * scalar arrays      ``key[N]: a,b,c``  (inline) or one value per indented line (block)
-* other arrays       ``key[N]:`` then ``- ``-prefixed item blocks (non-uniform / nested)
 * empty arrays       ``key[0]:``                       (the explicit empty-state signal)
 
+There is intentionally no nested-array ("expanded list") form: hive's command
+results never contain dicts-inside-arrays, so the encoder keeps object arrays flat
+and tabular. An array shape it can't render flatly (e.g. rows with differing keys)
+raises rather than silently degrading — that fails loud if a future command emits an
+unsupported shape.
+
 ``decode`` is the inverse, used by tests to assert on structure; encode/decode
-round-trip for the shapes hive actually emits.
+round-trip for the shapes hive actually emits (a flattened non-scalar cell decodes
+back to its string form, not the original container).
 
 This module is intentionally dependency-free and hand-rolled — the surface is small
 and we avoid pinning an immature third-party TOON package.
 """
 
+import json
 import re
 
 __all__ = ["encode", "encode_help", "decode", "toon_error", "COMMAND_HINTS"]
@@ -76,8 +85,9 @@ def _is_scalar(value) -> bool:
 
 
 def _uniform_keys(arr: list) -> list | None:
-    """If ``arr`` is a non-empty list of dicts sharing one scalar-valued key set,
-    return the key order from the first item; otherwise None."""
+    """If ``arr`` is a non-empty list of dicts sharing one key set, return the key
+    order from the first item; otherwise None. Cell values need not be scalar —
+    non-scalar cells are flattened by ``_cell``."""
     if not arr or not all(isinstance(x, dict) for x in arr):
         return None
     keys = list(arr[0].keys())
@@ -85,9 +95,23 @@ def _uniform_keys(arr: list) -> list | None:
     for item in arr:
         if set(item.keys()) != keyset:
             return None
-        if any(not _is_scalar(v) for v in item.values()):
-            return None
     return keys
+
+
+def _cell(value):
+    """Flatten a cell value to a scalar for tabular rendering.
+
+    Scalars pass through; a list of scalars joins with ``|``; anything else
+    (dict, nested list) becomes compact JSON. The result is then quoted as needed
+    by ``_fmt_scalar``.
+    """
+    if _is_scalar(value):
+        return value
+    if not value:  # empty list/dict -> blank cell
+        return None
+    if isinstance(value, list) and all(_is_scalar(x) for x in value):
+        return "|".join("" if x is None else str(x) for x in value)
+    return json.dumps(value, separators=(",", ":"), default=str)
 
 
 # ── encoding ────────────────────────────────────────────────────────────────────
@@ -140,37 +164,19 @@ def _encode_array(key: str, arr: list, indent: int, lines: list[str]) -> None:
                 lines.append(f"{child}{f}")
         return
 
-    # Uniform object array -> tabular.
+    # Object array -> tabular (uniform keys required; non-scalar cells flattened).
     keys = _uniform_keys(arr)
     if keys is not None:
         header = ",".join(keys)
         lines.append(f"{pad}{key}[{n}]{{{header}}}:")
         for item in arr:
-            row = ",".join(_fmt_scalar(item[k], in_row=True) for k in keys)
+            row = ",".join(_fmt_scalar(_cell(item[k]), in_row=True) for k in keys)
             lines.append(f"{child}{row}")
         return
 
-    # Non-uniform / nested -> expanded list with "- " item markers.
-    lines.append(f"{pad}{key}[{n}]:")
-    for item in arr:
-        _encode_list_item(item, indent + 1, lines)
-
-
-def _encode_list_item(item, indent: int, lines: list[str]) -> None:
-    pad = _INDENT * indent
-    if isinstance(item, dict) and item:
-        sub: list[str] = []
-        _encode_dict(item, indent, sub)
-        # Prefix the first child line with "- ", then push the rest right by 2 so
-        # the whole item aligns under the dash.
-        sub[0] = f"{pad}- {sub[0][len(pad) :]}"
-        for i in range(1, len(sub)):
-            sub[i] = _INDENT + sub[i]
-        lines.extend(sub)
-    elif isinstance(item, list):
-        lines.append(f"{pad}- [{len(item)}]")  # nested list-in-list: rare, summarise
-    else:
-        lines.append(f"{pad}- {_fmt_scalar(item)}".rstrip())
+    # Anything else (rows with differing keys, mixed scalars/dicts) is a shape hive
+    # is not expected to emit. Fail loud rather than silently degrade.
+    raise ValueError(f"TOON encode: unsupported array shape for key {key!r} — expected scalars or uniform-key dicts")
 
 
 def encode_help(hints: list[str]) -> str:
@@ -219,8 +225,6 @@ def _parse_block(lines, pos, indent):
                 result[key] = _split_row(rest)
             elif n == 0:
                 result[key] = []
-            elif pos[0] < len(lines) and lines[pos[0]][0] > indent and lines[pos[0]][1].startswith("- "):
-                result[key] = _read_items(lines, pos, n, indent + 1)
             else:  # block scalar array
                 vals = []
                 for _ in range(n):
@@ -246,22 +250,6 @@ def _read_rows(lines, pos, n, keys, indent):
         pos[0] += 1
         rows.append(dict(zip(keys, vals)))
     return rows
-
-
-def _read_items(lines, pos, n, indent):
-    """Parse ``- ``-prefixed dict items (best-effort; flat keys + one nesting level)."""
-    items = []
-    for _ in range(n):
-        if pos[0] >= len(lines) or not lines[pos[0]][1].startswith("- "):
-            break
-        # Re-base this item's lines to indent 0 and parse as a sub-block.
-        sublines = [(0, lines[pos[0]][1][2:])]
-        pos[0] += 1
-        while pos[0] < len(lines) and lines[pos[0]][0] > indent and not lines[pos[0]][1].startswith("- "):
-            sublines.append((lines[pos[0]][0] - indent - 1, lines[pos[0]][1]))
-            pos[0] += 1
-        items.append(_parse_block(sublines, [0], 0))
-    return items
 
 
 def _split_row(s: str) -> list:

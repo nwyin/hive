@@ -41,6 +41,30 @@ def test_encode_empty_array_is_explicit():
     assert "issues[0]:" in out
 
 
+def test_encode_object_array_flattens_nonscalar_cells():
+    # Object arrays stay tabular even when a cell is a list/dict: scalar lists join
+    # with `|`, empty containers become a blank cell, dicts become compact JSON.
+    data = {
+        "issues": [
+            {"id": "a", "tags": ["bug", "p1"], "meta": {"k": 1}},
+            {"id": "b", "tags": [], "meta": None},
+        ]
+    }
+    out = toon.encode(data)
+    assert "issues[2]{id,tags,meta}:" in out  # stays tabular, no expanded "- " form
+    assert "- " not in out
+
+    rows = toon.decode(out)["issues"]
+    assert rows[0]["tags"] == "bug|p1"  # scalar list joined with |
+    assert rows[0]["meta"] == '{"k":1}'  # dict flattened to compact JSON string
+    assert rows[1]["tags"] is None and rows[1]["meta"] is None  # empty list + None -> blank
+
+
+def test_encode_nonuniform_array_raises():
+    with pytest.raises(ValueError):
+        toon.encode({"rows": [{"a": 1}, {"a": 1, "b": 2}]})
+
+
 def test_encode_quotes_commas_and_newlines():
     out = toon.encode({"rows": [{"t": "a, b"}, {"t": "line1\nline2"}]})
     assert '"a, b"' in out
