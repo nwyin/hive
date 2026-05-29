@@ -258,6 +258,40 @@ class IssuesMixin:
         cursor = self.conn.execute(query, params)
         return self._all(cursor)
 
+    def count_issues(
+        self,
+        project: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        issue_type: str | None = None,
+        exclude_statuses: tuple[str, ...] | None = None,
+    ) -> int:
+        """Count issues matching the same filters as ``list_issues`` (ignoring limit/sort).
+
+        Used to report ``count: N of M total`` so an agent knows when a result was
+        truncated by the limit.
+        """
+        query = "SELECT COUNT(*) AS n FROM issues WHERE project = ?"
+        params: list[Any] = [project]
+
+        if exclude_statuses:
+            placeholders = ",".join("?" for _ in exclude_statuses)
+            query += f" AND status NOT IN ({placeholders})"
+            params.extend(exclude_statuses)
+        elif status:
+            query += " AND status = ?"
+            params.append(status)
+        if assignee:
+            query += " AND assignee = ?"
+            params.append(assignee)
+        if issue_type:
+            query += " AND type = ?"
+            params.append(issue_type)
+
+        cursor = self.conn.execute(query, params)
+        row = self._one(cursor)
+        return row["n"] if row else 0
+
     def get_review_queue(self, project: str, issue_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         """Return issues with their latest merge queue entry for review.
 

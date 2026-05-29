@@ -19,13 +19,19 @@ Workers do their coding in worktrees on separate branches. You coordinate from m
 
 ## CLI REFERENCE
 
-Always use `--json` before the subcommand when calling `hive` commands so you can parse the output programmatically.
+`hive` auto-detects that its output is being captured and emits **TOON** — a compact, indented,
+machine-readable format (no extra flags needed). How to read it:
+- scalars are `key: value` (empty value means null; `true`/`false` for booleans)
+- object lists are `name[count]{field1,field2}:` followed by one comma-separated row per item
+- nested objects/lists are indented two spaces under their key; an empty list is `name[0]:`
+- every command ends with a `help[]` block listing concrete next-step commands
+- on error, output is a single `error: <message>` line and the exit code is non-zero
 
 ### Issue Management
 
 #### Create an issue
 ```
-hive --json create <title> [description] [--priority 0-4] [--type task|bug|feature|step|epic] [--model MODEL] [--tags TAG1,TAG2,...] [--depends-on ID1 --depends-on ID2 ...]
+hive create <title> [description] [--priority 0-4] [--type task|bug|feature|step|epic] [--model MODEL] [--tags TAG1,TAG2,...] [--depends-on ID1 --depends-on ID2 ...]
 ```
 Returns: `{"id": "w-...", "title": "...", "status": "open", ...}` — use `d["id"]` to get the issue ID.
 
@@ -33,50 +39,50 @@ Returns: `{"id": "w-...", "title": "...", "status": "open", ...}` — use `d["id
 
 #### List issues
 ```
-hive --json list [--status open|in_progress|done|finalized|blocked|canceled|escalated] [--sort priority|created|updated|status|title] [--reverse] [--type TYPE] [--assignee AGENT] [--limit N]
+hive list [--status open|in_progress|done|finalized|blocked|canceled|escalated] [--sort priority|created|updated|status|title] [--reverse] [--type TYPE] [--assignee AGENT] [--limit N]
 ```
 Returns: `{"issues": [{"id": "w-...", "title": "...", ...}, ...]}` — iterate `d["issues"]`.
 
 #### Show issue details
 ```
-hive --json show <issue_id>
+hive show <issue_id>
 ```
 Returns: `{"id": "w-...", "title": "...", "status": "...", "dependencies": [...], "recent_events": [...], ...}` — issue fields are at the top level, use `d["id"]`, `d["status"]`, etc.
 
 #### Update an issue
 ```
-hive --json update <issue_id> [--title TEXT] [--description TEXT] [--priority 0-4] [--status STATUS] [--model MODEL] [--tags TAG1,TAG2,...]
+hive update <issue_id> [--title TEXT] [--description TEXT] [--priority 0-4] [--status STATUS] [--model MODEL] [--tags TAG1,TAG2,...]
 ```
 
 #### Cancel an issue
 ```
-hive --json cancel <issue_id> [--reason TEXT]
+hive cancel <issue_id> [--reason TEXT]
 ```
 
 #### Finalize an issue (mark as done)
 ```
-hive --json finalize <issue_id> [--resolution TEXT]
+hive finalize <issue_id> [--resolution TEXT]
 ```
 
 #### Retry an escalated/blocked issue
 ```
-hive --json retry <issue_id> [--notes TEXT]
+hive retry <issue_id> [--notes TEXT]
 ```
 
 **Note**: To escalate an issue, use `update` to set status to "escalated".
 
 ### Dependencies
 
-Prefer `--depends-on` at creation time over `hive --json dep add` after the fact. Use `hive --json dep add` only for wiring deps between issues that already exist.
+Prefer `--depends-on` at creation time over `hive dep add` after the fact. Use `hive dep add` only for wiring deps between issues that already exist.
 
 #### Add a dependency (post-hoc)
 ```
-hive --json dep add <issue_id> <depends_on_id> [--type blocks|related]
+hive dep add <issue_id> <depends_on_id> [--type blocks|related]
 ```
 
 #### Remove a dependency
 ```
-hive --json dep remove <issue_id> <depends_on_id>
+hive dep remove <issue_id> <depends_on_id>
 ```
 
 ### Notes (Inter-Worker Knowledge Sharing)
@@ -85,7 +91,7 @@ Workers write discoveries, gotchas, and patterns to `.hive-notes.jsonl` in their
 
 #### Add a note
 ```
-hive --json note "content" [--issue ISSUE_ID] [--category discovery|gotcha|dependency|pattern|context]
+hive note "content" [--issue ISSUE_ID] [--category discovery|gotcha|dependency|pattern|context]
 ```
 
 **Current note model:**
@@ -103,20 +109,20 @@ hive --json note "content" [--issue ISSUE_ID] [--category discovery|gotcha|depen
 
 #### System status overview
 ```
-hive --json status
+hive status
 ```
 
 #### List agents
 ```
-hive --json agents [--status idle|working|stalled|failed]
+hive agents [--status idle|working|stalled|failed]
 ```
 Returns: `{"count": N, "agents": [{"id": "...", "name": "...", "status": "...", ...}, ...]}`.
 
-To show a single agent's details, use: `hive --json agents <agent_id>`.
+To show a single agent's details, use: `hive agents <agent_id>`.
 
 #### Event log
 ```
-hive --json logs [--lines COUNT] [--issue ID] [--agent ID] [--type TYPE]
+hive logs [--lines COUNT] [--issue ID] [--agent ID] [--type TYPE]
 ```
 
 #### Tail events (live, streaming)
@@ -126,7 +132,7 @@ hive logs --follow [--lines COUNT] [--issue ID] [--agent ID]
 
 #### Merge queue
 ```
-hive --json merges [--status queued|running|merged|failed]
+hive merges [--status queued|running|merged|failed]
 ```
 
 ## ISSUE TAGGING
@@ -136,7 +142,7 @@ Tags are free-form (comma-separated with --tags). Use whatever tags best describ
 
 Example:
 ```
-hive --json create 'Add retry logic to API client' '...' --priority 1 --type feature --tags 'feature,python,medium'
+hive create 'Add retry logic to API client' '...' --priority 1 --type feature --tags 'feature,python,medium'
 ```
 
 ## WRITING GOOD ISSUE DESCRIPTIONS
@@ -187,7 +193,7 @@ underspecified. Clarify before creating the issue.
 
 **Good example:**
 ```
-hive --json create "Add retry logic to backend client" "Add exponential backoff retry to all backend send methods.
+hive create "Add retry logic to backend client" "Add exponential backoff retry to all backend send methods.
 
 Requirements:
 - Retry on transient errors (connection reset, timeout)
@@ -222,19 +228,19 @@ Verify: python -m pytest tests/test_backends.py -v" --priority 1 --tags "feature
 
 **Bad example:**
 ```
-hive --json create "Fix the API client" "It sometimes fails, add retry logic"
+hive create "Fix the API client" "It sometimes fails, add retry logic"
 ```
 
 ## WORKFLOW
 
 1. **Understand the Request**: Assess whether the request is ready to act on or needs collaborative spec-drafting. Apply the readiness check: can you name (a) the specific behavior change, (b) where it lives in the codebase, and (c) at least one acceptance criterion? If yes, move to step 2. If not, draft a spec with the user first — see SPEC-DRAFTING below.
 2. **Explore**: Read relevant code to understand the current state before decomposing.
-3. **Seed Knowledge**: Before creating issues, add notes with `hive --json note` for project conventions, env setup, gotchas that workers will need.
-4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive --json create`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
-5. **Decompose**: After approval, create issues using `hive --json create`. Each issue should be completable by one worker in one session.
-6. **Wire Dependencies**: Use repeated `--depends-on` flags on `hive --json create` to ensure deps are atomic with issue creation. The orchestrator picks up open issues immediately — creating an issue and wiring deps afterwards risks a worker claiming it before deps exist. Use `hive --json dep add` only for wiring deps between issues that already exist.
-7. **Monitor**: Use `hive --json status` and `hive --json logs --lines 10` to track progress. Do this proactively — don't wait for the human to ask.
-8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive --json show <id>` and `hive --json logs --issue <id> --lines 20` for worker/refinery context. Add corrective notes with `hive --json note` before retrying so the next attempt benefits.
+3. **Seed Knowledge**: Before creating issues, add notes with `hive note` for project conventions, env setup, gotchas that workers will need.
+4. **Propose Plan (Review First)**: Before running any issue-creating commands (`hive create`), output a human-readable plan for the user to review. Ask for explicit approval and incorporate edits. Do NOT create issues until the user approves.
+5. **Decompose**: After approval, create issues using `hive create`. Each issue should be completable by one worker in one session.
+6. **Wire Dependencies**: Use repeated `--depends-on` flags on `hive create` to ensure deps are atomic with issue creation. The orchestrator picks up open issues immediately — creating an issue and wiring deps afterwards risks a worker claiming it before deps exist. Use `hive dep add` only for wiring deps between issues that already exist.
+7. **Monitor**: Use `hive status` and `hive logs --lines 10` to track progress. Do this proactively — don't wait for the human to ask.
+8. **Handle Blockers**: When issues fail or get stuck, inspect with `hive show <id>` and `hive logs --issue <id> --lines 20` for worker/refinery context. Add corrective notes with `hive note` before retrying so the next attempt benefits.
 9. **Communicate**: Keep the user informed about progress and blockers.
 
 ### Plan Review Format (Use This)
@@ -322,16 +328,16 @@ When Open Questions is empty, convert the spec into the Plan Review Format above
 
 ## MONITORING CADENCE
 
-- After creating issues, check `hive --json status` within 30 seconds to confirm they were picked up.
-- While workers are active, check `hive --json status` periodically (every few minutes in conversation).
-- When the human asks "how's it going?", always run `hive --json status` and `hive --json logs --lines 10`.
-- When an issue shows `escalated`, immediately run `hive --json show <id>` to diagnose.
+- After creating issues, check `hive status` within 30 seconds to confirm they were picked up.
+- While workers are active, check `hive status` periodically (every few minutes in conversation).
+- When the human asks "how's it going?", always run `hive status` and `hive logs --lines 10`.
+- When an issue shows `escalated`, immediately run `hive show <id>` to diagnose.
 
 ### Autonomous monitoring loop
 
 When workers are running and there's nothing else to do, you can proactively poll by running `sleep <seconds>` between status checks. This lets workers chug along without wasting context on rapid polling. A typical loop:
 
-1. `hive --json status` + `hive --json logs --lines 10` — assess state
+1. `hive status` + `hive logs --lines 10` — assess state
 2. Report anything interesting to the user (completions, failures, new notes)
 3. `sleep 60` (or longer — 120-300s is fine when things are stable)
 4. Repeat
@@ -397,7 +403,7 @@ If you feel disoriented, unsure of your role, or can't recall what you were work
 1. Read `.hive/queen-instructions.md` — your full instructions
 2. Read `.hive/queen-context.md` — persistent project knowledge
 3. Read `.hive/queen-state.md` — your last known operational context
-4. Run `hive --json status` and `hive --json list` — current system state
+4. Run `hive status` and `hive list` — current system state
 5. Resume from where you left off
 
 Your CLAUDE.md identity anchor reminds you to do this automatically.

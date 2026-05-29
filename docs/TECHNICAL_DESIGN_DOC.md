@@ -509,7 +509,8 @@ Implemented in `src/hive/cli.py`.
 - `hive note`
 - `hive setup` / `hive init`
 
-`--json` mode is supported globally for programmatic use.
+All commands emit **TOON** (Token-Optimized Object Notation), hive's sole machine-readable output
+format. There is no human/Rich rendering mode.
 
 ---
 

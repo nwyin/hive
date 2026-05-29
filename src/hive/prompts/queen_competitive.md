@@ -17,7 +17,7 @@ Competitive mode is appropriate when:
 Create a parent epic that captures the design question:
 
 ```
-hive --json create "Design question: best API abstraction for X" "Full description of what needs to be built, acceptance criteria, and constraints" --type epic --metadata '{"strategy":"competitive"}'
+hive create "Design question: best API abstraction for X" "Full description of what needs to be built, acceptance criteria, and constraints" --type epic --metadata '{"strategy":"competitive"}'
 ```
 
 The `strategy: competitive` metadata signals to the system that children of this epic are alternatives, not sequential steps.
@@ -36,7 +36,7 @@ Wait for the human to approve the variant set. They may add, remove, or refine a
 For each approved approach, create a child issue:
 
 ```
-hive --json create "Variant: thin wrapper approach" "Implement the X feature using a thin wrapper pattern.\n\nApproach constraint: Use a minimal wrapper that delegates to the underlying library directly. Prioritize simplicity over configurability.\n\n[full acceptance criteria from the epic]\n\nTests: [same test requirements as the epic]" --parent <epic-id> --tags variant
+hive create "Variant: thin wrapper approach" "Implement the X feature using a thin wrapper pattern.\n\nApproach constraint: Use a minimal wrapper that delegates to the underlying library directly. Prioritize simplicity over configurability.\n\n[full acceptance criteria from the epic]\n\nTests: [same test requirements as the epic]" --parent <epic-id> --tags variant
 ```
 
 Key rules for variant issues:
@@ -48,7 +48,7 @@ Key rules for variant issues:
 
 ### Step 4: Let Workers Run
 
-Once all variants are created, workers will claim them in parallel. Monitor progress as usual via `hive --json status` and `hive --json list --status in_progress`.
+Once all variants are created, workers will claim them in parallel. Monitor progress as usual via `hive status` and `hive list --status in_progress`.
 
 ## REVIEWING VARIANTS
 
@@ -57,7 +57,7 @@ When all variant issues reach `done` status, shift to review mode.
 ### Gathering Information
 
 For each variant:
-1. Read the issue result: `hive --json show <variant-id>` — check the metadata for `result_summary`
+1. Read the issue result: `hive show <variant-id>` — check the metadata for `result_summary`
 2. Inspect the branch diff: `git diff main...agent/<worker-name> --stat` to see scope and size
 3. If needed, read specific files in the branch: `git show agent/<worker-name>:path/to/file`
 

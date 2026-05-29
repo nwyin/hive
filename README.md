@@ -248,8 +248,7 @@ Please send me bug reports, feature requests, and other cool ideas!
 Run `hive debug` and include the output in your report. It collects system info, config, daemon state, doctor checks, and recent logs into a single pasteable bundle:
 
 ```bash
-hive debug          # human-readable
-hive debug --json   # machine-readable
+hive debug          # emits TOON (hive's machine-readable output format)
 ```
 
 ## Development

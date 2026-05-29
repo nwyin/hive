@@ -1,6 +1,5 @@
 """Typer-backed CLI for Hive."""
 
-import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -8,15 +7,13 @@ from typing import Annotated, Literal, NoReturn
 
 import click
 import typer
-from rich.console import Console
 
+from . import toon
 from .runtime import do_setup, initialize_cli, initialize_global, resolve_project
-from .rich_views import print_error
 
 app = typer.Typer(
     add_completion=False,
     context_settings={"help_option_names": ["-h", "--help"]},
-    rich_markup_mode="rich",
     no_args_is_help=True,
 )
 dep_app = typer.Typer(no_args_is_help=True, help="Manage issue dependencies")
@@ -25,18 +22,13 @@ app.add_typer(dep_app, name="dep")
 
 @dataclass
 class AppState:
-    console: Console
-    json_mode: bool = False
     project: str | None = None
     db_override: str | None = None
 
 
-def _fail(state: AppState, exc: Exception) -> NoReturn:
-    """Render a CLI error for commands that don't go through ``HiveCLI``."""
-    if state.json_mode:
-        state.console.print_json(json=json.dumps({"error": str(exc)}))
-    else:
-        print_error(state.console, str(exc))
+def _fail(exc: Exception) -> NoReturn:
+    """Emit a structured TOON error for commands that don't go through ``HiveCLI``."""
+    print(toon.toon_error(str(exc)))
     raise typer.Exit(1)
 
 
@@ -50,16 +42,15 @@ def _cli_session(state: AppState) -> Iterator:
         db.close()
 
 
-def _run_cli_command(state: AppState, command_name: str, *args, json_mode: bool | None = None, **kwargs) -> None:
+def _run_cli_command(state: AppState, command_name: str, *args, **kwargs) -> None:
     """Run a ``HiveCLI`` command through the shared execution pipeline."""
-    use_json = state.json_mode if json_mode is None else json_mode
     with _cli_session(state) as cli:
-        cli.run_command(command_name, *args, json_mode=use_json, **kwargs)
+        cli.run_command(command_name, *args, **kwargs)
 
 
-def _run(ctx: typer.Context, command_name: str, *args, json_mode: bool | None = None, **kwargs) -> None:
+def _run(ctx: typer.Context, command_name: str, *args, **kwargs) -> None:
     """Run a CLI command using the ``AppState`` stored in the Typer context."""
-    _run_cli_command(ctx.obj, command_name, *args, json_mode=json_mode, **kwargs)
+    _run_cli_command(ctx.obj, command_name, *args, **kwargs)
 
 
 def _version_callback(value: bool) -> None:
@@ -75,11 +66,10 @@ def main(
     ctx: typer.Context,
     db: Annotated[str | None, typer.Option("--db", help="Database path (default: ~/.hive/hive.db)")] = None,
     project: Annotated[str | None, typer.Option("--project", help="Project directory (auto-detected from git)")] = None,
-    json_mode: Annotated[bool, typer.Option("--json", help="Output JSON (for programmatic use)")] = False,
     version: Annotated[bool, typer.Option("--version", "-V", help="Show version and exit", callback=_version_callback, is_eager=True)] = False,
 ) -> None:
-    """Hive multi-agent orchestrator."""
-    ctx.obj = AppState(console=Console(), json_mode=json_mode, project=project, db_override=db)
+    """Hive multi-agent orchestrator. All output is TOON."""
+    ctx.obj = AppState(project=project, db_override=db)
 
 
 @app.command()
@@ -88,8 +78,8 @@ def setup(ctx: typer.Context) -> None:
     try:
         project_path, project_name = resolve_project(ctx.obj.project)
     except Exception as exc:
-        _fail(ctx.obj, exc)
-    do_setup(project_path, project_name, json_mode=ctx.obj.json_mode)
+        _fail(exc)
+    do_setup(project_path, project_name)
 
 
 @app.command()
@@ -101,8 +91,8 @@ def init(
     try:
         project_path, project_name = resolve_project(ctx.obj.project)
     except Exception as exc:
-        _fail(ctx.obj, exc)
-    do_setup(project_path, project_name, json_mode=ctx.obj.json_mode)
+        _fail(exc)
+    do_setup(project_path, project_name)
 
     # Register project so global status can see it
     db = initialize_global(db_override=ctx.obj.db_override)
@@ -114,12 +104,12 @@ def init(
     # Seed queen instruction/context files so the queen always has CLI conventions
     from .runtime import do_seed_queen_files
 
-    do_seed_queen_files(project_path, json_mode=ctx.obj.json_mode)
+    do_seed_queen_files(project_path)
 
     if analyze:
         from .runtime import do_analyze
 
-        do_analyze(project_path, project_name, json_mode=ctx.obj.json_mode)
+        do_analyze(project_path, project_name)
 
 
 @app.command()
@@ -182,15 +172,9 @@ def list_issues(
 def show(
     ctx: typer.Context,
     issue_id: Annotated[str, typer.Argument(help="Issue ID")],
-    show_format: Annotated[Literal["text", "json"], typer.Option("--format", "-f", help="Output format: text (default) or json")] = "text",
 ) -> None:
     """Show issue details."""
-    _run(
-        ctx,
-        "show",
-        issue_id,
-        json_mode=ctx.obj.json_mode or show_format == "json",
-    )
+    _run(ctx, "show", issue_id)
 
 
 @app.command()
@@ -350,13 +334,7 @@ def status(ctx: typer.Context) -> None:
     try:
         from .global_status import get_global_status
 
-        result = get_global_status(db)
-        if ctx.obj.json_mode:
-            ctx.obj.console.print_json(json.dumps(result))
-        else:
-            from .rich_views import render_global_status
-
-            ctx.obj.console.print(render_global_status(result))
+        print(toon.encode(get_global_status(db)))
     finally:
         db.close()
 
@@ -419,16 +397,9 @@ def start(
                         log_tail = "\n".join(lines[-10:])
                 except OSError:
                     pass
-                _fail(ctx.obj, RuntimeError(f"Failed to start daemon. Log: {daemon.log_file}\n{log_tail}".rstrip()))
+                _fail(RuntimeError(f"Failed to start daemon. Log: {daemon.log_file}\n{log_tail}".rstrip()))
 
-        if ctx.obj.json_mode:
-            ctx.obj.console.print_json(json.dumps(result))
-        else:
-            from .rich_views import render_start
-
-            rendered = render_start(result)
-            if rendered:
-                ctx.obj.console.print(rendered)
+        print(toon.encode(result))
     finally:
         db.close()
 
@@ -450,16 +421,9 @@ def stop(ctx: typer.Context) -> None:
             if stopped:
                 result = {"status": "stopped", "pid": pid}
             else:
-                _fail(ctx.obj, RuntimeError(f"Failed to stop daemon (PID {pid})"))
+                _fail(RuntimeError(f"Failed to stop daemon (PID {pid})"))
 
-        if ctx.obj.json_mode:
-            ctx.obj.console.print_json(json.dumps(result))
-        else:
-            from .rich_views import render_stop
-
-            rendered = render_stop(result)
-            if rendered:
-                ctx.obj.console.print(rendered)
+        print(toon.encode(result))
     finally:
         db.close()
 
@@ -480,8 +444,7 @@ def queen(
 ) -> None:
     """Launch Queen Bee TUI."""
     if headless and not prompt:
-        print_error(ctx.obj.console, "--headless requires --prompt / -p")
-        raise typer.Exit(1)
+        _fail(ValueError("--headless requires --prompt / -p"))
     try:
         with _cli_session(ctx.obj) as cli:
             cli.queen(
@@ -493,7 +456,7 @@ def queen(
                 mode=mode,
             )
     except Exception as exc:
-        _fail(ctx.obj, exc)
+        _fail(exc)
 
 
 @app.command()
@@ -506,8 +469,7 @@ def forget(
     from pathlib import Path
 
     if not project_name and not stale:
-        print_error(ctx.obj.console, "Provide a project name or use --stale")
-        raise typer.Exit(1)
+        _fail(ValueError("Provide a project name or use --stale"))
 
     db = initialize_global(db_override=ctx.obj.db_override)
     try:
@@ -521,16 +483,9 @@ def forget(
             if db.unregister_project(project_name):
                 removed.append(project_name)
             else:
-                _fail(ctx.obj, ValueError(f"Project not found: {project_name}"))
+                _fail(ValueError(f"Project not found: {project_name}"))
 
-        if ctx.obj.json_mode:
-            ctx.obj.console.print_json(json.dumps({"removed": removed}))
-        else:
-            if removed:
-                for name in removed:
-                    ctx.obj.console.print(f"Removed [cyan]{name}[/cyan]")
-            else:
-                ctx.obj.console.print("Nothing to remove.", style="dim")
+        print(toon.encode({"count": len(removed), "removed": removed}))
     finally:
         db.close()
 
@@ -572,3 +527,10 @@ def run(argv: list[str] | None = None) -> None:
         # Click/Typer prints help for no-arg invocations before raising this
         # sentinel when standalone_mode=False. Swallow it so `hive` exits cleanly.
         return
+    except click.exceptions.ClickException as exc:
+        # standalone_mode=False means Click won't pretty-print usage errors
+        # (e.g. bad flags, unknown commands). Emit a structured TOON error.
+        print(toon.toon_error(exc.format_message()))
+        raise SystemExit(exc.exit_code) from None
+    except click.exceptions.Abort:
+        raise SystemExit(1) from None
