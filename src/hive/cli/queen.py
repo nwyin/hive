@@ -97,7 +97,7 @@ class QueenMixin:
         from .runtime import do_seed_queen_files
 
         # Ensure base files exist (idempotent — mirrors what ``hive init`` does)
-        do_seed_queen_files(self.project_path, machine=True)
+        do_seed_queen_files(self.project_path)
 
         instructions_path = self.project_path / ".hive" / "queen-instructions.md"
 

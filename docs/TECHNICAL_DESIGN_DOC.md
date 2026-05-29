@@ -509,8 +509,8 @@ Implemented in `src/hive/cli.py`.
 - `hive note`
 - `hive setup` / `hive init`
 
-Machine-readable **TOON** output is the default when stdout is piped/captured (a terminal gets Rich
-tables instead); force either with the global `--toon` / `--human` flags.
+All commands emit **TOON** (Token-Optimized Object Notation), hive's sole machine-readable output
+format. There is no human/Rich rendering mode.
 
 ---
 

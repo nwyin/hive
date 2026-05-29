@@ -7,60 +7,29 @@ import time
 from functools import wraps
 from pathlib import Path
 
-from rich.console import Console
-
 from . import toon
 from ..daemon import HiveDaemon
 from ..db import Database, normalize_tags
 from ..status import IssueStatus, UNBLOCKING_ISSUE_STATUSES
-from .formatters import (
-    _fmt_add_note,
-    _fmt_cleanup,
-    _fmt_create,
-    _fmt_debug,
-    _fmt_list_agents,
-    _fmt_list_issues,
-    _fmt_logs,
-    _fmt_merges,
-    _fmt_message,
-    _fmt_metrics,
-    _fmt_review,
-    _fmt_show,
-    _fmt_start,
-    _fmt_status,
-    _fmt_stop,
-)
 from .helpers import _build_refinery_info, _check_merge_blockers, _enrich_agents_with_issues
 from .queen import QueenMixin
 
-_CONSOLE = Console()
 
+def cli_command(fn):
+    """Marker decorator for CLI command methods.
 
-def cli_command(*, formatter):
-    """Decorator that separates data-gathering from output formatting.
-
-    Decorated methods return a JSON-serialisable dict — nothing else.
-    The decorator routes the result to either the TOON encoder (when
-    ``machine`` mode is active — i.e. output is piped/captured) or the
-    provided *formatter* function (for human-readable Rich output).
-
-    ``machine`` is popped from kwargs by the decorator so the wrapped
-    method never sees it.  Methods that handle output inline (e.g.
-    streaming follow mode) can read ``self._machine`` instead.
+    The decorated method gathers data and returns a JSON-serialisable dict —
+    nothing else. Calling it routes through ``run_command``, which encodes the
+    result as TOON (hive's sole output format) and traps errors. The raw
+    data-gathering function is stashed as ``_cli_raw`` for ``invoke_raw``.
     """
 
-    def decorator(fn):
-        @wraps(fn)
-        def wrapper(self, *args, **kwargs):
-            machine = kwargs.pop("machine", False)
-            return self.run_command(fn.__name__, *args, machine=machine, **kwargs)
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        return self.run_command(fn.__name__, *args, **kwargs)
 
-        setattr(wrapper, "_cli_raw", fn)
-        setattr(wrapper, "_cli_formatter", formatter)
-
-        return wrapper
-
-    return decorator
+    wrapper._cli_raw = fn
+    return wrapper
 
 
 class HiveCLI(QueenMixin):
@@ -71,12 +40,9 @@ class HiveCLI(QueenMixin):
         self.project_path = Path(project_path).resolve()
         self.project_name = self.project_path.name
 
-    def _error(self, msg: str, *, machine: bool = False):
-        """Print error and exit."""
-        if machine:
-            print(toon.toon_error(msg))
-        else:
-            print(f"Error: {msg}", file=sys.stderr)
+    def _error(self, msg: str):
+        """Print a structured TOON error to stdout and exit non-zero."""
+        print(toon.toon_error(msg))
         sys.exit(1)
 
     @classmethod
@@ -87,46 +53,32 @@ class HiveCLI(QueenMixin):
             raise ValueError(f"Unknown CLI command: {command_name}")
         return method
 
-    def invoke_raw(self, command_name: str, *args, machine: bool = False, **kwargs):
-        """Run a command's data-gathering function without formatting or error trapping."""
-        self._machine = machine
+    def invoke_raw(self, command_name: str, *args, **kwargs):
+        """Run a command's data-gathering function without encoding or error trapping."""
         method = self._get_command_handler(command_name)
         raw = getattr(method, "_cli_raw", None)
         if raw is None:
             raise ValueError(f"Command does not support raw invocation: {command_name}")
         return raw(self, *args, **kwargs)
 
-    def render_result(self, command_name: str, result: dict | None, *, machine: bool = False, formatter=None):
-        """Emit a command result as TOON (machine mode) or via the Rich formatter."""
+    def render_result(self, command_name: str, result: dict | None):
+        """Emit a command result as TOON, with a trailing next-step ``help[]`` block."""
         if result is None:
             return None
-        if machine:
-            body = toon.encode(result)
-            hints = toon.COMMAND_HINTS.get(command_name)
-            if hints:
-                body += "\n" + toon.encode_help(hints)
-            print(body)
-            return result
-
-        method = self._get_command_handler(command_name)
-        render = formatter or getattr(method, "_cli_formatter", None)
-        if render is None:
-            raise ValueError(f"Command does not define a formatter: {command_name}")
-        output = render(result)
-        if output:
-            if isinstance(output, str):
-                print(output)
-            else:
-                _CONSOLE.print(output)
+        body = toon.encode(result)
+        hints = toon.COMMAND_HINTS.get(command_name)
+        if hints:
+            body += "\n" + toon.encode_help(hints)
+        print(body)
         return result
 
-    def run_command(self, command_name: str, *args, machine: bool = False, formatter=None, **kwargs):
-        """Run a command through the standard CLI error/formatting pipeline."""
+    def run_command(self, command_name: str, *args, **kwargs):
+        """Run a command through the standard CLI error/encoding pipeline."""
         try:
-            result = self.invoke_raw(command_name, *args, machine=machine, **kwargs)
-            return self.render_result(command_name, result, machine=machine, formatter=formatter)
+            result = self.invoke_raw(command_name, *args, **kwargs)
+            return self.render_result(command_name, result)
         except Exception as exc:
-            self._error(str(exc), machine=machine)
+            self._error(str(exc))
 
     def _parse_tags(self, issue_dict: dict) -> dict:
         """Parse tags JSON string into a list in-place."""
@@ -157,7 +109,7 @@ class HiveCLI(QueenMixin):
 
     # ── Issue management ─────────────────────────────────────────────
 
-    @cli_command(formatter=_fmt_create)
+    @cli_command
     def create(
         self,
         title: str,
@@ -200,7 +152,7 @@ class HiveCLI(QueenMixin):
 
     _DONE_STATUSES = UNBLOCKING_ISSUE_STATUSES
 
-    @cli_command(formatter=_fmt_list_issues)
+    @cli_command
     def list_issues(
         self,
         status: str | None = None,
@@ -237,7 +189,7 @@ class HiveCLI(QueenMixin):
             result["note"] = "no issues match — try `hive list --todo` or create one with `hive create`"
         return result
 
-    @cli_command(formatter=_fmt_show)
+    @cli_command
     def show(self, issue_id: str):
         """Show issue details and events."""
         issue = self._require_issue(issue_id)
@@ -256,7 +208,7 @@ class HiveCLI(QueenMixin):
             "recent_events": events,
         }
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def update(
         self,
         issue_id: str,
@@ -327,7 +279,7 @@ class HiveCLI(QueenMixin):
 
         return {"issue_id": issue_id, "message": f"Updated issue {issue_id}"}
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def cancel(self, issue_id: str, reason: str = ""):
         """Cancel an issue."""
         self._require_issue(issue_id)
@@ -342,7 +294,7 @@ class HiveCLI(QueenMixin):
             "message": f"Canceled issue {issue_id}",
         }
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def finalize(self, issue_id: str, resolution: str = ""):
         """Finalize/close an issue."""
         self._require_issue(issue_id)
@@ -368,7 +320,7 @@ class HiveCLI(QueenMixin):
             "message": f"Finalized issue {issue_id}",
         }
 
-    @cli_command(formatter=_fmt_review)
+    @cli_command
     def review(self, issue_id: str | None = None, limit: int = 20):
         """List done issues that are pending finalization with review hints.
 
@@ -406,7 +358,7 @@ class HiveCLI(QueenMixin):
             result["note"] = "nothing awaiting review — all done issues are finalized"
         return result
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def retry(self, issue_id: str, notes: str = "", reset: bool = False):
         """Retry an escalated/blocked issue."""
         self._require_issue(issue_id)
@@ -431,7 +383,7 @@ class HiveCLI(QueenMixin):
             "message": msg,
         }
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def dep_add(self, issue_id: str, depends_on: str, dep_type: str = "blocks"):
         """Add a dependency between issues."""
         # Verify both issues exist
@@ -449,7 +401,7 @@ class HiveCLI(QueenMixin):
             "message": f"Added {dep_type} dependency: {issue_id} depends on {depends_on}",
         }
 
-    @cli_command(formatter=_fmt_message)
+    @cli_command
     def dep_remove(self, issue_id: str, depends_on: str):
         """Remove a dependency between issues."""
         with self.db.transaction() as conn:
@@ -464,7 +416,7 @@ class HiveCLI(QueenMixin):
             "message": f"Removed dependency: {issue_id} no longer depends on {depends_on}",
         }
 
-    @cli_command(formatter=_fmt_merges)
+    @cli_command
     def merges(self, status: str | None = None):
         """List merge queue entries."""
         entries = self.db.list_merge_entries(project=self.project_name, status=status, limit=50)
@@ -480,7 +432,7 @@ class HiveCLI(QueenMixin):
             result["note"] = "merge queue is empty"
         return result
 
-    @cli_command(formatter=_fmt_status)
+    @cli_command
     def status(self):
         """Show orchestrator status."""
         status_counts = self.db.get_issue_status_counts(project=self.project_name)
@@ -508,10 +460,11 @@ class HiveCLI(QueenMixin):
         # Surface issues needing human attention
         attention_issues = self.db.get_escalated_issues(project=self.project_name)
 
-        return {
+        total_issues = sum(status_counts.values())
+        result: dict = {
             "project": self.project_name,
             "issues": status_counts,
-            "total_issues": sum(status_counts.values()),
+            "total_issues": total_issues,
             "active_agents": len(active_agents),
             "workers": workers_detail,
             "refinery": refinery_info,
@@ -527,8 +480,11 @@ class HiveCLI(QueenMixin):
                 "log_file": daemon_status.get("log_file"),
             },
         }
+        if total_issues == 0:
+            result["note"] = "no issues yet — create one with `hive create`"
+        return result
 
-    @cli_command(formatter=_fmt_list_agents)
+    @cli_command
     def list_agents(self, agent_id: str | None = None, status: str | None = None):
         """List agents, or show details for a specific agent if agent_id is provided."""
         # If agent_id is provided, show that agent's details
@@ -562,7 +518,7 @@ class HiveCLI(QueenMixin):
 
     # ── Notes ─────────────────────────────────────────────────────────
 
-    @cli_command(formatter=_fmt_add_note)
+    @cli_command
     def add_note(self, content: str, issue_id: str | None = None, category: str = "discovery"):
         """Add a note to the knowledge base."""
         note_id = self.db.add_note(agent_id=None, issue_id=issue_id, content=content, category=category, project=self.project_name)
@@ -576,25 +532,6 @@ class HiveCLI(QueenMixin):
         }
 
     # ── Event log (tail-style, not tool-backed) ─────────────────────
-
-    def _format_event(self, event: dict) -> str:
-        """Format a single event as a log line."""
-        ts = event["created_at"]
-        etype = event["event_type"]
-        issue = event["issue_id"] or "-"
-        agent = event["agent_id"] or "-"
-
-        line = f"{ts}  {etype:<24s}  issue={issue:<10s}  agent={agent:<10s}"
-
-        if event["detail"]:
-            try:
-                detail = json.loads(event["detail"])
-                parts = [f"{k}={v}" for k, v in detail.items()]
-                line += "  " + " ".join(parts)
-            except (json.JSONDecodeError, TypeError):
-                line += f"  {event['detail']}"
-
-        return line
 
     @staticmethod
     def _event_to_json(event: dict) -> dict:
@@ -612,7 +549,7 @@ class HiveCLI(QueenMixin):
                 pass  # keep as-is
         return out
 
-    @cli_command(formatter=_fmt_logs)
+    @cli_command
     def logs(
         self,
         follow: bool = False,
@@ -631,19 +568,14 @@ class HiveCLI(QueenMixin):
 
         recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
 
-        # Follow/streaming mode: handle output inline, return None to skip decorator output.
-        # Uses self._machine (set by @cli_command decorator) to choose text vs TOON.
-        # In machine mode each event is one TOON block, blank-line separated, so the
-        # stream stays parseable as it's tailed.
+        # Follow/streaming mode: handle output inline, return None to skip the
+        # normal encode step. Each event is emitted as one TOON block, blank-line
+        # separated, so the stream stays parseable as it's tailed.
         if follow:
-            machine = self._machine
 
             def emit(event):
-                if machine:
-                    print(toon.encode(self._event_to_json(event)))
-                    print()
-                else:
-                    print(self._format_event(event))
+                print(toon.encode(self._event_to_json(event)))
+                print()
 
             for event in recent:
                 emit(event)
@@ -666,14 +598,14 @@ class HiveCLI(QueenMixin):
             result["note"] = "no events match the given filters"
         return result
 
-    @cli_command(formatter=_fmt_debug)
+    @cli_command
     def debug(self):
         """Print a full diagnostic report."""
         from ..diag import gather_report
 
         return gather_report(self.db, str(self.project_path))
 
-    @cli_command(formatter=_fmt_metrics)
+    @cli_command
     def metrics(self, model=None, tag=None, issue_type=None, group_by=None, show_costs=False, issue_id=None, agent_id=None):
         """Show aggregated agent run metrics."""
         # If --group-by is specified, use the stats-style output
@@ -713,7 +645,7 @@ class HiveCLI(QueenMixin):
     def _make_daemon(self) -> HiveDaemon:
         return HiveDaemon(db_path=self.db.db_path)
 
-    @cli_command(formatter=_fmt_start)
+    @cli_command
     def start(self, foreground: bool = False):
         """Start the hive daemon."""
         if foreground:
@@ -741,7 +673,7 @@ class HiveCLI(QueenMixin):
             pass
         raise RuntimeError(f"Failed to start daemon. Log: {daemon.log_file}\n{log_tail}".rstrip())
 
-    @cli_command(formatter=_fmt_stop)
+    @cli_command
     def stop(self):
         """Stop the hive daemon."""
         daemon = self._make_daemon()
@@ -756,7 +688,7 @@ class HiveCLI(QueenMixin):
 
     # ── Cleanup ───────────────────────────────────────────────────────
 
-    @cli_command(formatter=_fmt_cleanup)
+    @cli_command
     def cleanup(self, dry_run: bool = False):
         """Remove local .hive files, worktrees, and agent branches from a project."""
         import shutil

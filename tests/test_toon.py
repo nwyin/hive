@@ -1,11 +1,8 @@
-"""Tests for the TOON encoder/decoder and output-mode detection."""
-
-import sys
+"""Tests for the TOON encoder/decoder."""
 
 import pytest
 
 from hive.cli import toon
-from hive.cli.typer_app import resolve_output_mode
 
 
 # ── encoding ─────────────────────────────────────────────────────────────────
@@ -92,21 +89,3 @@ def test_toon_error_contract():
 )
 def test_round_trip(data):
     assert toon.decode(toon.encode(data)) == data
-
-
-# ── output-mode detection ────────────────────────────────────────────────────
-def test_resolve_output_mode_explicit_flags():
-    assert resolve_output_mode(True, False) is True
-    assert resolve_output_mode(False, True) is False
-
-
-def test_resolve_output_mode_conflict_raises():
-    with pytest.raises(Exception):
-        resolve_output_mode(True, True)
-
-
-def test_resolve_output_mode_autodetect(monkeypatch):
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
-    assert resolve_output_mode(False, False) is False  # terminal -> human
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
-    assert resolve_output_mode(False, False) is True  # piped -> machine (TOON)
