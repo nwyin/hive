@@ -1847,12 +1847,12 @@ def test_get_dependencies_and_dependents(temp_db):
 
 def test_update_issue_metadata(temp_db):
     """Test updating issue metadata."""
-    issue_id = temp_db.create_issue(title="Test", metadata={"strategy": "competitive"})
-    temp_db.update_issue_metadata(issue_id, {"strategy": "competitive", "metrics": {"val_bpb": 0.99}})
+    issue_id = temp_db.create_issue(title="Test", metadata={"source": "test"})
+    temp_db.update_issue_metadata(issue_id, {"source": "test", "metrics": {"val_bpb": 0.99}})
 
     issue = temp_db.get_issue(issue_id)
     stored = json.loads(issue["metadata"])
-    assert stored["strategy"] == "competitive"
+    assert stored["source"] == "test"
     assert stored["metrics"]["val_bpb"] == 0.99
 
 
@@ -1864,33 +1864,3 @@ def test_update_issue_metadata_from_none(temp_db):
     issue = temp_db.get_issue(issue_id)
     stored = json.loads(issue["metadata"])
     assert stored["result_summary"] == "done"
-
-
-# ── get_notes with parent_id filter ─────────────────────────────────────
-
-
-def test_get_notes_filter_by_parent_id(temp_db):
-    """Notes can be filtered to sibling issues under the same parent."""
-    epic_id = temp_db.create_issue(title="Epic", issue_type="epic", project="proj")
-    child1 = temp_db.create_issue(title="Child 1", parent_id=epic_id, project="proj")
-    child2 = temp_db.create_issue(title="Child 2", parent_id=epic_id, project="proj")
-    other = temp_db.create_issue(title="Other", project="proj")
-
-    temp_db.add_note(issue_id=child1, content="discovery from child1", project="proj")
-    temp_db.add_note(issue_id=child2, content="discovery from child2", project="proj")
-    temp_db.add_note(issue_id=other, content="unrelated note", project="proj")
-
-    # Filter by parent_id: should get notes from child1 and child2 only
-    notes = temp_db.get_notes(parent_id=epic_id)
-    assert len(notes) == 2
-    contents = {n["content"] for n in notes}
-    assert "discovery from child1" in contents
-    assert "discovery from child2" in contents
-    assert "unrelated note" not in contents
-
-
-def test_get_notes_parent_id_no_matches(temp_db):
-    """parent_id filter returns empty when no children have notes."""
-    epic_id = temp_db.create_issue(title="Empty Epic", project="proj")
-    notes = temp_db.get_notes(parent_id=epic_id)
-    assert notes == []

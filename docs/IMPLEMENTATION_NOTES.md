@@ -79,7 +79,7 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 - Prompts stored as `.md` template files in `src/hive/prompts/`
 - `string.Template` substitution (no Jinja2 dependency)
-- Templates: `worker.md`, `system.md`, `refinery.md`
+- Templates: `worker.md`, `system.md`, `refinery.md`, `queen.md`
 - Cached on first load for performance
 - Anti-stall behavioral conditioning ("NEVER STOP MID-WORKFLOW")
 - File-based completion signal instructions embedded in worker prompt
@@ -118,7 +118,7 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 ### Quality
 
 - 250 unit tests (100% passing, 13 deselected integration tests)
-- 15 modules + 3 prompt templates, ~6,500 lines production code
+- 15 modules + 4 prompt templates, ~6,500 lines production code
 - 13 test files, ~5,300 lines test code
 - Lint-clean with `ruff` (line-length=144)
 

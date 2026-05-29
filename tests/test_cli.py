@@ -8,6 +8,7 @@ import pytest
 
 from hive.cli import HiveCLI, toon
 from hive.cli.helpers import _enrich_agents_with_issues
+from hive.cli.typer_app import run as run_typer
 
 
 # ── _enrich_agents_with_issues helper ─────────────────────────────────────────
@@ -861,20 +862,17 @@ def test_queen_interactive_unchanged(temp_db, tmp_path):
     ):
         cli.queen(backend="claude")
 
-    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None, mode=None)
+    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None)
 
 
-def test_queen_mode_passed_to_claude(temp_db, tmp_path):
-    """Queen mode flag is forwarded to _queen_claude."""
-    cli = HiveCLI(temp_db, str(tmp_path))
+def test_queen_mode_option_removed(capsys):
+    """Queen no longer accepts mode-specific prompt flags."""
+    with pytest.raises(SystemExit) as exc_info:
+        run_typer(["queen", "--mode", "competitive"])
 
-    with (
-        unittest.mock.patch.object(cli, "_make_daemon", return_value=_make_running_daemon()),
-        unittest.mock.patch.object(cli, "_queen_claude") as mock_claude,
-    ):
-        cli.queen(backend="claude", mode="competitive")
-
-    mock_claude.assert_called_once_with(skip_permissions=False, mcp_configs=[], headless=False, prompt=None, mode="competitive")
+    assert exc_info.value.code != 0
+    data = toon.decode(capsys.readouterr().out)
+    assert "No such option" in data["error"]
 
 
 def test_create_with_parent_and_metadata(temp_db, tmp_path):
@@ -883,13 +881,13 @@ def test_create_with_parent_and_metadata(temp_db, tmp_path):
     epic = cli.create("Epic", issue_type="epic")
     epic_id = epic["id"]
 
-    result = cli.create("Child", parent_id=epic_id, metadata='{"strategy":"competitive"}')
+    result = cli.create("Child", parent_id=epic_id, metadata='{"source":"test"}')
     assert result["parent_id"] == epic_id
 
     issue = temp_db.get_issue(result["id"])
     assert issue["parent_id"] == epic_id
     stored = json.loads(issue["metadata"])
-    assert stored["strategy"] == "competitive"
+    assert stored["source"] == "test"
 
 
 def test_list_empty_suggests_create(temp_db, tmp_path, capsys):

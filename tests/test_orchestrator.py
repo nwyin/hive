@@ -708,6 +708,29 @@ def test_gather_notes_for_worker_standalone_issue(temp_db, tmp_path):
     assert notes[0]["id"] == note_id
 
 
+def test_gather_notes_for_worker_ignores_old_strategy_parent_notes(temp_db, tmp_path):
+    """Old strategy metadata no longer enables sibling-note injection."""
+    from hive.backends import HiveBackend
+
+    mock_backend = MagicMock(spec=HiveBackend)
+    orch = Orchestrator(
+        db=temp_db,
+        backend=mock_backend,
+    )
+
+    epic_id = temp_db.create_issue("Old sweep", issue_type="epic", metadata={"strategy": "sweep"}, project="default")
+    issue_id = temp_db.create_issue("Child", parent_id=epic_id, project="default")
+    sibling_id = temp_db.create_issue("Sibling", parent_id=epic_id, project="other")
+
+    temp_db.add_note(issue_id=sibling_id, content="sibling note", project="other")
+    project_note_id = temp_db.add_note(content="project note", project="default")
+
+    notes = orch._gather_notes_for_worker(issue_id, "default")
+
+    assert notes is not None
+    assert [note["id"] for note in notes] == [project_note_id]
+
+
 # --- Bidirectional reconciliation tests ---
 
 

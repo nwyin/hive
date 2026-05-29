@@ -124,7 +124,7 @@ def create(
         list[str] | None, typer.Option("--depends-on", help="Issue ID this depends on; repeat the option to add more")
     ] = None,
     tags: Annotated[str | None, typer.Option(help="Comma-separated tags (e.g. refactor,python,small)")] = None,
-    parent: Annotated[str | None, typer.Option("--parent", help="Parent issue ID (for grouping variants/experiments under an epic)")] = None,
+    parent: Annotated[str | None, typer.Option("--parent", help="Parent issue ID for grouping work under an epic")] = None,
     metadata: Annotated[str | None, typer.Option("--metadata", help="JSON metadata string")] = None,
 ) -> None:
     """Create a new issue."""
@@ -440,7 +440,6 @@ def queen(
     mcp_config: Annotated[list[str] | None, typer.Option(help="Claude MCP config(s); repeat the option for multiple configs")] = None,
     headless: Annotated[bool, typer.Option(help="Run non-interactively (requires --prompt)")] = False,
     prompt: Annotated[str | None, typer.Option("-p", "--prompt", help="Task prompt for headless mode")] = None,
-    mode: Annotated[str | None, typer.Option("-m", "--mode", help="Queen mode: competitive, experiment (default: standard)")] = None,
 ) -> None:
     """Launch Queen Bee TUI."""
     if headless and not prompt:
@@ -453,7 +452,6 @@ def queen(
                 mcp_configs=mcp_config,
                 headless=headless,
                 prompt=prompt,
-                mode=mode,
             )
     except Exception as exc:
         _fail(exc)
