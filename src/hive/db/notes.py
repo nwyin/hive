@@ -14,15 +14,14 @@ class NotesMixin:
         content: str = "",
         category: str = "discovery",
         project: str | None = None,
-        must_read: bool = False,
     ) -> int:
         """Insert a note and return its row ID."""
         if not self.conn:
             raise RuntimeError("Database not connected")
 
         cursor = self.conn.execute(
-            "INSERT INTO notes (issue_id, agent_id, category, content, project, must_read) VALUES (?, ?, ?, ?, ?, ?)",
-            (issue_id, agent_id, category, content, project, 1 if must_read else 0),
+            "INSERT INTO notes (issue_id, agent_id, category, content, project) VALUES (?, ?, ?, ?, ?)",
+            (issue_id, agent_id, category, content, project),
         )
         self.conn.commit()
         return cursor.lastrowid

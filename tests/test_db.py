@@ -25,6 +25,10 @@ def test_database_connection(temp_db):
     ]
     for table in expected_tables:
         assert table in tables
+    assert "note_deliveries" not in tables
+
+    note_columns = [row[1] for row in temp_db.conn.execute("PRAGMA table_info(notes)").fetchall()]
+    assert "must_read" not in note_columns
 
 
 def test_create_issue(temp_db):
@@ -906,8 +910,8 @@ def test_create_event_with_nonexistent_agent_id():
         os.unlink(db_path)
 
 
-def test_create_note_with_nonexistent_agent_id():
-    """Test creating a note with non-existent agent_id succeeds on fresh DB."""
+def test_add_note_with_nonexistent_agent_id():
+    """Test adding a note with non-existent agent_id succeeds on fresh DB."""
     import tempfile
     import os
     from hive.db import Database
@@ -1510,21 +1514,47 @@ def test_worker_started_event_includes_prompt_version(temp_db):
     assert re.match(r"[0-9a-f]{12}", prompt_version)
 
 
-# --- Note deliveries tests ---
+# --- Legacy notes schema cleanup tests ---
 
 
-def test_add_note_must_read_default(temp_db):
-    """add_note without must_read -> must_read=0."""
-    note_id = temp_db.add_note(content="default note")
-    cursor = temp_db.conn.execute("SELECT must_read FROM notes WHERE id = ?", (note_id,))
-    assert cursor.fetchone()["must_read"] == 0
+def test_legacy_note_delivery_schema_is_removed_on_connect(tmp_path):
+    """Existing DBs drop the removed note inbox/delivery compatibility schema."""
+    from hive.db import Database
 
+    db_path = tmp_path / "legacy.db"
+    db = Database(str(db_path))
+    db.connect()
+    note_id = db.add_note(content="legacy note")
+    db.close()
 
-def test_add_note_must_read_true(temp_db):
-    """add_note with must_read=True -> must_read=1."""
-    note_id = temp_db.add_note(content="urgent note", must_read=True)
-    cursor = temp_db.conn.execute("SELECT must_read FROM notes WHERE id = ?", (note_id,))
-    assert cursor.fetchone()["must_read"] == 1
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        f"""
+        ALTER TABLE notes ADD COLUMN must_read INTEGER NOT NULL DEFAULT 0;
+        UPDATE notes SET must_read = 1 WHERE id = {note_id};
+        CREATE TABLE note_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued'
+        );
+        INSERT INTO note_deliveries (note_id) VALUES ({note_id});
+        """
+    )
+    conn.close()
+
+    db = Database(str(db_path))
+    db.connect()
+    try:
+        tables = [row[0] for row in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        assert "note_deliveries" not in tables
+
+        note_columns = [row[1] for row in db.conn.execute("PRAGMA table_info(notes)").fetchall()]
+        assert "must_read" not in note_columns
+
+        notes = db.get_notes()
+        assert notes[0]["content"] == "legacy note"
+    finally:
+        db.close()
 
 
 # ── Project registration tests ─────────────────────────────────────────────

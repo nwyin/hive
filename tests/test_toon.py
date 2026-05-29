@@ -73,6 +73,11 @@ def test_encode_help_block():
     assert out == "help[2]:\n  hive show <id>\n  hive list --todo"
 
 
+def test_command_hints_exclude_dead_create_note_alias():
+    assert "add_note" in toon.COMMAND_HINTS
+    assert "create_note" not in toon.COMMAND_HINTS
+
+
 def test_toon_error_contract():
     assert toon.toon_error("Issue not found: x") == "error: Issue not found: x"
 

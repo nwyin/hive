@@ -67,6 +67,7 @@ def test_cli_create(temp_db, tmp_path):
     issue_id = result["id"]
 
     assert issue_id.startswith("w-")
+    assert "issue_id" not in result
 
     # Verify issue was created
     issue = temp_db.get_issue(issue_id)
@@ -1155,20 +1156,19 @@ def test_merges_empty_shows_no_entries_message(temp_db, tmp_path, capsys):
     assert not data["merges"]
 
 
-def test_cli_note_legacy_no_targets(temp_db, tmp_path, capsys):
-    """hive note without targets falls through to legacy add_note behavior."""
+def test_cli_note_without_targets_creates_project_note(temp_db, tmp_path, capsys):
+    """hive note without targets creates a normal project note."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    cli.add_note("Legacy note")
+    cli.add_note("Project note")
 
     data = toon.decode(capsys.readouterr().out)
     assert data["category"] == "discovery"
     assert "note_id" in data
 
     notes = temp_db.get_notes(limit=1)
-    assert notes[0]["content"] == "Legacy note"
-    # No deliveries created
-    assert temp_db.conn.execute("SELECT COUNT(*) FROM note_deliveries").fetchone()[0] == 0
+    assert notes[0]["content"] == "Project note"
+    assert notes[0]["project"] == tmp_path.name
 
 
 # ── cli_command decorator invariant tests ────────────────────────────────────

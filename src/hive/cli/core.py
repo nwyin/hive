@@ -140,7 +140,6 @@ class HiveCLI(QueenMixin):
 
         return {
             "id": issue_id,
-            "issue_id": issue_id,  # compat alias
             "title": title,
             "priority": priority,
             "status": IssueStatus.OPEN.value,

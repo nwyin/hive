@@ -144,28 +144,6 @@ CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category);
 CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
 
 ----------------------------------------------------------------------
--- NOTE_DELIVERIES: delivery tracking for notes
-----------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS note_deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    note_id INTEGER NOT NULL REFERENCES notes(id),
-    recipient_agent_id TEXT,
-    recipient_issue_id TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',
-    delivered_at TEXT,
-    read_at TEXT,
-    acked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_note_deliveries_note ON note_deliveries(note_id);
-CREATE INDEX IF NOT EXISTS idx_note_deliveries_inbox ON note_deliveries(recipient_agent_id, recipient_issue_id, status, created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_agent_global ON note_deliveries(note_id, recipient_agent_id) WHERE recipient_issue_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_agent_issue ON note_deliveries(note_id, recipient_agent_id, recipient_issue_id) WHERE recipient_issue_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_note_deliveries_note_issue_target ON note_deliveries(note_id, recipient_issue_id) WHERE recipient_agent_id IS NULL;
-CREATE INDEX IF NOT EXISTS idx_note_deliveries_issue_targets ON note_deliveries(recipient_issue_id) WHERE recipient_agent_id IS NULL;
-
-----------------------------------------------------------------------
 -- MERGE_QUEUE: dedicated finalizer queue
 ----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS merge_queue (
@@ -231,7 +209,6 @@ COLUMN_MIGRATIONS = [
     ColumnMigration("merge_queue", "test_command", "TEXT"),
     ColumnMigration("notes", "project", "TEXT"),
     ColumnMigration("agents", "project", "TEXT"),
-    ColumnMigration("notes", "must_read", "INTEGER NOT NULL DEFAULT 0"),
     ColumnMigration("agents", "last_heartbeat_at", "TEXT"),
 ]
 
@@ -387,7 +364,20 @@ class DatabaseCore:
         for migration in SQL_MIGRATIONS:
             self._run_sql_migration(migration)
 
+        self._remove_legacy_note_delivery_schema()
         self._ensure_merge_queue_idempotency()
+
+    def _remove_legacy_note_delivery_schema(self) -> None:
+        """Drop unused note inbox/delivery compatibility schema."""
+        if not self.conn:
+            raise RuntimeError("Database not connected")
+
+        self.conn.execute("DROP TABLE IF EXISTS note_deliveries")
+        notes_exists = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'notes'").fetchone() is not None
+        note_columns = [row[1] for row in self.conn.execute("PRAGMA table_info(notes)").fetchall()] if notes_exists else []
+        if "must_read" in note_columns:
+            self.conn.execute("ALTER TABLE notes DROP COLUMN must_read")
+        self.conn.commit()
 
     def _ensure_merge_queue_idempotency(self) -> None:
         """Ensure merge queue constraints that make enqueueing idempotent.

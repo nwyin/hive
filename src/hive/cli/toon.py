@@ -57,7 +57,6 @@ COMMAND_HINTS: dict[str, list[str]] = {
     "add_note": ['hive create "<title>"'],
     "dep_add": ["hive show <id>", "hive dep remove <id> <depends_on>"],
     "dep_remove": ["hive show <id>"],
-    "create_note": ['hive create "<title>"'],
 }
 
 
