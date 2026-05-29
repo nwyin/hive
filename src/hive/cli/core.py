@@ -9,6 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from . import toon
 from ..daemon import HiveDaemon
 from ..db import Database, normalize_tags
 from ..status import IssueStatus, UNBLOCKING_ISSUE_STATUSES
@@ -39,19 +40,20 @@ def cli_command(*, formatter):
     """Decorator that separates data-gathering from output formatting.
 
     Decorated methods return a JSON-serialisable dict — nothing else.
-    The decorator routes the result to either ``json.dumps`` (when ``--json``
-    is active) or the provided *formatter* function (for human-readable text).
+    The decorator routes the result to either the TOON encoder (when
+    ``machine`` mode is active — i.e. output is piped/captured) or the
+    provided *formatter* function (for human-readable Rich output).
 
-    ``json_mode`` is popped from kwargs by the decorator so the wrapped
+    ``machine`` is popped from kwargs by the decorator so the wrapped
     method never sees it.  Methods that handle output inline (e.g.
-    streaming follow mode) can read ``self._json_mode`` instead.
+    streaming follow mode) can read ``self._machine`` instead.
     """
 
     def decorator(fn):
         @wraps(fn)
         def wrapper(self, *args, **kwargs):
-            json_mode = kwargs.pop("json_mode", False)
-            return self.run_command(fn.__name__, *args, json_mode=json_mode, **kwargs)
+            machine = kwargs.pop("machine", False)
+            return self.run_command(fn.__name__, *args, machine=machine, **kwargs)
 
         setattr(wrapper, "_cli_raw", fn)
         setattr(wrapper, "_cli_formatter", formatter)
@@ -69,10 +71,10 @@ class HiveCLI(QueenMixin):
         self.project_path = Path(project_path).resolve()
         self.project_name = self.project_path.name
 
-    def _error(self, msg: str, *, json_mode: bool = False):
+    def _error(self, msg: str, *, machine: bool = False):
         """Print error and exit."""
-        if json_mode:
-            print(json.dumps({"error": msg}))
+        if machine:
+            print(toon.toon_error(msg))
         else:
             print(f"Error: {msg}", file=sys.stderr)
         sys.exit(1)
@@ -85,21 +87,25 @@ class HiveCLI(QueenMixin):
             raise ValueError(f"Unknown CLI command: {command_name}")
         return method
 
-    def invoke_raw(self, command_name: str, *args, json_mode: bool = False, **kwargs):
+    def invoke_raw(self, command_name: str, *args, machine: bool = False, **kwargs):
         """Run a command's data-gathering function without formatting or error trapping."""
-        self._json_mode = json_mode
+        self._machine = machine
         method = self._get_command_handler(command_name)
         raw = getattr(method, "_cli_raw", None)
         if raw is None:
             raise ValueError(f"Command does not support raw invocation: {command_name}")
         return raw(self, *args, **kwargs)
 
-    def render_result(self, command_name: str, result: dict | None, *, json_mode: bool = False, formatter=None):
-        """Emit a command result using JSON or the registered formatter."""
+    def render_result(self, command_name: str, result: dict | None, *, machine: bool = False, formatter=None):
+        """Emit a command result as TOON (machine mode) or via the Rich formatter."""
         if result is None:
             return None
-        if json_mode:
-            print(json.dumps(result, default=str))
+        if machine:
+            body = toon.encode(result)
+            hints = toon.COMMAND_HINTS.get(command_name)
+            if hints:
+                body += "\n" + toon.encode_help(hints)
+            print(body)
             return result
 
         method = self._get_command_handler(command_name)
@@ -114,13 +120,13 @@ class HiveCLI(QueenMixin):
                 _CONSOLE.print(output)
         return result
 
-    def run_command(self, command_name: str, *args, json_mode: bool = False, formatter=None, **kwargs):
+    def run_command(self, command_name: str, *args, machine: bool = False, formatter=None, **kwargs):
         """Run a command through the standard CLI error/formatting pipeline."""
         try:
-            result = self.invoke_raw(command_name, *args, json_mode=json_mode, **kwargs)
-            return self.render_result(command_name, result, json_mode=json_mode, formatter=formatter)
+            result = self.invoke_raw(command_name, *args, machine=machine, **kwargs)
+            return self.render_result(command_name, result, machine=machine, formatter=formatter)
         except Exception as exc:
-            self._error(str(exc), json_mode=json_mode)
+            self._error(str(exc), machine=machine)
 
     def _parse_tags(self, issue_dict: dict) -> dict:
         """Parse tags JSON string into a list in-place."""
@@ -207,9 +213,10 @@ class HiveCLI(QueenMixin):
     ):
         """List all issues."""
         exclude = self._DONE_STATUSES if todo else None
+        list_status = None if todo else status
         rows = self.db.list_issues(
             project=self.project_name,
-            status=None if todo else status,
+            status=list_status,
             assignee=assignee,
             issue_type=issue_type,
             exclude_statuses=exclude,
@@ -218,7 +225,17 @@ class HiveCLI(QueenMixin):
             limit=limit,
         )
         issues = [self._parse_tags(issue) for issue in rows]
-        return {"count": len(issues), "issues": issues}
+        total = self.db.count_issues(
+            project=self.project_name,
+            status=list_status,
+            assignee=assignee,
+            issue_type=issue_type,
+            exclude_statuses=exclude,
+        )
+        result: dict = {"count": len(issues), "total": total, "issues": issues}
+        if not issues:
+            result["note"] = "no issues match — try `hive list --todo` or create one with `hive create`"
+        return result
 
     @cli_command(formatter=_fmt_show)
     def show(self, issue_id: str):
@@ -384,7 +401,10 @@ class HiveCLI(QueenMixin):
         if issue_id and not rows:
             raise ValueError(f"Issue {issue_id} not found in project {self.project_name}")
 
-        return {"count": len(rows), "detail": bool(issue_id), "review": rows}
+        result: dict = {"count": len(rows), "detail": bool(issue_id), "review": rows}
+        if not rows:
+            result["note"] = "nothing awaiting review — all done issues are finalized"
+        return result
 
     @cli_command(formatter=_fmt_message)
     def retry(self, issue_id: str, notes: str = "", reset: bool = False):
@@ -455,7 +475,10 @@ class HiveCLI(QueenMixin):
             s = e.get("status") or "unknown"
             status_counts[s] = status_counts.get(s, 0) + 1
 
-        return {"count": len(entries), "status_counts": status_counts, "merges": entries}
+        result: dict = {"count": len(entries), "status_counts": status_counts, "merges": entries}
+        if not entries:
+            result["note"] = "merge queue is empty"
+        return result
 
     @cli_command(formatter=_fmt_status)
     def status(self):
@@ -532,7 +555,10 @@ class HiveCLI(QueenMixin):
             if worker["issue_title"]:
                 agent["current_issue_title"] = worker["issue_title"]
 
-        return {"count": len(agents), "agents": agents}
+        result: dict = {"count": len(agents), "agents": agents}
+        if not agents:
+            result["note"] = "no agents registered yet — start the daemon with `hive start`"
+        return result
 
     # ── Notes ─────────────────────────────────────────────────────────
 
@@ -606,31 +632,39 @@ class HiveCLI(QueenMixin):
         recent = self.db.get_recent_events(n=n, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
 
         # Follow/streaming mode: handle output inline, return None to skip decorator output.
-        # Uses self._json_mode (set by @cli_command decorator) to choose text vs JSONL.
+        # Uses self._machine (set by @cli_command decorator) to choose text vs TOON.
+        # In machine mode each event is one TOON block, blank-line separated, so the
+        # stream stays parseable as it's tailed.
         if follow:
-            json_mode = self._json_mode
-            for event in recent:
-                if json_mode:
-                    print(json.dumps(self._event_to_json(event), default=str))
+            machine = self._machine
+
+            def emit(event):
+                if machine:
+                    print(toon.encode(self._event_to_json(event)))
+                    print()
                 else:
                     print(self._format_event(event))
+
+            for event in recent:
+                emit(event)
             cursor = recent[-1]["id"] if recent else self.db.get_max_event_id()
             try:
                 while True:
                     time.sleep(0.5)
                     new_events = self.db.get_events_since(after_id=cursor, issue_id=issue_id, agent_id=agent_id, event_type=event_type)
                     for event in new_events:
-                        if json_mode:
-                            print(json.dumps(self._event_to_json(event), default=str))
-                        else:
-                            print(self._format_event(event))
+                        emit(event)
                         cursor = event["id"]
             except KeyboardInterrupt:
                 pass
             return None
 
         # Non-follow: return events for decorator to format/serialize
-        return {"events": [dict(e) for e in recent]}
+        events = [dict(e) for e in recent]
+        result: dict = {"count": len(events), "events": events}
+        if not events:
+            result["note"] = "no events match the given filters"
+        return result
 
     @cli_command(formatter=_fmt_debug)
     def debug(self):

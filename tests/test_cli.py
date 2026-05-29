@@ -7,7 +7,7 @@ import unittest.mock
 
 import pytest
 
-from hive.cli import HiveCLI
+from hive.cli import HiveCLI, toon
 from hive.cli.helpers import _enrich_agents_with_issues
 
 
@@ -109,10 +109,10 @@ def test_cli_create_with_depends_on_json(temp_db, tmp_path, capsys):
     blocker_id = cli.create("Blocker", "desc")["id"]
     capsys.readouterr()  # Clear output from first create
 
-    cli.create("Dependent", "desc", depends_on=[blocker_id], json_mode=True)
+    cli.create("Dependent", "desc", depends_on=[blocker_id], machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert blocker_id in data["depends_on"]
 
 
@@ -171,10 +171,10 @@ def test_cli_show_issue_json(temp_db, tmp_path, capsys):
 
     issue_id = temp_db.create_issue("Test issue", "desc", priority=1, project=tmp_path.name)
 
-    cli.show(issue_id, json_mode=True)
+    cli.show(issue_id, machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["id"] == issue_id
     assert data["title"] == "Test issue"
     assert "dependencies" in data
@@ -206,10 +206,10 @@ def test_cli_status_json(temp_db, tmp_path, capsys):
 
     temp_db.create_issue("Open 1", project=tmp_path.name)
 
-    cli.status(json_mode=True)
+    cli.status(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert "issues" in data
     assert "total_issues" in data
     assert data["project"] == tmp_path.name
@@ -240,39 +240,37 @@ def test_cli_status_json_includes_dirty_main_merge_blocker(temp_db, tmp_path, ca
     temp_db.conn.commit()
     (repo / "README.md").write_text("# Dirty Repo\n")
 
-    cli.status(json_mode=True)
+    cli.status(machine=True)
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["main_worktree"]["dirty"] is True
     assert data["merge_blockers"]
     assert data["merge_blockers"][0]["type"] == "dirty_main_worktree"
 
 
-def test_cli_show_format_json(temp_db_file, tmp_path, capsys):
-    """--format json on show should produce same JSON output as json_mode=True."""
+def test_cli_show_toon_and_human(temp_db_file, tmp_path, capsys):
+    """`--toon` forces TOON output (matching the method) and `--human` forces Rich."""
     from hive.cli import main
 
     cli = HiveCLI(temp_db_file, str(tmp_path))
     issue_id = temp_db_file.create_issue("Format test", "desc", priority=3, project=tmp_path.name)
 
-    # Call show with format=json via the method directly to verify the raw payload
-    cli.show(issue_id, json_mode=True)
+    # Method in machine mode produces the canonical TOON payload.
+    cli.show(issue_id, machine=True)
     captured_method = capsys.readouterr()
-    expected = json.loads(captured_method.out)
+    expected = toon.decode(captured_method.out)
 
-    # Verify the real CLI entrypoint accepts --format json (needs file-backed DB)
-    main(["--project", str(tmp_path), "--db", str(temp_db_file.db_path), "show", issue_id, "--format", "json"])
+    # `--toon` through the real entrypoint produces the same TOON.
+    main(["--project", str(tmp_path), "--db", str(temp_db_file.db_path), "--toon", "show", issue_id])
     captured_main = capsys.readouterr()
-    via_main = json.loads(captured_main.out)
-    assert via_main == expected
+    assert toon.decode(captured_main.out) == expected
 
-    # Verify text format produces human-readable output (not JSON)
-    cli.show(issue_id, json_mode=False)
+    # `--human` forces Rich tables (not TOON).
+    main(["--project", str(tmp_path), "--db", str(temp_db_file.db_path), "--human", "show", issue_id])
     captured_text = capsys.readouterr()
     assert "Format test" in captured_text.out
     assert re.search(r"Priority\s+3", captured_text.out)
-    # Text output should NOT be parseable as JSON top-level object
-    assert not captured_text.out.strip().startswith("{")
+    assert "help[" not in captured_text.out
 
     # Verify json format output has correct structure
     assert expected["id"] == issue_id
@@ -451,10 +449,10 @@ def test_cli_review_json(temp_db, tmp_path, capsys):
     )
     temp_db.conn.commit()
 
-    cli.review(json_mode=True)
+    cli.review(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["count"] == 1
     assert data["review"][0]["id"] == issue_id
     assert "finalize_hint" in data["review"][0]
@@ -617,10 +615,10 @@ def test_cli_costs_json(temp_db, tmp_path, capsys):
 
     temp_db.log_event(issue_id, agent_id, "tokens_used", {"input_tokens": 1000, "output_tokens": 500, "model": "claude-sonnet-4-5-20250929"})
 
-    cli.metrics(show_costs=True, json_mode=True)
+    cli.metrics(show_costs=True, machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["total_tokens"] == 1500
     assert data["total_input_tokens"] == 1000
     assert data["total_output_tokens"] == 500
@@ -715,10 +713,10 @@ def test_setup_creates_config(tmp_path, capsys):
     """Test setup creates .hive.toml with claude backend."""
     from hive.cli import _do_setup
 
-    _do_setup(tmp_path, tmp_path.name, json_mode=True)
+    _do_setup(tmp_path, tmp_path.name, machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert "config_created" in data
 
     config = (tmp_path / ".hive.toml").read_text()
@@ -733,10 +731,10 @@ def test_setup_skips_existing_config(tmp_path, capsys):
 
     (tmp_path / ".hive.toml").write_text('[hive]\nbackend = "claude"\n')
 
-    _do_setup(tmp_path, tmp_path.name, json_mode=True)
+    _do_setup(tmp_path, tmp_path.name, machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["config_exists"] is True
 
     # Original content preserved
@@ -934,10 +932,10 @@ def test_status_with_issues_no_hint(temp_db, tmp_path, capsys):
 def test_status_includes_daemon_info_json(temp_db, tmp_path, capsys):
     """Test that status --json includes daemon info."""
     cli = HiveCLI(temp_db, str(tmp_path))
-    cli.status(json_mode=True)
+    cli.status(machine=True)
 
     captured = capsys.readouterr()
-    result = json.loads(captured.out)
+    result = toon.decode(captured.out)
     assert "daemon" in result
     assert "running" in result["daemon"]
     assert "pid" in result["daemon"]
@@ -1028,9 +1026,9 @@ def test_status_json_includes_workers_and_refinery(temp_db, tmp_path, capsys):
     )
     temp_db.conn.commit()
 
-    cli.status(json_mode=True)
+    cli.status(machine=True)
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
 
     assert "workers" in data
     assert len(data["workers"]) == 1
@@ -1056,9 +1054,9 @@ def test_status_json_refinery_active(temp_db, tmp_path, capsys):
     )
     temp_db.conn.commit()
 
-    cli.status(json_mode=True)
+    cli.status(machine=True)
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
 
     assert data["refinery"]["active"] is True
     assert data["refinery"]["issue_id"] == issue_id
@@ -1153,10 +1151,10 @@ def test_merges_json_includes_status_counts(temp_db, tmp_path, capsys):
     _insert_merge_entry(temp_db, issue2, "a2", tmp_path.name, "queued")
     _insert_merge_entry(temp_db, issue3, "a3", tmp_path.name, "merged")
 
-    cli.merges(json_mode=True)
+    cli.merges(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert "status_counts" in data
     assert data["status_counts"]["queued"] == 2
     assert data["status_counts"]["merged"] == 1
@@ -1195,37 +1193,37 @@ def test_cli_note_legacy_no_targets(temp_db, tmp_path, capsys):
 # ── cli_command decorator invariant tests ────────────────────────────────────
 
 
-def test_cli_command_inv1_json_mode_produces_valid_json(temp_db, tmp_path, capsys):
-    """INV-1: Every decorated command in json_mode produces valid JSON to stdout on success."""
+def test_cli_command_inv1_machine_mode_produces_valid_toon(temp_db, tmp_path, capsys):
+    """INV-1: Every decorated command in machine mode produces valid TOON to stdout on success."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     # Spot-check: create, list_issues, cancel
-    cli.create("INV1 issue", json_mode=True)
+    cli.create("INV1 issue", machine=True)
     out = capsys.readouterr().out
-    data = json.loads(out)
+    data = toon.decode(out)
     assert "id" in data
 
-    cli.list_issues(json_mode=True)
+    cli.list_issues(machine=True)
     out = capsys.readouterr().out
-    data = json.loads(out)
+    data = toon.decode(out)
     assert "issues" in data
 
     issue_id = temp_db.create_issue("To cancel", project=tmp_path.name)
-    cli.cancel(issue_id, reason="test", json_mode=True)
+    cli.cancel(issue_id, reason="test", machine=True)
     out = capsys.readouterr().out
-    data = json.loads(out)
+    data = toon.decode(out)
     assert data["issue_id"] == issue_id
 
 
-def test_cli_command_inv2_exception_produces_error_json(temp_db, tmp_path, capsys):
-    """INV-2: Every decorated command in json_mode produces {"error": "..."} on exception."""
+def test_cli_command_inv2_exception_produces_error_toon(temp_db, tmp_path, capsys):
+    """INV-2: Every decorated command in machine mode produces `error: <msg>` TOON on exception."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
     with pytest.raises(SystemExit):
-        cli.show("nonexistent-id-xyz", json_mode=True)
+        cli.show("nonexistent-id-xyz", machine=True)
 
     out = capsys.readouterr().out
-    data = json.loads(out)
+    data = toon.decode(out)
     assert "error" in data
     assert isinstance(data["error"], str)
     assert len(data["error"]) > 0
@@ -1236,7 +1234,7 @@ def test_cli_command_inv2_exception_exits_nonzero(temp_db, tmp_path):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.show("nonexistent-id-xyz", json_mode=True)
+        cli.show("nonexistent-id-xyz", machine=True)
     assert exc_info.value.code == 1
 
 
@@ -1268,7 +1266,7 @@ def test_cli_run_command_uses_registered_formatter(temp_db, tmp_path, capsys):
     """Explicit command runner should use the registered formatter."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    result = cli.run_command("create", "Formatted title", json_mode=False)
+    result = cli.run_command("create", "Formatted title", machine=False)
 
     captured = capsys.readouterr()
     assert "Created" in captured.out
@@ -1280,7 +1278,7 @@ def test_cli_command_decorator_exception_human_mode(temp_db, tmp_path, capsys):
     cli = HiveCLI(temp_db, str(tmp_path))
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.show("nonexistent-id-xyz", json_mode=False)
+        cli.show("nonexistent-id-xyz", machine=False)
 
     assert exc_info.value.code == 1
     # stdout should be empty; error goes to stderr
@@ -1289,20 +1287,17 @@ def test_cli_command_decorator_exception_human_mode(temp_db, tmp_path, capsys):
     assert "Error:" in captured.err
 
 
-def test_cli_command_decorator_does_not_print_json_in_human_mode(temp_db, tmp_path, capsys):
-    """Decorator must NOT print JSON output when json_mode=False."""
+def test_cli_command_decorator_does_not_print_toon_in_human_mode(temp_db, tmp_path, capsys):
+    """Decorator must emit Rich text (not TOON) when machine=False."""
     cli = HiveCLI(temp_db, str(tmp_path))
 
-    cli.create("Silent", json_mode=False)
+    cli.create("Silent", machine=False)
     out = capsys.readouterr().out
-    # Should be human text, not JSON
+    # Should be human text, with none of the machine-mode markers.
     assert "Created" in out
     assert "Silent" in out
-    try:
-        json.loads(out)
-        assert False, "Output was parseable JSON — decorator double-printed"
-    except (json.JSONDecodeError, ValueError):
-        pass  # expected: not JSON
+    assert "help[" not in out  # the help[] block is machine-mode only
+    assert "issue_id:" not in out  # raw TOON scalar lines are machine-mode only
 
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
@@ -1326,10 +1321,10 @@ def test_cleanup_removes_hive_dir(temp_db, git_project, capsys):
     (hive_dir / "queen-context.md").write_text("queen")
 
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(json_mode=True)
+    cli.cleanup(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert not hive_dir.exists()
     assert any(".hive" in r for r in data["removed"])
     assert data["dry_run"] is False
@@ -1341,10 +1336,10 @@ def test_cleanup_removes_hive_toml(temp_db, git_project, capsys):
     toml.write_text('[hive]\nbackend = "claude"\n')
 
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(json_mode=True)
+    cli.cleanup(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert not toml.exists()
     assert any(".hive.toml" in r for r in data["removed"])
 
@@ -1357,10 +1352,10 @@ def test_cleanup_removes_worktrees(temp_db, git_project, capsys):
     (worktrees / "worker-abc" / "file.txt").write_text("wip")
 
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(json_mode=True)
+    cli.cleanup(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert not worktrees.exists()
     assert any(".worktrees" in r for r in data["removed"])
 
@@ -1371,10 +1366,10 @@ def test_cleanup_removes_agent_branches(temp_db, git_project, capsys):
     subprocess.run(["git", "branch", "agent/worker-2"], cwd=str(git_project), capture_output=True, check=True)
 
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(json_mode=True)
+    cli.cleanup(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert len([r for r in data["removed"] if r.startswith("branch:")]) == 2
 
     result = subprocess.run(["git", "branch", "--list", "agent/*"], cwd=str(git_project), capture_output=True, text=True)
@@ -1388,10 +1383,10 @@ def test_cleanup_dry_run(temp_db, git_project, capsys):
     hive_dir.mkdir()
 
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(dry_run=True, json_mode=True)
+    cli.cleanup(dry_run=True, machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["dry_run"] is True
     assert len(data["would_remove"]) >= 2
     assert data["removed"] == []
@@ -1403,8 +1398,8 @@ def test_cleanup_dry_run(temp_db, git_project, capsys):
 def test_cleanup_nothing_to_do(temp_db, git_project, capsys):
     """cleanup on a clean project should report nothing removed."""
     cli = HiveCLI(temp_db, str(git_project))
-    cli.cleanup(json_mode=True)
+    cli.cleanup(machine=True)
 
     captured = capsys.readouterr()
-    data = json.loads(captured.out)
+    data = toon.decode(captured.out)
     assert data["removed"] == []

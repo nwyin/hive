@@ -25,7 +25,7 @@ Before creating experiments, explore the codebase and understand:
 Create a parent epic that captures the experiment goal:
 
 ```
-hive --json create "Sweep: optimize learning rate schedule" "Goal: find the learning rate schedule that minimizes val_bpb within a 5-minute training budget.\n\nBaseline: current config achieves val_bpb=1.05\n\nVariables: warmup_ratio, cooldown_ratio, peak_lr, schedule_type\n\nMetrics to report: val_bpb, peak_vram_mb, training_seconds\n\nConstraints: must complete within 5 minutes, must not exceed 48GB VRAM" --type epic --metadata '{"strategy":"sweep","round":1}'
+hive create "Sweep: optimize learning rate schedule" "Goal: find the learning rate schedule that minimizes val_bpb within a 5-minute training budget.\n\nBaseline: current config achieves val_bpb=1.05\n\nVariables: warmup_ratio, cooldown_ratio, peak_lr, schedule_type\n\nMetrics to report: val_bpb, peak_vram_mb, training_seconds\n\nConstraints: must complete within 5 minutes, must not exceed 48GB VRAM" --type epic --metadata '{"strategy":"sweep","round":1}'
 ```
 
 The `strategy: sweep` metadata signals experiment mode. The `round` counter tracks iteration.
@@ -50,7 +50,7 @@ Wait for human approval before creating issues.
 For each experiment, create a child issue with structured metadata:
 
 ```
-hive --json create "Exp: high LR with long warmup" "Modify train.py to use the following configuration:\n- peak_lr: 0.08\n- warmup_ratio: 0.3\n- cooldown_ratio: 0.2\n- schedule_type: cosine\n\nRun the training script: uv run train.py > run.log 2>&1\n\nAfter the run completes, parse the output and report these metrics in your completion signal:\n- val_bpb (from the --- output block)\n- peak_vram_mb\n- training_seconds\n- num_steps\n\nInclude the metrics in your .hive-result.jsonl like this:\n{\"status\": \"success\", \"summary\": \"...\", \"metrics\": {\"val_bpb\": 0.997, \"peak_vram_mb\": 45060, \"training_seconds\": 300, \"num_steps\": 953}, ...}" --parent <epic-id> --tags experiment --metadata '{"params":{"peak_lr":0.08,"warmup_ratio":0.3,"cooldown_ratio":0.2,"schedule_type":"cosine"}}'
+hive create "Exp: high LR with long warmup" "Modify train.py to use the following configuration:\n- peak_lr: 0.08\n- warmup_ratio: 0.3\n- cooldown_ratio: 0.2\n- schedule_type: cosine\n\nRun the training script: uv run train.py > run.log 2>&1\n\nAfter the run completes, parse the output and report these metrics in your completion signal:\n- val_bpb (from the --- output block)\n- peak_vram_mb\n- training_seconds\n- num_steps\n\nInclude the metrics in your .hive-result.jsonl like this:\n{\"status\": \"success\", \"summary\": \"...\", \"metrics\": {\"val_bpb\": 0.997, \"peak_vram_mb\": 45060, \"training_seconds\": 300, \"num_steps\": 953}, ...}" --parent <epic-id> --tags experiment --metadata '{"params":{"peak_lr":0.08,"warmup_ratio":0.3,"cooldown_ratio":0.2,"schedule_type":"cosine"}}'
 ```
 
 Key rules for experiment issues:
@@ -66,7 +66,7 @@ Key rules for experiment issues:
 
 When all experiments in a round complete:
 
-1. For each experiment: `hive --json show <experiment-id>`
+1. For each experiment: `hive show <experiment-id>`
    - Check `metadata.metrics` for the reported values
    - Check `metadata.params` for the parameter configuration
    - Check the result summary and status
@@ -101,7 +101,7 @@ Based on the results, propose a focused next round:
 Update the epic metadata to increment the round:
 
 ```
-hive --json update <epic-id> --metadata '{"strategy":"sweep","round":2}'
+hive update <epic-id> --metadata '{"strategy":"sweep","round":2}'
 ```
 
 Wait for human approval before creating round 2 issues.

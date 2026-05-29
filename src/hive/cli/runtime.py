@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import subprocess
@@ -12,15 +11,16 @@ from pathlib import Path
 from ..config import Config
 from ..db import Database
 from ..utils import detect_project
+from . import toon
 from .core import HiveCLI
 
 
-def do_setup(project_path: Path, project_name: str, *, json_mode: bool = False):
+def do_setup(project_path: Path, project_name: str, *, machine: bool = False):
     """Write a default .hive.toml if one doesn't exist."""
     target = project_path / ".hive.toml"
     if target.exists():
-        if json_mode:
-            print(json.dumps({"config_exists": True, "path": str(target)}))
+        if machine:
+            print(toon.encode({"config_exists": True, "path": str(target)}))
         else:
             print(f"{target} already exists.")
         return
@@ -33,8 +33,8 @@ def do_setup(project_path: Path, project_name: str, *, json_mode: bool = False):
         f'refinery_reasoning_effort = "high"      # refinery thinking effort\n'
         f"merge_queue_enabled = false\n"
     )
-    if json_mode:
-        print(json.dumps({"config_created": str(target)}))
+    if machine:
+        print(toon.encode({"config_created": str(target)}))
     else:
         print(f"Created {target}")
 
@@ -92,7 +92,7 @@ def initialize_cli(*, db_override: str | None, project: str | None) -> tuple[Dat
 _HIVE_GITIGNORE = "# Ephemeral queen session files (regenerated each session)\nqueen-state.md\n"
 
 
-def do_seed_queen_files(project_path: Path, *, json_mode: bool = False):
+def do_seed_queen_files(project_path: Path, *, machine: bool = False):
     """Write queen-instructions.md and queen-context.md into .hive/ if they don't exist."""
     from ..prompts import _load_template
 
@@ -102,7 +102,7 @@ def do_seed_queen_files(project_path: Path, *, json_mode: bool = False):
     # Write base queen instructions (always overwrite — keeps in sync with package)
     instructions_path = hive_dir / "queen-instructions.md"
     instructions_path.write_text(_load_template("queen"))
-    if not json_mode:
+    if not machine:
         print(f"Created {instructions_path}")
 
     # Seed persistent queen context if it doesn't exist yet
@@ -113,7 +113,7 @@ def do_seed_queen_files(project_path: Path, *, json_mode: bool = False):
             "Persistent project knowledge accumulated across queen sessions.\n"
             "Update this file with architectural decisions, gotchas, and patterns.\n"
         )
-        if not json_mode:
+        if not machine:
             print(f"Created {context_path}")
 
     # Ensure .hive/.gitignore covers ephemeral files
@@ -131,7 +131,7 @@ def do_seed_queen_files(project_path: Path, *, json_mode: bool = False):
             gitignore_path.write_text(existing.rstrip("\n") + "\n" + _HIVE_GITIGNORE)
 
 
-def do_analyze(project_path: Path, project_name: str, *, json_mode: bool = False):
+def do_analyze(project_path: Path, project_name: str, *, machine: bool = False):
     """Launch a Claude CLI session to analyze the project and generate .hive/project-context.md."""
     from ..prompts import _load_template
 
@@ -142,8 +142,8 @@ def do_analyze(project_path: Path, project_name: str, *, json_mode: bool = False
 
     context_path = hive_dir / "project-context.md"
     if context_path.exists():
-        if json_mode:
-            print(json.dumps({"context_exists": True, "path": str(context_path)}))
+        if machine:
+            print(toon.encode({"context_exists": True, "path": str(context_path)}))
         else:
             print(f"{context_path} already exists. Delete it first to re-analyze.")
         return
@@ -161,35 +161,35 @@ def do_analyze(project_path: Path, project_name: str, *, json_mode: bool = False
         init_prompt,
     ]
 
-    if not json_mode:
+    if not machine:
         print(f"Analyzing {project_name}...")
 
     try:
         result = subprocess.run(cmd, cwd=str(project_path), capture_output=not sys.stdout.isatty())
     except FileNotFoundError:
         msg = "Claude CLI not found. Install `claude` and ensure it's on PATH, or set CLAUDE_CMD."
-        if json_mode:
-            print(json.dumps({"error": msg}))
+        if machine:
+            print(toon.toon_error(msg))
         else:
             print(msg)
         return
 
     if result.returncode != 0:
         msg = f"Analysis failed (exit code {result.returncode})"
-        if json_mode:
-            print(json.dumps({"error": msg}))
+        if machine:
+            print(toon.toon_error(msg))
         else:
             print(msg)
         return
 
     if context_path.exists():
-        if json_mode:
-            print(json.dumps({"context_created": str(context_path)}))
+        if machine:
+            print(toon.encode({"context_created": str(context_path)}))
         else:
             print(f"Created {context_path}")
     else:
         msg = "Analysis completed but .hive/project-context.md was not written. Check Claude output."
-        if json_mode:
-            print(json.dumps({"error": msg}))
+        if machine:
+            print(toon.toon_error(msg))
         else:
             print(msg)

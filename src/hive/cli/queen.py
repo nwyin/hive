@@ -21,7 +21,9 @@ class QueenMixin:
         "Project context: `.hive/project-context.md` — architecture, build, conventions, key files.\n"
         "Persistent context: `.hive/queen-context.md` — accumulated project knowledge across sessions.\n"
         "Operational state: `.hive/queen-state.md` — re-read to recall what you were working on.\n"
-        "Always use `hive --json` for CLI commands. The daemon runs in background."
+        "`hive` emits TOON (compact indented output): scalars are `key: value`; object lists are "
+        "`name[count]{fields}:` followed by comma-separated rows; each command ends with a `help[]` "
+        "block of next-step commands. The daemon runs in background."
     )
 
     def _resolve_mcp_configs(self, configs: list[str] | None) -> list[str]:
@@ -95,7 +97,7 @@ class QueenMixin:
         from .runtime import do_seed_queen_files
 
         # Ensure base files exist (idempotent — mirrors what ``hive init`` does)
-        do_seed_queen_files(self.project_path, json_mode=True)
+        do_seed_queen_files(self.project_path, machine=True)
 
         instructions_path = self.project_path / ".hive" / "queen-instructions.md"
 
@@ -246,7 +248,10 @@ class QueenMixin:
             developer_instructions += (
                 "Before creating issues/epics, output a human-readable plan for user review and wait for explicit approval.\\n"
             )
-        developer_instructions += "Always use hive --json for Hive CLI commands."
+        developer_instructions += (
+            "hive emits TOON (compact indented output): scalars are `key: value`; object lists are "
+            "`name[count]{fields}:` then comma-separated rows; commands end with a `help[]` block of next steps."
+        )
 
         compact_prompt = (
             "Summarize the conversation for continuity.\\n"

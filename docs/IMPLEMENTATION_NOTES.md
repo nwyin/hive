@@ -88,8 +88,8 @@ See `src/hive/` directory for implementation. See `IMPL_PLAN.md` for the phase-b
 
 - 25+ commands: create, list, ready, show, update, cancel, finalize, retry, escalate, epic, dep, agents, agent, events, logs, status, stats, merges, costs, watch, note, notes, daemon (start/stop/restart/logs), queen, init, ui
 - All commands under a single `HiveCLI` class with direct DB calls (no ToolExecutor indirection)
-- `hive --json` flag on all commands for programmatic/machine-readable output
-- `hive --json logs -f` for live event tailing (JSONL in `--json` mode)
+- Machine-readable **TOON** output on all commands, auto-detected when stdout is piped/captured (force with `--toon` / `--human`)
+- `hive logs -f` for live event tailing (one TOON block per event in machine mode)
 - `hive list --sort --reverse --type --assignee --limit` for flexible filtering
 - `hive create --model` / `hive update --model` for per-issue model config
 - `hive create --tags` / `hive update --tags` for issue tagging
